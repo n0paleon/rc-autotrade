@@ -114,52 +114,103 @@ function sanitizeStats(raw, fallback) {
 }
 
 /**
- * Persistent JSON state. Writes are atomic (tmp + rename) and debounced;
- * `flush()` forces a synchronous write for shutdown paths.
+ * Persistent runtime state, split into two atomic files:
+ *   - state.json    : session, targets, settings, stats (no loot history)
+ *   - loot-log.json : confirmed/failed fill history
+ *
+ * Writes are debounced; `flush()` forces both files synchronously for shutdown.
  */
 export class Store {
   constructor({ dataDir, logger }) {
     this.dataDir = dataDir;
     this.logger = logger;
     this.stateFile = join(dataDir, "state.json");
+    this.historyFile = join(dataDir, "loot-log.json");
     this.state = defaultState();
     this.dirty = false;
     this.timer = null;
     this.writeErrorLogged = false;
+    this.historyDirty = false;
+    this.historyTimer = null;
+    this.historyErrorLogged = false;
   }
 
   load() {
     mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
 
+    let parsed = null;
+    let hadLegacyHistory = false;
+
     if (!existsSync(this.stateFile)) {
       this.logger?.info("store", `fresh state created at ${this.stateFile}`);
-      return this;
-    }
-
-    let raw;
-    try {
-      raw = readFileSync(this.stateFile, "utf8");
-    } catch (error) {
-      this.logger?.error("store", `could not read state: ${error.message}`);
-      return this;
-    }
-
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (error) {
-      const backup = `${this.stateFile}.corrupt-${Date.now()}`;
+    } else {
       try {
-        renameSync(this.stateFile, backup);
-      } catch {
-        /* ignore */
+        const raw = readFileSync(this.stateFile, "utf8");
+        parsed = JSON.parse(raw);
+        hadLegacyHistory = Object.prototype.hasOwnProperty.call(parsed ?? {}, "history");
+      } catch (error) {
+        const backup = `${this.stateFile}.corrupt-${Date.now()}`;
+        try {
+          renameSync(this.stateFile, backup);
+        } catch {
+          /* ignore */
+        }
+        this.logger?.error(
+          "store",
+          `state.json could not be loaded (${error.message}); backup: ${backup}`
+        );
+        parsed = null;
       }
-      this.logger?.error("store", `state.json is not valid JSON (${error.message}); backup: ${backup}`);
-      return this;
     }
 
-    this.#hydrate(parsed);
+    if (parsed) this.#hydrate(parsed);
+    this.#loadHistory(parsed?.history);
+
+    // Even when loot-log.json already exists, rewrite an older state.json once
+    // so the history array no longer lives there.
+    if (hadLegacyHistory) {
+      this.dirty = true;
+      this.flush();
+    }
+
     return this;
+  }
+
+  #loadHistory(legacyEntries) {
+    let loaded = null;
+
+    if (existsSync(this.historyFile)) {
+      try {
+        const parsed = JSON.parse(readFileSync(this.historyFile, "utf8"));
+        loaded = sanitizeHistory(Array.isArray(parsed) ? parsed : parsed?.history);
+        this.state.history = loaded;
+      } catch (error) {
+        const backup = `${this.historyFile}.corrupt-${Date.now()}`;
+        try {
+          renameSync(this.historyFile, backup);
+        } catch {
+          /* ignore */
+        }
+        this.logger?.error(
+          "store",
+          `loot-log.json could not be loaded (${error.message}); backup: ${backup}`
+        );
+        loaded = null;
+      }
+    }
+
+    if (loaded === null) {
+      const legacy = sanitizeHistory(legacyEntries);
+      this.state.history = legacy;
+      if (legacy.length > 0) {
+        this.logger?.info(
+          "store",
+          `migrating ${legacy.length} loot entries from state.json to ${this.historyFile}`
+        );
+        this.historyDirty = true;
+        this.flushHistory();
+      }
+    }
   }
 
   #hydrate(raw) {
@@ -200,7 +251,7 @@ export class Store {
       configs: configsResult.values,
       settings: settingsResult.ok ? { ...DEFAULT_SETTINGS, ...settingsResult.value } : { ...DEFAULT_SETTINGS },
       stats: sanitizeStats(source.stats, base.stats),
-      history: sanitizeHistory(source.history)
+      history: []
     };
   }
 
@@ -334,6 +385,7 @@ export class Store {
   addHistory(entry) {
     this.state.history.unshift(entry);
     if (this.state.history.length > MAX_HISTORY) this.state.history.length = MAX_HISTORY;
+    this.saveHistory();
     this.save();
   }
 
@@ -349,7 +401,9 @@ export class Store {
       ordersSent: 0
     };
     this.state.history = [];
+    this.saveHistory();
     this.save();
+    this.flush();
   }
 
   save() {
@@ -362,13 +416,59 @@ export class Store {
     this.timer.unref?.();
   }
 
+  saveHistory() {
+    this.historyDirty = true;
+    if (this.historyTimer) return;
+    this.historyTimer = setTimeout(() => {
+      this.historyTimer = null;
+      if (this.historyDirty) this.flushHistory();
+    }, 120);
+    this.historyTimer.unref?.();
+  }
+
+  flushHistory() {
+    if (!this.historyDirty) return;
+    this.historyDirty = false;
+    const temp = `${this.historyFile}.tmp`;
+    try {
+      writeFileSync(
+        temp,
+        JSON.stringify(
+          {
+            version: 1,
+            updatedAt: Date.now(),
+            history: this.state.history
+          },
+          null,
+          2
+        ),
+        { mode: 0o600 }
+      );
+      renameSync(temp, this.historyFile);
+      try {
+        chmodSync(this.historyFile, 0o600);
+      } catch {
+        /* non-posix filesystems */
+      }
+      this.historyErrorLogged = false;
+    } catch (error) {
+      if (!this.historyErrorLogged) {
+        this.logger?.error("store", `failed to persist loot log: ${error.message}`);
+        this.historyErrorLogged = true;
+      }
+      this.historyDirty = true;
+    }
+  }
+
   flush() {
+    this.flushHistory();
     if (!this.dirty) return;
     this.dirty = false;
     this.state.updatedAt = Date.now();
+    const { history: _history, ...persisted } = this.state;
     const temp = `${this.stateFile}.tmp`;
     try {
-      writeFileSync(temp, JSON.stringify(this.state, null, 2), { mode: 0o600 });
+      writeFileSync(temp, JSON.stringify(persisted, null, 2), { mode: 0o600 });
       renameSync(temp, this.stateFile);
       try {
         chmodSync(this.stateFile, 0o600);

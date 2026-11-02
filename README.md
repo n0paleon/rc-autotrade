@@ -176,7 +176,8 @@ Catatan:
 - Gunakan **satu instance** (`fork`), jangan `-i max`/cluster. Worker memegang satu koneksi
   WebSocket dan state order; beberapa instance bisa saling menimpa state dan mengirim order ganda.
 - `.env` dibaca oleh worker dari `cwd` (`ecosystem.config.cjs` mengarah ke root project).
-- Data target/session/history tetap di `data/state.json`; PM2 restart tidak menghapusnya.
+- Data target/session tetap di `data/state.json`; loot log ada di `data/loot-log.json`. PM2
+  restart tidak menghapus keduanya.
 - Log default ada di `~/.pm2/logs/`. Jangan commit log karena bisa memuat access key saat boot pertama.
 - `pm2 startup` membutuhkan sudo. Jika tidak tersedia, jalankan PM2 dari systemd user service.
 
@@ -353,7 +354,7 @@ salin header cookie dari request browser (minimal `cf_clearance`, sering juga `_
 | `HOST` | `127.0.0.1` | Bind address control plane |
 | `PORT` | `8787` | Port control plane (`0` = pilih acak) |
 | `WORKER_TOKEN` | — | Pin access key (>= 16 karakter) |
-| `DATA_DIR` | `./data` | Lokasi `state.json` |
+| `DATA_DIR` | `./data` | Lokasi `state.json` dan `loot-log.json` |
 | `RC_API_BASE` | `https://rollercoin.com` | Base URL API |
 | `RC_WS_URL` | `wss://nws.rollercoin.com/` | URL market socket |
 | `RC_COOKIE` | — | Cookie header awal (bisa juga dari UI) |
@@ -659,8 +660,13 @@ pm2 restart rc-autotrade --update-env
 
 ## Data & keamanan
 
-- `data/state.json` berisi token sesi Rollercoin (plaintext), target, statistik, dan history.
-  File dibuat `0600`, direktori `0700`. Jangan commit atau backup ke tempat publik.
+- `data/state.json` berisi token sesi Rollercoin (plaintext), target, settings, dan statistik.
+  **Tidak** lagi menyimpan loot log.
+- `data/loot-log.json` berisi history fill/failure (maks 200 entri) dan ditulis terpisah dengan
+  atomic write. Kedua file dibuat `0600`, direktori `0700`.
+- Saat pertama start setelah update, history lama di `state.json` otomatis dimigrasikan ke
+  `loot-log.json`, lalu `state.json` ditulis ulang tanpa field `history`. Jangan commit atau backup
+  isi `data/` ke tempat publik.
 - Access key worker **tidak** disimpan plaintext; hanya hash SHA-256 + preview.
 - Token Rollercoin tidak pernah dikirim ke UI dalam bentuk penuh; UI hanya menampilkan preview.
   Pengecualian: `/api/session/push` membalas token penuh ke snippet bridge yang sudah terautentikasi.
@@ -708,7 +714,7 @@ Cakupan:
 - `engine.test.js` — order gagal tidak menambah book; fill sukses menguranginya.
 - `integration.test.js` — spawn worker mock, auth, CRUD, settings, CORS, session push, item-info, WS, fill.
 
-Total 44 test; integration test memakai port acak dan data directory sementara.
+Total 45 test; integration test memakai port acak dan data directory sementara.
 
 ---
 

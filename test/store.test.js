@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store, jwtExpiry } from "../src/worker/store.js";
@@ -66,6 +66,16 @@ test("store persists session, targets and history", () => {
     });
     store.flush();
 
+    const persistedState = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
+    assert.equal(Object.prototype.hasOwnProperty.call(persistedState, "history"), false);
+    const lootLog = JSON.parse(readFileSync(join(dir, "loot-log.json"), "utf8"));
+    assert.equal(lootLog.history.length, 1);
+    assert.equal(lootLog.history[0].profitRlt, 0.1);
+
+    if (process.platform !== "win32") {
+      assert.equal(statSync(join(dir, "loot-log.json")).mode & 0o777, 0o600);
+    }
+
     const reloaded = new Store({ dataDir: dir, logger: null }).load();
     assert.equal(reloaded.state.session.accessToken, "access-token-123456");
     assert.equal(reloaded.state.configs.length, 1);
@@ -73,6 +83,51 @@ test("store persists session, targets and history", () => {
     assert.equal(reloaded.state.history.length, 1);
     assert.equal(reloaded.state.history[0].profitRlt, 0.1);
     assert.equal(reloaded.state.stats.filled, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("migrates legacy state.json history into a separate loot-log.json", () => {
+  const dir = tempDir();
+  try {
+    const legacyEntry = {
+      id: "legacy-1",
+      itemId: "6571aa39ca8bfef34adcd9e9",
+      label: "LEGACY",
+      qty: 5,
+      unitPrice: 0.09,
+      totalPrice: 0.45,
+      targetPrice: 0.1,
+      profitRlt: 0.05,
+      status: "filled",
+      at: Date.now()
+    };
+    writeFileSync(
+      join(dir, "state.json"),
+      JSON.stringify(
+        {
+          version: 1,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          configs: [],
+          settings: {},
+          stats: {},
+          history: [legacyEntry]
+        },
+        null,
+        2
+      )
+    );
+
+    const store = new Store({ dataDir: dir, logger: null }).load();
+    assert.equal(store.state.history.length, 1);
+    assert.equal(store.state.history[0].id, "legacy-1");
+
+    const persistedState = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
+    const lootLog = JSON.parse(readFileSync(join(dir, "loot-log.json"), "utf8"));
+    assert.equal(Object.prototype.hasOwnProperty.call(persistedState, "history"), false);
+    assert.equal(lootLog.history[0].id, "legacy-1");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
