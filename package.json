@@ -15,7 +15,8 @@
     "mock": "npm run build && MOCK=1 node src/worker/index.js",
     "pretest": "npm run build",
     "test": "node --test",
-    "key:reset": "node src/worker/reset-token.js"
+    "key:reset": "node src/worker/reset-token.js",
+    "pm2:start": "npm run build && pm2 startOrReload ecosystem.config.cjs --update-env"
   },
   "dependencies": {
     "react": "^19.3.1",

@@ -114,6 +114,72 @@ Mock mode mengisi dua target contoh, membuat harga naik-turun, dan mengirim fill
 seluruh dashboard bisa diuji offline. Di Windows, set `MOCK=1` di `.env` lalu jalankan `npm start`
 (karena script `MOCK=1 ...` memakai sintaks shell Unix).
 
+## Jalankan dengan PM2
+
+PM2 menjalankan worker langsung sebagai proses Node. Build React tetap harus dibuat karena `dist/`
+tidak disimpan di repo.
+
+1. Hentikan worker manual yang sedang berjalan (`Ctrl+C`) agar port `8787` bebas.
+2. Install PM2 sekali:
+   ```bash
+   npm install -g pm2
+   ```
+3. Install dependency dan build UI:
+   ```bash
+   npm ci
+   npm run build
+   ```
+4. Start process:
+   ```bash
+   pm2 start ecosystem.config.cjs
+   # atau: npm run pm2:start  (build + start/reload)
+   ```
+5. Verifikasi:
+   ```bash
+   pm2 status
+   curl http://127.0.0.1:8787/api/health
+   pm2 logs rc-autotrade --lines 100
+   ```
+6. Aktifkan auto-start setelah reboot:
+   ```bash
+   pm2 save
+   pm2 startup
+   # jalankan command sudo yang dicetak PM2, lalu:
+   pm2 save
+   ```
+
+> Saat pertama kali berjalan, access key dicetak ke log `pm2 logs rc-autotrade`. Simpan key-nya,
+> lalu jangan bagikan isi log. Setelah state ada, key tidak dicetak lagi.
+
+### Update setelah pull
+
+```bash
+git pull
+npm ci
+npm run build
+pm2 restart rc-autotrade --update-env
+```
+
+### Perintah harian
+
+| Perintah | Fungsi |
+| --- | --- |
+| `pm2 status` | Lihat status worker |
+| `pm2 logs rc-autotrade --lines 100` | Log worker |
+| `pm2 restart rc-autotrade --update-env` | Restart setelah `.env`/build berubah |
+| `pm2 stop rc-autotrade` | Stop sementara |
+| `pm2 delete rc-autotrade` | Hapus dari PM2 |
+| `pm2 monit` | Monitor CPU/RAM |
+
+Catatan:
+
+- Gunakan **satu instance** (`fork`), jangan `-i max`/cluster. Worker memegang satu koneksi
+  WebSocket dan state order; beberapa instance bisa saling menimpa state dan mengirim order ganda.
+- `.env` dibaca oleh worker dari `cwd` (`ecosystem.config.cjs` mengarah ke root project).
+- Data target/session/history tetap di `data/state.json`; PM2 restart tidak menghapusnya.
+- Log default ada di `~/.pm2/logs/`. Jangan commit log karena bisa memuat access key saat boot pertama.
+- `pm2 startup` membutuhkan sudo. Jika tidak tersedia, jalankan PM2 dari systemd user service.
+
 ### Access key
 
 | Kebutuhan | Cara |
@@ -482,4 +548,4 @@ Total 44 test; integration test memakai port acak dan data directory sementara.
 
 ---
 
-Original bot by **@nopaleon.0f** · arcade edition. Not affiliated with Rollercoin.
+Original bot by **@nopaleon.log** / **@n0paleon** · arcade edition. Not affiliated with Rollercoin.
