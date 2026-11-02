@@ -425,27 +425,69 @@ Mixed Content: ... requested an insecure resource 'http://18.205.189.239:8787/ap
 ```
 
 Ini bukan masalah CORS dan tidak bisa diperbaiki dari JavaScript. Halaman HTTPS tidak boleh
-memanggil HTTP non-loopback. Pilih salah satu solusi berikut.
+memanggil HTTP non-loopback. Cara paling mudah dan rapi adalah menaruh **Caddy** di depan worker
+sebagai reverse proxy HTTPS.
 
-### Opsi A — Caddy + domain/IP TLS (disarankan untuk VPS)
+Caddy menangani:
 
-Worker tetap bind ke loopback, lalu Caddy menangani HTTPS dan WebSocket.
+- sertifikat Let's Encrypt otomatis,
+- redirect HTTP → HTTPS,
+- WebSocket `/ws` tanpa konfigurasi tambahan,
+- header CORS dari worker tetap diteruskan.
+
+---
+
+## Caddy tutorial (Debian/Ubuntu VPS)
+
+Contoh di bawah memakai IP `18.205.189.239` dan domain gratis `18.205.189.239.sslip.io`.
+Ganti dengan domain sendiri jika ada.
+
+### 1. Prasyarat
+
+- Port **80** dan **443** terbuka di firewall/security group.
+- Domain A record mengarah ke IP server. Tanpa domain, `<IP>.sslip.io` otomatis mengarah ke IP
+  tersebut.
+- Worker berjalan di `127.0.0.1:8787`.
+- Tidak ada Apache/Nginx lain yang memakai port 80/443.
+
+Cek DNS dari server:
 
 ```bash
-# di server
-# 1. Pastikan port 80/443 terbuka dan DNS mengarah ke server.
-#    Tanpa domain, <IP>.sslip.io bisa dipakai (DNS wildcard ke IP).
-#    Contoh untuk IP 18.205.189.239: 18.205.189.239.sslip.io
-sudo apt install -y caddy
-sudo tee /etc/caddy/Caddyfile >/dev/null <<'EOF'
-<IP>.sslip.io {
-  reverse_proxy 127.0.0.1:8787
-}
-EOF
-sudo systemctl reload caddy
+getent hosts 18.205.189.239.sslip.io
+# atau
+dig +short 18.205.189.239.sslip.io
 ```
 
-Di `.env` worker:
+Cek port yang sedang dipakai:
+
+```bash
+sudo ss -ltnp | grep -E ':(80|443|8787)\b' || true
+```
+
+### 2. Install Caddy
+
+Jika Caddy belum ada, gunakan repo resmi Caddy:
+
+```bash
+sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+  | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+  | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo apt update
+sudo apt install -y caddy
+caddy version
+```
+
+Caddy otomatis membuat service systemd. Cek:
+
+```bash
+sudo systemctl status caddy --no-pager
+```
+
+### 3. Bind worker ke loopback
+
+Di `.env` project:
 
 ```env
 HOST=127.0.0.1
@@ -456,57 +498,159 @@ Restart worker:
 
 ```bash
 pm2 restart rc-autotrade --update-env
+curl http://127.0.0.1:8787/api/health
 ```
 
-Buka deck lewat `https://<IP>.sslip.io` (atau domain sendiri). Bridge otomatis memakai URL HTTPS
-karena UI dibuka lewat HTTPS. Tutup port 8787 dari internet.
-
-### Opsi B — Cloudflare Tunnel (tanpa buka port)
+Kalau worker dijalankan manual:
 
 ```bash
-cloudflared tunnel --url http://127.0.0.1:8787
+# Ctrl+C worker lama
+npm start
 ```
 
-Cloudflared mencetak URL `https://<acak>.trycloudflare.com`. Buka URL itu sebagai control deck;
-bridge memakai HTTPS. Untuk URL permanen, buat named tunnel + domain. Worker tetap bind
-`127.0.0.1`.
+> Jangan biarkan worker tetap listen di `0.0.0.0:8787`. Setelah Caddy aktif, port 8787 tidak boleh
+> terbuka ke internet.
 
-### Opsi C — SSH local port forwarding (pribadi)
-
-Di komputer yang menjalankan browser:
+### 4. Buat Caddyfile
 
 ```bash
-ssh -N -L 8787:127.0.0.1:8787 user@18.205.189.239
+sudo nano /etc/caddy/Caddyfile
 ```
 
-Lalu buka `http://127.0.0.1:8787`. Loopback HTTP dikecualikan dari aturan mixed content, dan token
-berjalan di dalam tunnel SSH. Worker harus bind `127.0.0.1`. Tunnel harus tetap terbuka selama
-bridge dipakai.
+Isi:
 
-### Opsi D — Nginx + Certbot
-
-Jika sudah punya Nginx/domain, reverse proxy ke `127.0.0.1:8787` dan teruskan header WebSocket:
-
-```nginx
-location / {
-  proxy_pass http://127.0.0.1:8787;
-  proxy_http_version 1.1;
-  proxy_set_header Upgrade $http_upgrade;
-  proxy_set_header Connection "upgrade";
-  proxy_set_header Host $host;
+```caddyfile
+18.205.189.239.sslip.io {
+    reverse_proxy 127.0.0.1:8787
 }
 ```
 
-### Setelah HTTPS aktif
+Untuk domain sendiri:
 
-1. Buka control deck lewat URL HTTPS.
-2. Buka **LINK → TOKEN BRIDGE**, generate ulang snippet/userscript.
-3. Hapus userscript lama dan pasang yang baru (URL/`@connect` berubah).
-4. Tutup akses publik ke port `8787`; hanya 80/443 atau tunnel yang terbuka.
+```caddyfile
+rc.example.com {
+    reverse_proxy 127.0.0.1:8787
+}
+```
+
+Caddy **tidak perlu** konfigurasi WebSocket khusus; `reverse_proxy` meneruskan upgrade HTTP
+secara otomatis. Jika memakai Cloudflare di depan domain, set DNS ke **DNS only (grey cloud)**
+saat pertama kali agar challenge sertifikat Caddy tidak terhalang.
+
+### 5. Validasi dan jalankan
+
+```bash
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl enable --now caddy
+sudo systemctl reload caddy
+sudo systemctl status caddy --no-pager
+```
+
+Lihat proses penerbitan sertifikat:
+
+```bash
+sudo journalctl -u caddy -f
+```
+
+Tunggu sampai muncul sertifikat untuk domain/IP. Setelah itu cek:
+
+```bash
+curl -I https://18.205.189.239.sslip.io
+curl -s https://18.205.189.239.sslip.io/api/health
+```
+
+Buka control deck:
+
+```text
+https://18.205.189.239.sslip.io
+```
+
+### 6. Tutup port 8787 dari internet
+
+Di UFW:
+
+```bash
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw deny 8787/tcp
+sudo ufw status
+```
+
+Di security group cloud (AWS/GCP/Azure), hapus inbound `8787` dan izinkan `80/443`.
+
+Verifikasi dari mesin lain, bukan dari server:
+
+```bash
+curl -m 3 http://18.205.189.239:8787/api/health
+# harus timeout / connection refused
+```
+
+### 7. Generate ulang bridge
+
+Bridge lama masih berisi URL HTTP. Setelah HTTPS aktif:
+
+1. Buka deck via `https://...`.
+2. Masuk **LINK → TOKEN BRIDGE**.
+3. Pilih **USERSCRIPT · AUTO** (lebih tahan CSP) atau console snippet.
+4. Generate ulang, lalu ganti userscript lama di Tampermonkey.
+5. Pastikan URL di dalam script sudah `https://...`, bukan `http://18.205...`.
+
+Caddy meneruskan endpoint `/api/session/push` beserta header CORS-nya, jadi bridge tetap bekerja.
+
+### 8. Auto-start
+
+Caddy memakai systemd, worker memakai PM2:
+
+```bash
+sudo systemctl enable caddy
+pm2 save
+pm2 startup
+# jalankan command sudo yang dicetak PM2, lalu:
+pm2 save
+```
+
+Urutan startup tidak masalah: Caddy bisa hidup lebih dulu; selama worker belum hidup, request akan
+mendapat `502` sementara.
+
+### 9. Update konfigurasi
+
+Setelah mengubah Caddyfile:
+
+```bash
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+```
+
+Setelah mengubah `.env`/kode worker:
+
+```bash
+npm run build
+pm2 restart rc-autotrade --update-env
+```
+
+### Troubleshooting Caddy
+
+| Gejala | Solusi |
+| --- | --- |
+| Sertifikat gagal diterbitkan | DNS belum mengarah ke IP, port 80/443 tertutup, atau Cloudflare proxy aktif. Cek `journalctl -u caddy -n 100 --no-pager`. |
+| `502 Bad Gateway` | Worker mati atau bukan di `127.0.0.1:8787`. Jalankan `curl http://127.0.0.1:8787/api/health`. |
+| Halaman 404/blank | `dist/` belum dibuild. Jalankan `npm run build`, lalu restart worker/PM2. |
+| WebSocket offline | Pastikan hanya Caddy yang memakai 443 dan tidak ada proxy lain. Caddy menangani `/ws` otomatis. |
+| Masih mixed content | Masih membuka deck/bridge dari URL `http://18.205...`. Buka via HTTPS, hard refresh, lalu generate ulang snippet/userscript. |
+| `address already in use` | Apache/Nginx lain memakai 80/443. Stop service tersebut atau gunakan Caddy di port lain + firewall. |
+| Caddyfile error | `sudo caddy validate --config /etc/caddy/Caddyfile`; lihat pesan baris yang salah. |
+| 8787 masih bisa diakses publik | `HOST` masih `0.0.0.0`, firewall/security group belum menutup 8787. |
+
+### Alternatif tanpa Caddy
+
+- **Cloudflare Tunnel**: `cloudflared tunnel --url http://127.0.0.1:8787`, lalu pakai URL
+  `https://<acak>.trycloudflare.com`. Cocok jika port 80/443 tidak bisa dibuka.
+- **SSH tunnel**: `ssh -N -L 8787:127.0.0.1:8787 user@18.205.189.239`, lalu buka
+  `http://127.0.0.1:8787`. Loopback HTTP dikecualikan dari mixed content dan token lewat SSH.
 
 > Jangan mengakali mixed content dengan memaksa `GM_xmlhttpRequest` ke HTTP publik. Secara teknis
-> userscript bisa melewati aturan halaman, tetapi access key dan token Rollercoin akan dikirim
-> plaintext lewat internet. Gunakan HTTPS, tunnel, atau SSH.
+> userscript bisa melewati aturan halaman, tetapi access key dan token Rollercoin dikirim plaintext
+> lewat internet. Gunakan HTTPS, tunnel, atau SSH.
 
 > Kalau worker sempat diakses lewat HTTP publik, rotasi access key (**LINK → ROTATE KEY**) dan
 > tempel ulang session Rollercoin setelah HTTPS aktif.
