@@ -415,6 +415,104 @@ Error validasi memakai status `422` dan `fields`, misalnya:
 
 ---
 
+## HTTPS & mixed content
+
+Jika control deck dibuka lewat `http://<IP-publik>:8787`, bridge yang berjalan di halaman
+`https://rollercoin.com` akan diblokir browser:
+
+```text
+Mixed Content: ... requested an insecure resource 'http://18.205.189.239:8787/api/session/push'
+```
+
+Ini bukan masalah CORS dan tidak bisa diperbaiki dari JavaScript. Halaman HTTPS tidak boleh
+memanggil HTTP non-loopback. Pilih salah satu solusi berikut.
+
+### Opsi A — Caddy + domain/IP TLS (disarankan untuk VPS)
+
+Worker tetap bind ke loopback, lalu Caddy menangani HTTPS dan WebSocket.
+
+```bash
+# di server
+# 1. Pastikan port 80/443 terbuka dan DNS mengarah ke server.
+#    Tanpa domain, <IP>.sslip.io bisa dipakai (DNS wildcard ke IP).
+#    Contoh untuk IP 18.205.189.239: 18.205.189.239.sslip.io
+sudo apt install -y caddy
+sudo tee /etc/caddy/Caddyfile >/dev/null <<'EOF'
+<IP>.sslip.io {
+  reverse_proxy 127.0.0.1:8787
+}
+EOF
+sudo systemctl reload caddy
+```
+
+Di `.env` worker:
+
+```env
+HOST=127.0.0.1
+PORT=8787
+```
+
+Restart worker:
+
+```bash
+pm2 restart rc-autotrade --update-env
+```
+
+Buka deck lewat `https://<IP>.sslip.io` (atau domain sendiri). Bridge otomatis memakai URL HTTPS
+karena UI dibuka lewat HTTPS. Tutup port 8787 dari internet.
+
+### Opsi B — Cloudflare Tunnel (tanpa buka port)
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8787
+```
+
+Cloudflared mencetak URL `https://<acak>.trycloudflare.com`. Buka URL itu sebagai control deck;
+bridge memakai HTTPS. Untuk URL permanen, buat named tunnel + domain. Worker tetap bind
+`127.0.0.1`.
+
+### Opsi C — SSH local port forwarding (pribadi)
+
+Di komputer yang menjalankan browser:
+
+```bash
+ssh -N -L 8787:127.0.0.1:8787 user@18.205.189.239
+```
+
+Lalu buka `http://127.0.0.1:8787`. Loopback HTTP dikecualikan dari aturan mixed content, dan token
+berjalan di dalam tunnel SSH. Worker harus bind `127.0.0.1`. Tunnel harus tetap terbuka selama
+bridge dipakai.
+
+### Opsi D — Nginx + Certbot
+
+Jika sudah punya Nginx/domain, reverse proxy ke `127.0.0.1:8787` dan teruskan header WebSocket:
+
+```nginx
+location / {
+  proxy_pass http://127.0.0.1:8787;
+  proxy_http_version 1.1;
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection "upgrade";
+  proxy_set_header Host $host;
+}
+```
+
+### Setelah HTTPS aktif
+
+1. Buka control deck lewat URL HTTPS.
+2. Buka **LINK → TOKEN BRIDGE**, generate ulang snippet/userscript.
+3. Hapus userscript lama dan pasang yang baru (URL/`@connect` berubah).
+4. Tutup akses publik ke port `8787`; hanya 80/443 atau tunnel yang terbuka.
+
+> Jangan mengakali mixed content dengan memaksa `GM_xmlhttpRequest` ke HTTP publik. Secara teknis
+> userscript bisa melewati aturan halaman, tetapi access key dan token Rollercoin akan dikirim
+> plaintext lewat internet. Gunakan HTTPS, tunnel, atau SSH.
+
+> Kalau worker sempat diakses lewat HTTP publik, rotasi access key (**LINK → ROTATE KEY**) dan
+> tempel ulang session Rollercoin setelah HTTPS aktif.
+
+---
+
 ## Data & keamanan
 
 - `data/state.json` berisi token sesi Rollercoin (plaintext), target, statistik, dan history.
