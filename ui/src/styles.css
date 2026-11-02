@@ -3179,14 +3179,17 @@ textarea.input {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 2px;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin-bottom: 4px;
 }
 
 .chart-title {
   display: flex;
   align-items: baseline;
   gap: 8px;
+  flex: 1;
+  min-width: 0;
   font-family: var(--font-display);
   font-size: 5.5px;
   letter-spacing: 0.4px;
@@ -3211,32 +3214,44 @@ textarea.input {
 .tf-group {
   display: flex;
   align-items: center;
-  gap: 1px;
+  gap: 2px;
+  flex: none;
   padding: 2px;
   border: 1px solid var(--line-soft);
   background: rgba(5, 9, 18, 0.8);
 }
 
 .tf-btn {
-  padding: 3px 5px;
-  border: 0;
+  min-width: 36px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--muted-2);
   font-family: var(--font-display);
-  font-size: 5px;
-  line-height: 1.5;
-  letter-spacing: 0.2px;
+  font-size: 8px;
+  line-height: 1.4;
+  letter-spacing: 0;
   cursor: pointer;
+  touch-action: manipulation;
 }
 
 .tf-btn:hover {
   color: var(--ink);
+  border-color: var(--line);
+  background: rgba(85, 230, 255, 0.06);
+}
+
+.tf-btn:focus-visible {
+  outline: 2px dashed var(--cyan);
+  outline-offset: 1px;
 }
 
 .tf-btn.is-active {
   color: var(--lime);
-  background: rgba(184, 255, 60, 0.08);
-  box-shadow: inset 0 -2px 0 var(--lime);
+  border-color: rgba(184, 255, 60, 0.45);
+  background: rgba(184, 255, 60, 0.1);
+  box-shadow: inset 0 -3px 0 var(--lime);
 }
 
 .chart-frame {
@@ -3300,6 +3315,17 @@ textarea.input {
 
   .chart-change {
     font-size: 12px;
+  }
+
+  .tf-group {
+    gap: 1px;
+  }
+
+  .tf-btn {
+    min-width: 32px;
+    min-height: 32px;
+    padding: 6px 6px;
+    font-size: 7px;
   }
 
   .chart-frame {
