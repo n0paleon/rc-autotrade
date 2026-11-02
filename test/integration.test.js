@@ -1,0 +1,311 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { createServer } from "node:net";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import WebSocket from "ws";
+
+const ROOT = resolve(import.meta.dirname, "..");
+const TOKEN = "integration-test-access-key";
+const TIMEOUT = 30_000;
+
+let child;
+let baseUrl;
+let dataDir;
+let output = "";
+
+async function freePort() {
+  const server = createServer();
+  await new Promise((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const port = server.address().port;
+  await new Promise((resolveClose) => server.close(resolveClose));
+  return port;
+}
+
+async function waitForHealth(url, deadline) {
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${url}/api/health`);
+      if (response.ok) return;
+    } catch {
+      /* not up yet */
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 120));
+  }
+  throw new Error(`worker did not start\n${output}`);
+}
+
+function authHeaders(extra = {}) {
+  return { authorization: `Bearer ${TOKEN}`, ...extra };
+}
+
+test.before(async () => {
+  dataDir = mkdtempSync(join(tmpdir(), "turuc-int-"));
+  const port = await freePort();
+  const env = {
+    ...process.env,
+    HOST: "127.0.0.1",
+    PORT: String(port),
+    DATA_DIR: dataDir,
+    MOCK: "1",
+    MOCK_INTERVAL_MS: "500",
+    WORKER_TOKEN: TOKEN,
+    LOG_LEVEL: "warn"
+  };
+  child = spawn(process.execPath, ["src/worker/index.js"], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
+  child.stdout.on("data", (chunk) => {
+    output += chunk.toString();
+  });
+  child.stderr.on("data", (chunk) => {
+    output += chunk.toString();
+  });
+  baseUrl = `http://127.0.0.1:${port}`;
+  await waitForHealth(baseUrl, Date.now() + 12_000);
+});
+
+test.after(async () => {
+  if (child) {
+    child.kill("SIGTERM");
+    await Promise.race([
+      new Promise((resolveExit) => child.once("exit", resolveExit)),
+      new Promise((resolveTimer) => setTimeout(resolveTimer, 3000))
+    ]);
+    if (child.exitCode === null) child.kill("SIGKILL");
+  }
+  if (dataDir) rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("health and dashboard are available without a key", { timeout: TIMEOUT }, async () => {
+  const health = await fetch(`${baseUrl}/api/health`);
+  assert.equal(health.status, 200);
+  const body = await health.json();
+  assert.equal(body.ok, true);
+  assert.equal(body.mock, true);
+
+  const page = await fetch(`${baseUrl}/`);
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  assert.match(html, /TURU\.RC/);
+  assert.match(html, /id="app"/);
+  assert.ok(page.headers.get("content-security-policy"));
+});
+
+test("API requires the access key", { timeout: TIMEOUT }, async () => {
+  const response = await fetch(`${baseUrl}/api/state`);
+  assert.equal(response.status, 401);
+  const withKey = await fetch(`${baseUrl}/api/state`, { headers: authHeaders() });
+  assert.equal(withKey.status, 200);
+});
+
+test("item-info endpoint resolves an automatic label", { timeout: TIMEOUT }, async () => {
+  const response = await fetch(
+    `${baseUrl}/api/item-info?itemId=6571aa39ca8bfef34adcd9e9&itemType=mutation_component`,
+    { headers: authHeaders() }
+  );
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.ok, true);
+  assert.equal(body.item.label, "Rare Neon Shard");
+  assert.equal(body.item.rarity, "Rare");
+  assert.equal(body.item.rarityColor, "b8ff3c");
+});
+
+test("mock engine fills a seeded target", { timeout: TIMEOUT }, async () => {
+  const deadline = Date.now() + 20_000;
+  let snapshot;
+  while (Date.now() < deadline) {
+    const response = await fetch(`${baseUrl}/api/state`, { headers: authHeaders() });
+    snapshot = await response.json();
+    if (snapshot.stats?.filled > 0) break;
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 300));
+  }
+  assert.equal(snapshot.worker?.mock, true, "worker must run in mock mode");
+  assert.equal(snapshot.settings?.paused, false, "trading must not be paused");
+  assert.equal(snapshot.settings?.dryRun, false, "dry run must be off");
+  assert.ok(snapshot.stats.filled > 0, `expected at least one simulated fill\n${output}`);
+  assert.ok(snapshot.history.length > 0);
+  assert.equal(snapshot.startedAt > 0, true);
+});
+
+test("target CRUD validates and broadcasts snapshots", { timeout: TIMEOUT }, async () => {
+  const itemId = "66ccddeeff001122334455";
+  const created = await fetch(`${baseUrl}/api/configs`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({
+      itemId: `https://rollercoin.com/marketplace/mutation-components/${itemId}?utm=x`,
+      label: "INTEGRATION DRONE",
+      targetPrice: 0.075,
+      desiredQty: 12,
+      highStockThreshold: 30,
+      minAcceptableQty: 3
+    })
+  });
+  assert.equal(created.status, 201);
+  const createdBody = await created.json();
+  assert.equal(createdBody.configs.some((config) => config.itemId === itemId), true);
+
+  const patched = await fetch(`${baseUrl}/api/configs/${itemId}`, {
+    method: "PATCH",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ active: false })
+  });
+  assert.equal(patched.status, 200);
+  const patchedBody = await patched.json();
+  assert.equal(patchedBody.configs.find((config) => config.itemId === itemId).active, false);
+
+  const invalid = await fetch(`${baseUrl}/api/configs`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ itemId, targetPrice: 0, desiredQty: 0, highStockThreshold: 0, minAcceptableQty: 0 })
+  });
+  assert.equal(invalid.status, 422);
+
+  const removed = await fetch(`${baseUrl}/api/configs/${itemId}`, {
+    method: "DELETE",
+    headers: authHeaders()
+  });
+  assert.equal(removed.status, 200);
+  const removedBody = await removed.json();
+  assert.equal(removedBody.configs.some((config) => config.itemId === itemId), false);
+});
+
+test("settings, pause and history reset work", { timeout: TIMEOUT }, async () => {
+  const settings = await fetch(`${baseUrl}/api/settings`, {
+    method: "PATCH",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ delayPerOrder: 420, maxOrdersPerMinute: 20, dryRun: true })
+  });
+  assert.equal(settings.status, 200);
+  assert.equal((await settings.json()).settings.delayPerOrder, 420);
+
+  const paused = await fetch(`${baseUrl}/api/control`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ action: "pause" })
+  });
+  assert.equal(paused.status, 200);
+  assert.equal((await paused.json()).settings.paused, true);
+
+  const resumed = await fetch(`${baseUrl}/api/control`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ action: "resume" })
+  });
+  assert.equal((await resumed.json()).settings.paused, false);
+
+  const reset = await fetch(`${baseUrl}/api/history`, { method: "DELETE", headers: authHeaders() });
+  assert.equal(reset.status, 200);
+  assert.equal((await reset.json()).stats.filled, 0);
+});
+
+test("bridge CORS headers survive preflight and auth errors", { timeout: TIMEOUT }, async () => {
+  const preflight = await fetch(`${baseUrl}/api/session/push`, {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://rollercoin.com",
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "authorization,content-type,cache-control",
+      "access-control-request-private-network": "true"
+    }
+  });
+  assert.equal(preflight.status, 204);
+  assert.match(preflight.headers.get("access-control-allow-headers"), /cache-control/);
+  assert.equal(preflight.headers.get("access-control-allow-private-network"), "true");
+
+  const unauthorized = await fetch(`${baseUrl}/api/session/push`, {
+    method: "POST",
+    headers: {
+      origin: "https://rollercoin.com",
+      "content-type": "application/json",
+      authorization: "Bearer definitely-wrong-key"
+    },
+    body: JSON.stringify({ accessToken: "opaque-token-123456" })
+  });
+  assert.equal(unauthorized.status, 401);
+  assert.equal(unauthorized.headers.get("access-control-allow-origin"), "*");
+
+  const invalid = await fetch(`${baseUrl}/api/session/push`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json", origin: "https://rollercoin.com" }),
+    body: JSON.stringify({ accessToken: "x" })
+  });
+  assert.equal(invalid.status, 422);
+  assert.equal(invalid.headers.get("access-control-allow-origin"), "*");
+});
+
+test("session push accepts a newer JWT and CORS is enabled", { timeout: TIMEOUT }, async () => {
+  const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
+  const payload = Buffer.from(
+    JSON.stringify({ sub: "bridge-test", exp: Math.floor(Date.now() / 1000) + 7200 })
+  ).toString("base64url");
+  const token = `${header}.${payload}.signature`;
+
+  const preflight = await fetch(`${baseUrl}/api/session/push`, {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://rollercoin.com",
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "authorization,content-type"
+    }
+  });
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+
+  const response = await fetch(`${baseUrl}/api/session/push`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json", origin: "https://rollercoin.com" }),
+    body: JSON.stringify({ accessToken: token, refreshToken: "bridge-refresh-token-123" })
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.accepted, true);
+  assert.equal(response.headers.get("access-control-allow-origin"), "*");
+
+  const state = await (await fetch(`${baseUrl}/api/state`, { headers: authHeaders() })).json();
+  assert.equal(state.session.source, "bridge");
+});
+
+test("WebSocket accepts the subprotocol key and answers ping", { timeout: TIMEOUT }, async () => {
+  const socket = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws`, ["rcw.v1", TOKEN]);
+  const seen = new Set();
+
+  await new Promise((resolveReady, reject) => {
+    const timer = setTimeout(() => reject(new Error("websocket timeout")), 5000);
+    socket.on("message", (data) => {
+      const message = JSON.parse(data.toString());
+      seen.add(message.type);
+      if (message.type === "snapshot") {
+        socket.send(JSON.stringify({ type: "ping", t: Date.now() }));
+      }
+      if (message.type === "pong") {
+        clearTimeout(timer);
+        resolveReady();
+      }
+    });
+    socket.on("error", reject);
+  });
+
+  assert.equal(seen.has("hello"), true);
+  assert.equal(seen.has("snapshot"), true);
+  assert.equal(socket.protocol, "rcw.v1");
+  socket.close();
+
+  const bad = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws`, ["rcw.v1", "wrong-key"]);
+  const status = await new Promise((resolveStatus) => {
+    bad.on("unexpected-response", (_request, response) => resolveStatus(response.statusCode));
+    bad.on("error", () => resolveStatus(0));
+    setTimeout(() => resolveStatus(0), 2500);
+  });
+  assert.equal(status, 403);
+});
+
+test("key rotation is refused when WORKER_TOKEN pins the key", { timeout: TIMEOUT }, async () => {
+  const response = await fetch(`${baseUrl}/api/auth/rotate`, { method: "POST", headers: authHeaders() });
+  assert.equal(response.status, 409);
+});

@@ -1,0 +1,31 @@
+# dependencies / build
+node_modules/
+dist/
+.npm-cache/
+.npm-logs/
+.vite/
+
+# runtime state & secrets
+data/
+state.json
+.env
+.env.*
+!.env.example
+.npmrc
+*.pem
+*.key
+*.crt
+*.p12
+*.sqlite
+*.db
+
+# local QA / tooling
+.qa/
+.agent-browser-run/
+legacy/
+*.log
+.DS_Store
+
+# editor / OS
+.idea/
+.vscode/

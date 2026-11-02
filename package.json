@@ -1,0 +1,30 @@
+{
+  "name": "turu-rc-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Headless Rollercoin marketplace sniper with a pixel-arcade control deck.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "build": "vite build",
+    "start": "npm run build && node src/worker/index.js",
+    "dev": "vite",
+    "dev:worker": "node --watch src/worker/index.js",
+    "mock": "npm run build && MOCK=1 node src/worker/index.js",
+    "pretest": "npm run build",
+    "test": "node --test",
+    "key:reset": "node src/worker/reset-token.js"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "recharts": "^3.10.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.2",
+    "vite": "^8.3.5"
+  }
+}
