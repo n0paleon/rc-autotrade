@@ -567,35 +567,62 @@ function LootLog({ history, onReset }) {
 
 function FeedPanel({ logs, onClear, notify }) {
   const [paused, setPaused] = useState(false);
+  const [tailing, setTailing] = useState(true);
   const [frozen, setFrozen] = useState([]);
   const [unread, setUnread] = useState(0);
   const feedRef = useRef(null);
   const shown = paused ? frozen : logs;
+  const isTailing = tailing && !paused;
+
+  const scrollToLatest = useCallback(() => {
+    const feed = feedRef.current;
+    if (!feed) return;
+    feed.scrollTop = feed.scrollHeight;
+  }, []);
 
   useEffect(() => {
     if (paused) {
       setUnread(Math.max(0, logs.length - frozen.length));
       return;
     }
+    if (!tailing) return;
+    scrollToLatest();
+  }, [logs, paused, tailing, frozen.length, scrollToLatest]);
+
+  const handleFeedScroll = () => {
+    if (paused) return;
     const feed = feedRef.current;
     if (!feed) return;
-    const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 70;
-    if (nearBottom) feed.scrollTop = feed.scrollHeight;
-  }, [logs, paused, frozen.length]);
+    const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 24;
+    if (atBottom !== tailing) setTailing(atBottom);
+  };
 
-  const togglePause = () => {
+  const enableTail = useCallback(() => {
     if (paused) {
       setPaused(false);
       setFrozen([]);
       setUnread(0);
-      requestAnimationFrame(() => {
-        if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
-      });
-    } else {
-      setFrozen(logs);
-      setUnread(0);
-      setPaused(true);
     }
+    setTailing(true);
+    requestAnimationFrame(scrollToLatest);
+  }, [paused, scrollToLatest]);
+
+  const toggleTail = () => {
+    if (isTailing) {
+      setTailing(false);
+      return;
+    }
+    enableTail();
+  };
+
+  const togglePause = () => {
+    if (paused) {
+      enableTail();
+      return;
+    }
+    setFrozen(logs);
+    setUnread(0);
+    setPaused(true);
   };
 
   return (
@@ -603,6 +630,16 @@ function FeedPanel({ logs, onClear, notify }) {
       <div className="feed-head">
         <div className="feed-title"><span className="led" /> LIVE EVENT LOG</div>
         <div className="feed-tools">
+          <button
+            className={`feed-tail${isTailing ? " is-on" : ""}`}
+            type="button"
+            title={isTailing ? "Stop tailing and hold this line" : "Tail newest log lines"}
+            aria-pressed={isTailing}
+            onClick={toggleTail}
+          >
+            <Icon name="i-arrow-down" />
+            <span>{isTailing ? "TAILING" : "TAIL LOGS"}</span>
+          </button>
           <button className="icon-btn" type="button" title={paused ? "Resume feed" : "Pause feed"} aria-pressed={paused} onClick={togglePause}>
             <Icon name={paused ? "i-play" : "i-pause"} />
           </button>
@@ -612,6 +649,7 @@ function FeedPanel({ logs, onClear, notify }) {
             title="Clear feed"
             onClick={() => {
               setPaused(false);
+              setTailing(true);
               setFrozen([]);
               setUnread(0);
               onClear();
@@ -621,7 +659,14 @@ function FeedPanel({ logs, onClear, notify }) {
           </button>
         </div>
       </div>
-      <div className="feed" ref={feedRef} role="log" aria-live="polite" aria-label="Worker event log">
+      <div
+        className="feed"
+        ref={feedRef}
+        role="log"
+        aria-live="polite"
+        aria-label="Worker event log"
+        onScroll={handleFeedScroll}
+      >
         {shown.length === 0 ? <div className="feed-boot">[SYS] WAITING FOR EVENTS…</div> : null}
         {shown.map((entry) => (
           <div className="log-line" key={entry.id} data-level={entry.level || "info"} data-scope={String(entry.scope || "sys").toLowerCase()}>
@@ -632,10 +677,11 @@ function FeedPanel({ logs, onClear, notify }) {
         ))}
       </div>
       <div className="feed-foot">
-        <span id="feed-status" className={paused ? "is-paused" : ""}>
-          <span className="led led-sm" /> {paused ? "PAUSED" : "TAILING"}
+        <span id="feed-status" className={paused ? "is-paused" : !tailing ? "is-held" : ""}>
+          <span className="led led-sm" /> {paused ? "PAUSED" : tailing ? "TAILING" : "TAIL PAUSED"}
         </span>
         {paused && unread > 0 ? <span className="feed-badge">{formatInt(unread)} BUFFERED</span> : null}
+        {!paused && !tailing ? <span className="feed-badge">SCROLL HELD</span> : null}
         <span id="feed-count">{formatInt(shown.length)} LINES</span>
       </div>
     </section>

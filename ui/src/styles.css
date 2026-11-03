@@ -2056,7 +2056,43 @@ textarea.input {
 
 .feed-tools {
   display: flex;
+  align-items: center;
   gap: 5px;
+}
+
+.feed-tail {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 7px;
+  border: 2px solid var(--line);
+  background: var(--bg-2);
+  color: var(--muted-2);
+  font-family: var(--font-body);
+  font-size: 13px;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.feed-tail .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.feed-tail:hover {
+  background: var(--panel-3);
+  color: var(--ink);
+  border-color: var(--line-bright);
+}
+
+.feed-tail.is-on {
+  color: var(--lime);
+  border-color: rgba(184, 255, 60, 0.55);
+  background: rgba(184, 255, 60, 0.06);
 }
 
 .feed-tools .icon-btn {
@@ -2184,7 +2220,8 @@ textarea.input {
   color: var(--lime);
 }
 
-.feed-foot #feed-status.is-paused {
+.feed-foot #feed-status.is-paused,
+.feed-foot #feed-status.is-held {
   color: var(--amber);
 }
 
