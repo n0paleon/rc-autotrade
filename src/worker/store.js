@@ -2,6 +2,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
 import {
+  LOOT_LOG_MAX_PAGE_SIZE,
+  LOOT_LOG_PAGE_SIZE,
   MAX_HISTORY,
   MAX_REPORT_PRODUCTS,
   PRICE_HISTORY_LIMIT,
@@ -88,6 +90,14 @@ function defaultState() {
   };
 }
 
+/**
+ * Escapes `%`, `_` and `\` so a search term is matched literally inside a
+ * SQLite LIKE pattern (`... LIKE ? ESCAPE '\'`).
+ */
+function escapeLike(value) {
+  return String(value).replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
 function productKey(itemId, label) {
   const id = String(itemId || "").trim().toLowerCase();
   if (id) return id;
@@ -149,7 +159,7 @@ function sanitizeReport(raw, fallbackSince) {
   };
 }
 
-function sanitizeHistory(entries) {
+function sanitizeHistory(entries, limit = MAX_HISTORY) {
   if (!Array.isArray(entries)) return [];
   return entries
     .filter((entry) => entry && typeof entry === "object")
@@ -180,7 +190,7 @@ function sanitizeHistory(entries) {
         message
       };
     })
-    .slice(0, MAX_HISTORY);
+    .slice(0, limit);
 }
 
 function sanitizeStats(raw, fallback) {
@@ -360,6 +370,34 @@ export class Store {
       ordersRecent: db.prepare("SELECT * FROM orders ORDER BY at DESC, rowid DESC LIMIT ?"),
       ordersAll: db.prepare("SELECT * FROM orders ORDER BY at ASC, rowid ASC"),
       ordersClear: db.prepare("DELETE FROM orders"),
+      orderExists: db.prepare("SELECT 1 AS hit FROM orders WHERE id = ?"),
+      // The loot lookup used by GET /api/history. `q` is an escaped LIKE
+      // pattern ('' disables the filter) and `status` is '' | 'filled' | 'failed'.
+      ordersCount: db.prepare(`
+        SELECT COUNT(*) AS n FROM orders
+        WHERE (@q = '' OR label LIKE @q ESCAPE '\\' OR item_id LIKE @q ESCAPE '\\')
+          AND (@status = '' OR status = @status)
+      `),
+      ordersPage: db.prepare(`
+        SELECT * FROM orders
+        WHERE (@q = '' OR label LIKE @q ESCAPE '\\' OR item_id LIKE @q ESCAPE '\\')
+          AND (@status = '' OR status = @status)
+        ORDER BY at DESC, rowid DESC
+        LIMIT @limit OFFSET @offset
+      `),
+      // Stable forward cursor: rows inserted while the user pages cannot shift
+      // the window (unlike OFFSET), so "load older" never skips an entry.
+      ordersPageBefore: db.prepare(`
+        SELECT * FROM orders
+        WHERE (@q = '' OR label LIKE @q ESCAPE '\\' OR item_id LIKE @q ESCAPE '\\')
+          AND (@status = '' OR status = @status)
+          AND (
+            at < @before_at
+            OR (at = @before_at AND rowid < (SELECT rowid FROM orders WHERE id = @before_id))
+          )
+        ORDER BY at DESC, rowid DESC
+        LIMIT @limit
+      `),
 
       productsAll: db.prepare("SELECT * FROM report_products"),
       productsClear: db.prepare("DELETE FROM report_products"),
@@ -469,7 +507,9 @@ export class Store {
 
     this.#hydrate(parsed && typeof parsed === "object" ? parsed : null);
     const history = this.#readLegacyHistory(parsed?.history, hasHistory);
-    this.state.history = history;
+    // The whole legacy log goes into SQLite; only the newest slice stays in
+    // memory, exactly like a freshly hydrated database.
+    this.state.history = history.slice(0, MAX_HISTORY);
 
     // Older files have no report block: rebuild it from the imported loot log.
     if (Object.keys(this.state.report.items).length === 0 && history.length > 0) {
@@ -523,7 +563,7 @@ export class Store {
     if (hasHistoryFile) {
       try {
         const parsed = JSON.parse(readFileSync(this.historyFile, "utf8"));
-        return sanitizeHistory(Array.isArray(parsed) ? parsed : parsed?.history);
+        return sanitizeHistory(Array.isArray(parsed) ? parsed : parsed?.history, Number.POSITIVE_INFINITY);
       } catch (error) {
         this.#archive(`${this.historyFile}.corrupt-${Date.now()}`, this.historyFile);
         this.logger?.error(
@@ -532,7 +572,7 @@ export class Store {
         );
       }
     }
-    return sanitizeHistory(legacyEntries);
+    return sanitizeHistory(legacyEntries, Number.POSITIVE_INFINITY);
   }
 
   // ── hydration ────────────────────────────────────────────────────────────
@@ -1068,6 +1108,12 @@ export class Store {
     return { since: report.since, totals, items };
   }
 
+  /**
+   * Appends one confirmed/failed order to the permanent loot log.
+   *
+   * The SQLite `orders` table keeps every row forever; `state.history` is only
+   * the newest MAX_HISTORY window used to push live updates to the browser.
+   */
   addHistory(entry) {
     const normalized = sanitizeHistory([entry])[0];
     if (!normalized) return;
@@ -1087,6 +1133,67 @@ export class Store {
       this.logger?.error("store", `failed to persist order ${normalized.id}: ${error.message}`);
     }
     this.save();
+  }
+
+  /** True when an order id already exists in the permanent loot log. */
+  hasOrder(id) {
+    if (!id) return false;
+    return Boolean(this.stmts.orderExists.get(String(id)));
+  }
+
+  /** Total number of loot-log rows currently stored (all-time, not just the live window). */
+  historyCount() {
+    return this.stmts.ordersCount.get({ q: "", status: "" }).n;
+  }
+
+  /**
+   * One page of the permanent loot log, newest first.
+   *
+   * - `q` filters by product name (label) and item id; it is matched literally.
+   * - `status` narrows to `filled` or `failed` (anything else means "all").
+   * - `beforeAt` + `beforeId` form a stable cursor for "load older" so entries
+   *   arriving during paging cannot shift the window.
+   * - `offset` is only used when no cursor is supplied.
+   */
+  historyPage({ q = "", status = "", limit = LOOT_LOG_PAGE_SIZE, offset = 0, beforeAt = 0, beforeId = "" } = {}) {
+    const term = String(q ?? "").trim().slice(0, 64);
+    const like = term ? `%${escapeLike(term)}%` : "";
+    const statusFilter = status === "filled" || status === "failed" ? status : "";
+    const pageSize = Math.min(
+      Math.max(Math.trunc(Number(limit)) || LOOT_LOG_PAGE_SIZE, 1),
+      LOOT_LOG_MAX_PAGE_SIZE
+    );
+
+    const anchorAt = Number(beforeAt);
+    const anchorId = String(beforeId ?? "");
+    const cursor =
+      Number.isFinite(anchorAt) && anchorAt > 0 && anchorId ? { at: anchorAt, id: anchorId } : null;
+    const skip = cursor ? 0 : Math.max(Math.trunc(Number(offset)) || 0, 0);
+
+    // Fetch one extra row to learn whether another page exists.
+    const rows = cursor
+      ? this.stmts.ordersPageBefore.all({
+          q: like,
+          status: statusFilter,
+          before_at: cursor.at,
+          before_id: cursor.id,
+          limit: pageSize + 1
+        })
+      : this.stmts.ordersPage.all({
+          q: like,
+          status: statusFilter,
+          limit: pageSize + 1,
+          offset: skip
+        });
+
+    const total = this.stmts.ordersCount.get({ q: like, status: statusFilter }).n;
+    return {
+      entries: rows.slice(0, pageSize).map((row) => this.#orderToEntry(row)),
+      total,
+      limit: pageSize,
+      offset: skip,
+      hasMore: rows.length > pageSize
+    };
   }
 
   resetStats() {

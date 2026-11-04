@@ -488,7 +488,9 @@ export class Engine {
     const targetPrice = pendingMeta?.targetPrice ?? config?.targetPrice ?? null;
 
     // A duplicate confirmation must not double-count stats or the loot log.
-    if (fill.orderId && this.store.state.history.some((entry) => entry.id === fill.orderId)) {
+    // The permanent SQLite log is authoritative: the in-memory window only
+    // holds the newest MAX_HISTORY entries.
+    if (fill.orderId && this.store.hasOrder(fill.orderId)) {
       this.logger.debug("fill", `ignoring duplicate confirmation ${fill.orderId}`);
       return;
     }

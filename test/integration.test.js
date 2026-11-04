@@ -146,6 +146,28 @@ test("mock engine fills a seeded target", { timeout: TIMEOUT }, async () => {
   assert.ok(reportBody.report.items.length > 0);
   assert.ok(reportBody.report.totals.fills > 0);
   assert.ok(reportBody.report.items.some((item) => item.fills > 0 && item.avgBuy > 0));
+
+  const historyResponse = await fetch(`${baseUrl}/api/history?limit=5`, { headers: authHeaders() });
+  assert.equal(historyResponse.status, 200);
+  const historyBody = await historyResponse.json();
+  assert.equal(historyBody.ok, true);
+  assert.ok(historyBody.total >= 1, "the permanent log counts stored orders");
+  assert.ok(historyBody.entries.length > 0, "the first page has entries");
+  assert.ok(historyBody.entries.length <= 5, "the page honours the limit");
+  assert.ok(historyBody.total >= snapshot.historyTotal);
+
+  const label = historyBody.entries[0].label;
+  const searchResponse = await fetch(
+    `${baseUrl}/api/history?q=${encodeURIComponent(label.toLowerCase())}`,
+    { headers: authHeaders() }
+  );
+  assert.equal(searchResponse.status, 200);
+  const searchBody = await searchResponse.json();
+  assert.ok(searchBody.total >= 1, "searching a stored product finds it");
+  assert.ok(
+    searchBody.entries.every((entry) => String(entry.label).toLowerCase().includes(label.toLowerCase())),
+    "search only returns matching products"
+  );
 });
 
 test("target CRUD validates and broadcasts snapshots", { timeout: TIMEOUT }, async () => {

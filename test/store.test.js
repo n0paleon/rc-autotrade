@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
+import { LOOT_LOG_PAGE_SIZE, MAX_HISTORY } from "../src/shared/constants.js";
 import { Store, jwtExpiry } from "../src/worker/store.js";
 
 function tempDir() {
@@ -350,6 +351,81 @@ test("report and lifetime stats survive loot-log rotation", () => {
     assert.equal(report.items.length, 1);
     assert.equal(report.items[0].fills, 4);
     assert.equal(report.items[0].failed, 1);
+    reloaded.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("permanent loot log keeps every order, pages with a cursor and searches by product", () => {
+  const dir = tempDir();
+  try {
+    const store = new Store({ dataDir: dir, logger: null }).load();
+    const total = MAX_HISTORY + 25;
+    store.addHistory({
+      id: "percent-1",
+      itemId: "item-pct",
+      label: "100% Widget",
+      qty: 1,
+      unitPrice: 0.1,
+      totalPrice: 0.1,
+      targetPrice: 0.2,
+      profitRlt: 0.1,
+      status: "filled",
+      at: 500
+    });
+    for (let index = 0; index < total; index += 1) {
+      store.addHistory({
+        id: `order-${index}`,
+        itemId: index % 2 ? "item-a" : "item-b",
+        label: index % 2 ? "Rare Widget" : "Common Gear",
+        qty: 1,
+        unitPrice: 0.1,
+        totalPrice: 0.1,
+        targetPrice: 0.2,
+        profitRlt: 0.1,
+        status: index % 7 === 0 ? "failed" : "filled",
+        at: 1_000 + index
+      });
+    }
+
+    assert.equal(store.state.history.length, MAX_HISTORY, "in-memory window stays capped");
+    assert.equal(store.historyCount(), total + 1, "every order is stored permanently");
+    assert.equal(store.hasOrder("order-0"), true);
+    assert.equal(store.hasOrder("percent-1"), true);
+    assert.equal(store.hasOrder("missing-order"), false);
+
+    const first = store.historyPage({ limit: LOOT_LOG_PAGE_SIZE });
+    assert.equal(first.total, total + 1);
+    assert.equal(first.entries.length, LOOT_LOG_PAGE_SIZE);
+    assert.equal(first.hasMore, true);
+    assert.equal(first.entries[0].id, `order-${total - 1}`, "newest order comes first");
+
+    // The cursor is stable: no row is repeated or skipped across pages.
+    const oldest = first.entries.at(-1);
+    const second = store.historyPage({
+      limit: LOOT_LOG_PAGE_SIZE,
+      beforeAt: oldest.at,
+      beforeId: oldest.id
+    });
+    const seen = new Set([...first.entries, ...second.entries].map((entry) => entry.id));
+    assert.equal(seen.size, first.entries.length + second.entries.length);
+
+    const searched = store.historyPage({ q: "rare", limit: 200 });
+    assert.equal(searched.total, Math.floor(total / 2), "LIKE search is case-insensitive");
+    assert.ok(searched.entries.every((entry) => entry.label === "Rare Widget"));
+
+    const failed = store.historyPage({ status: "failed", limit: 200 });
+    assert.ok(failed.total > 0);
+    assert.ok(failed.entries.every((entry) => entry.status === "failed"));
+
+    assert.equal(store.historyPage({ q: "%", limit: 10 }).total, 1, "LIKE wildcards are escaped");
+    assert.equal(store.historyPage({ q: "_", limit: 10 }).total, 0);
+
+    store.close();
+    const reloaded = new Store({ dataDir: dir, logger: null }).load();
+    assert.equal(reloaded.historyCount(), total + 1, "log survives a restart");
+    assert.equal(reloaded.historyPage({ q: "common" }).total, Math.ceil(total / 2));
     reloaded.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

@@ -3,7 +3,13 @@ import { readFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
-import { APP_NAME, APP_VERSION, LIMITS } from "../shared/constants.js";
+import {
+  APP_NAME,
+  APP_VERSION,
+  LIMITS,
+  LOOT_LOG_MAX_PAGE_SIZE,
+  LOOT_LOG_PAGE_SIZE
+} from "../shared/constants.js";
 import {
   normalizeItemId,
   validateSessionInput,
@@ -57,6 +63,13 @@ function json(res, status, payload, headers = {}) {
     ...headers
   });
   res.end(body);
+}
+
+/** Reads a non-negative integer query parameter, clamped to `max`. */
+function intParam(params, name, fallback, max = Number.MAX_SAFE_INTEGER) {
+  const value = Number(params.get(name));
+  if (!Number.isFinite(value) || value < 0) return fallback;
+  return Math.min(Math.floor(value), max);
 }
 
 function corsHeaders() {
@@ -325,7 +338,10 @@ export class ControlServer {
       configs: this.configsView(),
       stats: { ...this.store.state.stats },
       report: this.store.reportView(),
-      history: this.store.state.history.slice(0, 60),
+      // Newest page only: the full loot log lives in SQLite and is fetched
+      // page-by-page through GET /api/history so the deck stays light.
+      history: this.store.state.history.slice(0, LOOT_LOG_PAGE_SIZE),
+      historyTotal: this.store.historyCount(),
       pending: this.engine.pendingSnapshot(),
       workerTokenPreview: this.store.state.workerTokenPreview,
       accessKeyPinned: Boolean(this.config.workerToken),
@@ -519,6 +535,19 @@ export class ControlServer {
         return;
       }
       await this.#serveStatic(path, req, res);
+      return;
+    }
+
+    if (method === "GET" && path === "/api/history") {
+      const page = this.store.historyPage({
+        q: url.searchParams.get("q") || "",
+        status: url.searchParams.get("status") || "",
+        limit: intParam(url.searchParams, "limit", LOOT_LOG_PAGE_SIZE, LOOT_LOG_MAX_PAGE_SIZE),
+        offset: intParam(url.searchParams, "offset", 0),
+        beforeAt: intParam(url.searchParams, "beforeAt", 0),
+        beforeId: url.searchParams.get("beforeId") || ""
+      });
+      json(res, 200, { ok: true, ...page });
       return;
     }
 

@@ -8,8 +8,14 @@ export const APP_VERSION = "1.0.0";
 /** Rollercoin reports marketplace prices in micro-RLT (1 RLT = 1_000_000). */
 export const PRICE_SCALE = 1_000_000;
 
-/** How many recent orders stay in memory; SQLite keeps the full loot log. */
+/** How many recent orders stay in memory for the live panel; SQLite keeps the full loot log. */
 export const MAX_HISTORY = 200;
+
+/** How many loot-log rows the browser receives by default (snapshot + one page). */
+export const LOOT_LOG_PAGE_SIZE = 50;
+
+/** Hard cap for a single `GET /api/history` page so the UI cannot ask for everything at once. */
+export const LOOT_LOG_MAX_PAGE_SIZE = 200;
 
 /** Upper bound for the persistent per-product profit report. */
 export const MAX_REPORT_PRODUCTS = 500;

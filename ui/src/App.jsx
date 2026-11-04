@@ -1063,28 +1063,200 @@ function ReportPanel({ report, notify }) {
   );
 }
 
-function LootLog({ history, onReset }) {
+const LOOT_PAGE_SIZE = 50;
+const LOOT_MAX_ROWS = 500;
+const LOOT_SEARCH_DEBOUNCE_MS = 250;
+
+function LootLog({ history, historyTotal, onReset, request }) {
+  const [draft, setDraft] = useState("");
+  const [query, setQuery] = useState("");
+  const [entries, setEntries] = useState([]);
+  const [total, setTotal] = useState(Number(historyTotal) || 0);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const idsRef = useRef(new Set());
+
+  // Typing updates the box immediately; the server query is debounced so a
+  // search over the permanent log is not re-run on every keystroke.
+  useEffect(() => {
+    const timer = setTimeout(() => setQuery(draft.trim()), LOOT_SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [draft]);
+
+  // Leaving search mode always falls back to the newest live page.
+  useEffect(() => {
+    if (query) return;
+    const seed = (Array.isArray(history) ? history : []).filter(Boolean);
+    idsRef.current = new Set(seed.map((entry) => entry.id));
+    setEntries(seed);
+    setError("");
+    setLoading(false);
+    setHasMore(true);
+  }, [query]);
+
+  // Keep the counter in sync with the worker (new fills bump it; a reset
+  // drops it to zero and clears whatever was loaded, search included).
+  useEffect(() => {
+    const nextTotal = Number(historyTotal);
+    if (!Number.isFinite(nextTotal)) return;
+    if (query) {
+      if (nextTotal !== 0) return;
+      idsRef.current = new Set();
+      setEntries([]);
+      setTotal(0);
+      setHasMore(false);
+      setError("");
+      return;
+    }
+    setTotal(nextTotal);
+    if (nextTotal === 0 && idsRef.current.size > 0) {
+      idsRef.current = new Set();
+      setEntries([]);
+      setHasMore(false);
+      setError("");
+      return;
+    }
+    setHasMore(idsRef.current.size < nextTotal);
+  }, [historyTotal, query]);
+
+  // Live socket entries are prepended so the newest loot stays on screen even
+  // while older pages are loaded below it.
+  useEffect(() => {
+    if (query) return;
+    const list = Array.isArray(history) ? history : [];
+    if (list.length === 0) return;
+    const fresh = list.filter((entry) => entry && !idsRef.current.has(entry.id));
+    if (fresh.length === 0) return;
+    for (const entry of fresh) idsRef.current.add(entry.id);
+    setEntries((previous) => [...fresh, ...previous].slice(0, LOOT_MAX_ROWS));
+  }, [history, query]);
+
+  // Server-side search over the whole permanent log (product name / item id).
+  useEffect(() => {
+    if (!query) return;
+    let cancelled = false;
+    idsRef.current = new Set();
+    setEntries([]);
+    setTotal(0);
+    setHasMore(false);
+    setError("");
+    setLoading(true);
+    const params = new URLSearchParams({ q: query, limit: String(LOOT_PAGE_SIZE) });
+    request(`/api/history?${params.toString()}`)
+      .then((data) => {
+        if (cancelled) return;
+        const list = (Array.isArray(data.entries) ? data.entries : []).filter(Boolean);
+        for (const entry of list) idsRef.current.add(entry.id);
+        setEntries(list.slice(0, LOOT_MAX_ROWS));
+        setTotal(Number(data.total) || 0);
+        setHasMore(Boolean(data.hasMore));
+      })
+      .catch((failure) => {
+        if (!cancelled) setError(failure?.message || "Search failed.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [query, request]);
+
+  const loadOlder = useCallback(async () => {
+    if (loading || !hasMore) return;
+    const oldest = entries[entries.length - 1];
+    const params = new URLSearchParams({ limit: String(LOOT_PAGE_SIZE) });
+    if (query) params.set("q", query);
+    if (oldest) {
+      params.set("beforeAt", String(oldest.at));
+      params.set("beforeId", String(oldest.id));
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const data = await request(`/api/history?${params.toString()}`);
+      const list = (Array.isArray(data.entries) ? data.entries : []).filter(
+        (entry) => entry && !idsRef.current.has(entry.id)
+      );
+      for (const entry of list) idsRef.current.add(entry.id);
+      // Older pages are user-requested, so let them accumulate instead of
+      // trimming rows the user just asked for.
+      setEntries((previous) => [...previous, ...list]);
+      setTotal(Number(data.total) || 0);
+      setHasMore(Boolean(data.hasMore));
+    } catch (failure) {
+      setError(failure?.message || "Could not load older loot.");
+    } finally {
+      setLoading(false);
+    }
+  }, [entries, hasMore, loading, query, request]);
+
+  const resetLog = async () => {
+    const didReset = await onReset();
+    if (didReset === false) return;
+    setDraft("");
+    setQuery("");
+    idsRef.current = new Set();
+    setEntries([]);
+    setTotal(0);
+    setHasMore(false);
+    setError("");
+  };
+
+  const shown = entries.length;
+  const trimmed = shown < total;
+  const emptyTitle = error ? "Loot log unavailable" : query ? "No matching loot" : "No loot yet";
+  const emptyHint = error
+    ? error
+    : query
+      ? `Nothing in the permanent log matches “${query}”.`
+      : "Confirmed fills will drop here with profit and latency.";
+
   return (
     <section className="panel flex h-[380px] min-w-0 flex-col max-xl:order-3 xl:col-start-1 xl:row-start-2" data-accent="gold">
-      <div className="panel-head shrink-0">
+      <div className="panel-head shrink-0 flex-wrap gap-y-2">
         <h2 className="panel-title">
           <Icon name="i-coin" className="h-4 w-4 text-gold" /> Loot log
-          <span className="border-2 border-[#05030f] bg-gold px-1.5 py-0.5 font-mono text-[12px] font-bold text-[#1a1000]">{history.length}</span>
+          <span
+            className="border-2 border-[#05030f] bg-gold px-1.5 py-0.5 font-mono text-[12px] font-bold text-[#1a1000]"
+            title={trimmed ? `${formatInt(shown)} of ${formatInt(total)} stored entries shown` : `${formatInt(total)} stored entries`}
+          >
+            {formatInt(shown)}{trimmed ? ` / ${formatInt(total)}` : ""}
+          </span>
         </h2>
-        <button className="btn btn-ghost btn-sm" type="button" onClick={onReset}>
-          <Icon name="i-trash" className="h-3 w-3" /> Reset
-        </button>
+        <div className="ml-auto flex w-full items-center gap-2 sm:w-auto">
+          <div className="relative min-w-0 flex-1 sm:w-56 sm:flex-none">
+            <Icon name="i-search" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
+            <input
+              className="input input-sm pl-8"
+              type="search"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") setDraft("");
+              }}
+              placeholder="Search product"
+              aria-label="Search loot log by product name"
+            />
+          </div>
+          <button className="btn btn-ghost btn-sm" type="button" onClick={resetLog}>
+            <Icon name="i-trash" className="h-3 w-3" /> Reset
+          </button>
+        </div>
       </div>
-      {history.length === 0 ? (
+      {entries.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
           <Icon name="i-coin" className="h-6 w-6 text-faint" />
-          <p className="font-mono text-[13px] uppercase tracking-[0.14em] text-ink-dim">No loot yet</p>
-          <p className="text-[13px] text-faint">Confirmed fills will drop here with profit and latency.</p>
+          <p className="font-mono text-[13px] uppercase tracking-[0.14em] text-ink-dim">
+            {loading ? "Searching…" : emptyTitle}
+          </p>
+          <p className="text-[13px] text-faint">{loading ? "Reading the permanent loot log." : emptyHint}</p>
         </div>
       ) : (
         <>
           <ul className="min-h-0 flex-1 divide-y divide-line/40 overflow-y-auto overscroll-contain md:hidden">
-            {history.slice(0, 60).map((entry) => (
+            {entries.map((entry) => (
               <li
                 className={`flex items-start justify-between gap-3 px-4 py-2.5${isRecent(entry.at, 6000) ? " loot-entry" : ""}`}
                 key={entry.id || `${entry.orderId}-${entry.at}`}
@@ -1129,7 +1301,7 @@ function LootLog({ history, onReset }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-line/40">
-                {history.slice(0, 60).map((entry) => (
+                {entries.map((entry) => (
                   <tr
                     className={`transition-colors hover:bg-night-850/60${isRecent(entry.at, 6000) ? " loot-entry" : ""}`}
                     key={entry.id || `${entry.orderId}-${entry.at}`}
@@ -1163,6 +1335,34 @@ function LootLog({ history, onReset }) {
           </div>
         </>
       )}
+      <div className="flex shrink-0 items-center justify-between gap-2 border-t-2 border-line px-3 py-2">
+        <span className="min-w-0 truncate font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+          {query
+            ? `${formatInt(shown)} match${shown === 1 ? "" : "es"}`
+            : trimmed
+              ? `Showing ${formatInt(shown)} of ${formatInt(total)}`
+              : `${formatInt(total)} stored`}
+        </span>
+        <div className="flex shrink-0 items-center gap-2">
+          {error ? (
+            <span className="max-w-[220px] truncate text-[12px] text-danger" title={error}>
+              {error}
+            </span>
+          ) : null}
+          {hasMore ? (
+            <button
+              className="btn btn-ghost btn-sm"
+              type="button"
+              onClick={loadOlder}
+              disabled={loading}
+              data-busy={loading ? "true" : undefined}
+              aria-busy={loading}
+            >
+              {loading ? "Loading…" : "Load older"}
+            </button>
+          ) : null}
+        </div>
+      </div>
     </section>
   );
 }
@@ -2195,12 +2395,14 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       confirmLabel: "RESET STATS",
       danger: true
     });
-    if (!confirmed) return;
+    if (!confirmed) return false;
     try {
       await worker.resetStats();
       notify("warn", "STATS RESET", "Starting a fresh scoreboard.");
+      return true;
     } catch (error) {
       notify("error", "RESET FAILED", error.message);
+      return false;
     }
   };
 
@@ -2287,7 +2489,12 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           onToggle={toggleTarget}
           notify={notify}
         />
-        <LootLog history={snapshot.history || []} onReset={resetStats} />
+        <LootLog
+          history={snapshot.history || []}
+          historyTotal={snapshot.historyTotal}
+          onReset={resetStats}
+          request={worker.request}
+        />
         <ReportPanel report={snapshot.report} notify={notify} />
       </main>
       <div className="pixel-stripe mt-8" aria-hidden="true" />
