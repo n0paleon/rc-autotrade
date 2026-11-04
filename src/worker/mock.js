@@ -31,10 +31,12 @@ function round6(value) {
  * the engine, API, socket layer and UI can be exercised end-to-end offline.
  */
 export class MockUpstream extends EventEmitter {
-  constructor({ store, logger }) {
+  constructor({ store, logger, latency = null, now = () => Date.now() }) {
     super();
     this.store = store;
     this.logger = logger;
+    this.latency = latency;
+    this.now = now;
     this.status = "idle";
     this.connectedAt = null;
     this.lastMessageAt = null;
@@ -46,21 +48,38 @@ export class MockUpstream extends EventEmitter {
     this.cmdCounts = new Map();
     this.tickTimer = null;
     this.ticks = 0;
+    this.connectStartedAt = null;
+    this.pingTimer = null;
+    this.lastPingMs = null;
     const interval = Number.parseInt(process.env.MOCK_INTERVAL_MS || "", 10);
     this.tickMs = Number.isInteger(interval) ? Math.max(200, Math.min(10_000, interval)) : 1400;
     this.orderSeq = 0;
     this.priceWalk = new Map();
     this.orderTimers = new Set();
+    this.lastRequestAt = 0;
   }
 
   start() {
     if (this.tickTimer) return;
     this.status = "connecting";
+    this.connectStartedAt = this.now();
     this.emit("status", this.stats());
     setTimeout(() => {
       if (this.status === "connecting") {
         this.status = "online";
-        this.connectedAt = Date.now();
+        this.connectedAt = this.now();
+        if (this.latency) {
+          this.latency.record("wsHandshake", this.now() - this.connectStartedAt, { ok: true });
+          // Simulated WS ping/pong every ~10s so the UI gets a live ping sample.
+          this.pingTimer = setInterval(() => {
+            const ms = 18 + Math.round(Math.random() * 22);
+            this.lastPingMs = ms;
+            this.latency.record("wsPing", ms, { ok: true });
+          }, 10_000);
+          this.pingTimer.unref?.();
+          // Seed an immediate sample so the HUD is never blank in mock mode.
+          this.latency.record("wsPing", 24, { ok: true });
+        }
         this.reconnects += 1;
         this.emit("status", this.stats());
         this.logger.info("mock", "simulated market feed online");
@@ -73,6 +92,8 @@ export class MockUpstream extends EventEmitter {
   stop() {
     if (this.tickTimer) clearInterval(this.tickTimer);
     this.tickTimer = null;
+    if (this.pingTimer) clearInterval(this.pingTimer);
+    this.pingTimer = null;
     for (const timer of this.orderTimers) clearTimeout(timer);
     this.orderTimers.clear();
     this.status = "stopped";
@@ -84,11 +105,17 @@ export class MockUpstream extends EventEmitter {
     this.logger.info("mock", `reconnect requested: ${reason}`);
     if (this.tickTimer) clearInterval(this.tickTimer);
     this.tickTimer = null;
+    if (this.pingTimer) clearInterval(this.pingTimer);
+    this.pingTimer = null;
     this.status = "connecting";
+    this.connectStartedAt = this.now();
     this.emit("status", this.stats());
     setTimeout(() => {
       this.status = "online";
-      this.connectedAt = Date.now();
+      this.connectedAt = this.now();
+      if (this.latency) {
+        this.latency.record("wsHandshake", this.now() - this.connectStartedAt, { ok: true });
+      }
       this.reconnects += 1;
       this.emit("status", this.stats());
       this.tickTimer = setInterval(() => this.#tick(), this.tickMs);
@@ -178,7 +205,21 @@ export class MockUpstream extends EventEmitter {
     });
   }
 
+  async #timedHttp(run) {
+    return this.#timedHttpImpl(run);
+  }
+
+  async #timedHttpImpl(run) {
+    this.lastRequestAt = this.now();
+    if (!this.latency) return run();
+    return this.latency.measure("http", run, { okFn: () => true });
+  }
+
   async purchase({ itemId, qty, unitPriceRaw }) {
+    return this.#timedHttp(() => this.#purchase({ itemId, qty, unitPriceRaw }));
+  }
+
+  async #purchase({ itemId, qty, unitPriceRaw }) {
     if (this.status !== "online") {
       return { ok: false, status: 503, error: "Mock market feed is offline." };
     }
@@ -214,6 +255,10 @@ export class MockUpstream extends EventEmitter {
   }
 
   async fetchItemInfo({ itemId, itemType = "mutation_component" }) {
+    return this.#timedHttp(() => this.#fetchItemInfo({ itemId, itemType }));
+  }
+
+  async #fetchItemInfo({ itemId, itemType = "mutation_component" }) {
     const known = {
       "6571aa39ca8bfef34adcd9e9": { name: "Neon Shard", rarity: "Rare", color: "b8ff3c" },
       "66b0a1c2d3e4f5061728394a": { name: "Pixel Core", rarity: "Epic", color: "ff5fc8" }
@@ -239,6 +284,10 @@ export class MockUpstream extends EventEmitter {
   }
 
   async refreshSession(refreshToken) {
+    return this.#timedHttp(() => this.#refreshSession(refreshToken));
+  }
+
+  async #refreshSession(refreshToken) {
     if (!refreshToken) {
       return { ok: false, status: 400, error: "Mock session has no refresh token." };
     }
@@ -249,6 +298,10 @@ export class MockUpstream extends EventEmitter {
       accessToken: makeToken(3600),
       refreshToken: `mock-refresh.${randomBytes(18).toString("base64url")}`
     };
+  }
+
+  getLastRequestAt() {
+    return this.lastRequestAt;
   }
 
   stats() {
@@ -268,8 +321,9 @@ export class MockUpstream extends EventEmitter {
       parseErrors: this.parseErrors,
       commands,
       upstream: "simulation",
-      uptimeMs: this.connectedAt ? Date.now() - this.connectedAt : 0,
-      mock: true
+      uptimeMs: this.connectedAt ? this.now() - this.connectedAt : 0,
+      mock: true,
+      lastPingMs: this.lastPingMs
     };
   }
 }

@@ -126,6 +126,7 @@ export class ControlServer {
     engine,
     itemInfo,
     keepalive = null,
+    latency = null,
     logger,
     startedAt = Date.now()
   }) {
@@ -136,6 +137,7 @@ export class ControlServer {
     this.engine = engine;
     this.itemInfo = itemInfo;
     this.keepalive = keepalive;
+    this.latency = latency;
     this.logger = logger;
     this.startedAt = startedAt;
     this.mock = Boolean(config.mock);
@@ -285,6 +287,7 @@ export class ControlServer {
       },
       gateway: this.gateway.stats(),
       session: this.session.status(),
+      latency: this.latency ? this.latency.snapshot() : null,
       ...(this.keepalive ? { keepalive: this.keepalive.stats() } : {}),
       settings: { ...this.store.state.settings },
       configs: this.configsView(),
@@ -301,6 +304,10 @@ export class ControlServer {
         ordersPerMinuteMax: LIMITS.ordersPerMinuteMax
       }
     };
+  }
+
+  latencyView() {
+    return this.latency ? this.latency.snapshot() : null;
   }
 
   #send(ws, type, data) {
@@ -729,11 +736,39 @@ export class ControlServer {
       return;
     }
 
+    if (method === "GET" && path === "/api/latency") {
+      json(res, 200, { ok: true, latency: this.latencyView() });
+      return;
+    }
+
+    if (method === "POST" && path === "/api/latency/probe") {
+      if (!this.latency) {
+        json(res, 503, { ok: false, error: "Latency tracking is not available." });
+        return;
+      }
+      const out = { ok: true, latency: this.latencyView(), probe: null };
+      // Manual probe: run the same warm GET on demand so the user can get a
+      // fresh sample without waiting for the scheduled keepalive interval.
+      // Mock mode has no keepalive, so it reports `skipped`.
+      if (this.keepalive?.enabled) {
+        const probe = await this.keepalive.probeOnce();
+        out.probe = { ok: Boolean(probe?.ok), status: probe?.status ?? null, error: probe?.error ?? null };
+        out.latency = this.latencyView();
+      } else {
+        out.probe = { ok: false, skipped: true, reason: "keepalive disabled" };
+      }
+      this.broadcast("latency", out.latency);
+      json(res, 200, out);
+      return;
+    }
+
     if (method === "DELETE" && path === "/api/history") {
       this.store.resetStats();
       this.engine.resetCounters();
+      this.latency?.reset();
       this.logger.info("stats", "lifetime stats, per-target fill rates and loot log reset");
       this.broadcast("stats", this.store.state.stats);
+      this.broadcast("latency", this.latencyView());
       this.broadcast("configs", this.configsView());
       this.broadcast("history-cleared", {});
       json(res, 200, { ok: true, stats: this.store.state.stats });

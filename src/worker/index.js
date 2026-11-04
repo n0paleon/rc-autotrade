@@ -10,6 +10,7 @@ import { MockUpstream, createMockSession } from "./mock.js";
 import { Engine } from "./engine.js";
 import { ItemInfoService } from "./item-info.js";
 import { ControlServer } from "./server.js";
+import { LatencyTracker } from "./latency.js";
 import { APP_NAME, APP_VERSION } from "../shared/constants.js";
 
 const MOCK_TARGETS = [
@@ -96,9 +97,10 @@ async function main() {
   let gateway;
   let dispatcher = null;
   let keepalive = null;
+  const latency = new LatencyTracker();
 
   if (config.mock) {
-    const upstream = new MockUpstream({ store, logger });
+    const upstream = new MockUpstream({ store, logger, latency });
     gateway = upstream;
     api = upstream;
     session = new SessionManager({ store, api, logger });
@@ -118,14 +120,16 @@ async function main() {
       baseUrl: config.apiBase,
       session,
       logger,
-      dispatcher
+      dispatcher,
+      latency
     });
     session.api = api;
     gateway = new RollercoinGateway({
       url: config.wsUrl,
       getToken: () => session.getAccessToken(),
       getCookie: () => session.getCookie(),
-      logger
+      logger,
+      latency
     });
     keepalive = new KeepaliveService({
       url: config.keepAliveUrl,
@@ -133,6 +137,7 @@ async function main() {
       api,
       logger,
       dispatcher,
+      latency,
       shouldProbe: () =>
         Boolean(session.getAccessToken()) &&
         !store.state.settings.paused &&
@@ -165,6 +170,7 @@ async function main() {
     engine,
     itemInfo,
     keepalive,
+    latency,
     logger,
     startedAt
   });

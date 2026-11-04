@@ -1211,7 +1211,7 @@ textarea.input {
 /* HUD */
 .hud {
   display: grid;
-  grid-template-columns: 1.18fr 1fr 1fr 1.08fr 1.15fr;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 12px;
   padding: 14px 20px 0;
   max-width: 1680px;
@@ -1318,6 +1318,24 @@ textarea.input {
 
 .stat-session .meter {
   margin-top: 7px;
+}
+
+.stat-upstream .stat-value {
+  color: var(--cyan);
+  font-size: clamp(11px, 1.15vw, 15px);
+}
+
+.stat-upstream .stat-value.is-hot {
+  color: var(--lime);
+  text-shadow: 0 0 12px rgba(184, 255, 60, 0.3);
+}
+
+.stat-upstream .stat-value.is-warn {
+  color: var(--amber);
+}
+
+.stat-upstream .stat-value.is-danger {
+  color: var(--red);
 }
 
 /* ═══════════════════════════ LAYOUT ═══════════════════════════ */
@@ -2008,7 +2026,7 @@ textarea.input {
 
 .tabbar {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 4px;
   padding: 4px;
   border: 2px solid var(--line);
@@ -2806,8 +2824,166 @@ textarea.input {
   line-height: 1.25;
 }
 
-/* ═══════════════════════════ ANIMATIONS ═══════════════════════════ */
+/* ── latency panel ───────────────────────────────────────────── */
 
+.latency-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.latency-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.latency-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-display);
+  font-size: 7px;
+  letter-spacing: 0.4px;
+  color: var(--ink-dim);
+}
+
+.latency-panel-title .icon {
+  color: var(--lime);
+}
+
+.latency-note {
+  font-size: 14px;
+  line-height: 1.3;
+  letter-spacing: 0.3px;
+  color: var(--muted-2);
+}
+
+.latency-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 9px 7px;
+  border: 1px solid var(--line-soft);
+  background: rgba(4, 8, 16, 0.45);
+}
+
+.latency-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.latency-label {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-display);
+  font-size: 6.5px;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+}
+
+.latency-value {
+  font-family: var(--font-display);
+  font-size: 11px;
+  color: var(--cyan);
+  white-space: nowrap;
+}
+
+.latency-value.is-hot {
+  color: var(--lime);
+}
+
+.latency-value.is-warn {
+  color: var(--amber);
+}
+
+.latency-value.is-danger {
+  color: var(--red);
+}
+
+.latency-count {
+  font-size: 13px;
+  letter-spacing: 0.3px;
+  color: var(--muted-2);
+  white-space: nowrap;
+}
+
+.latency-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  font-size: 13.5px;
+  letter-spacing: 0.3px;
+  color: var(--muted-2);
+}
+
+.latency-stats b {
+  font-weight: 400;
+  color: var(--ink-dim);
+}
+
+.latency-stats b.is-hot {
+  color: var(--lime);
+}
+
+.latency-stats b.is-warn {
+  color: var(--amber);
+}
+
+.latency-stats b.is-danger {
+  color: var(--red);
+}
+
+.latency-spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 26px;
+  padding: 2px;
+  border: 1px solid var(--line-soft);
+  background: rgba(5, 9, 18, 0.7);
+}
+
+.latency-spark i {
+  flex: 1;
+  min-width: 2px;
+  max-width: 9px;
+  background: var(--cyan);
+  opacity: 0.75;
+}
+
+.latency-spark i.is-hot {
+  background: var(--lime);
+  opacity: 0.85;
+}
+
+.latency-spark i.is-warn {
+  background: var(--amber);
+}
+
+.latency-spark i.is-danger {
+  background: var(--red);
+}
+
+.latency-empty {
+  align-self: center;
+  font-size: 13px;
+  letter-spacing: 0.4px;
+  color: var(--muted-2);
+}
+
+.latency-error {
+  font-size: 13px;
+  letter-spacing: 0.3px;
+  color: var(--red);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ═══════════════════════════ ANIMATIONS ═══════════════════════════ */
 @keyframes led-pulse {
   0%, 49% { opacity: 1; }
   50%, 100% { opacity: 0.35; }
@@ -2871,15 +3047,14 @@ textarea.input {
 
 @media (max-width: 1320px) {
   .hud {
-    grid-template-columns: 1.1fr 1fr 1fr;
-  }
-
-  .stat:nth-child(4),
-  .stat:nth-child(5) {
-    grid-column: span 1;
+    grid-template-columns: 1.1fr 1fr 1fr 1.1fr;
   }
 
   .stat.stat-session {
+    grid-column: span 2;
+  }
+
+  .stat.stat-upstream {
     grid-column: span 2;
   }
 
@@ -2941,6 +3116,10 @@ textarea.input {
 
   .stat.stat-session {
     grid-column: span 2;
+  }
+
+  .stat.stat-upstream {
+    grid-column: span 1;
   }
 
   .topbar-clock {
@@ -3011,6 +3190,10 @@ textarea.input {
   }
 
   .stat.stat-session {
+    grid-column: span 2;
+  }
+
+  .stat.stat-upstream {
     grid-column: span 2;
   }
 

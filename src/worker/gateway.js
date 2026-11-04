@@ -17,12 +17,14 @@ function withToken(rawUrl, token) {
  * them as "frame" events, and reconnects with jittered exponential backoff.
  */
 export class RollercoinGateway extends EventEmitter {
-  constructor({ url, getToken, getCookie, logger }) {
+  constructor({ url, getToken, getCookie, logger, latency = null, now = () => Date.now() }) {
     super();
     this.url = url;
     this.getToken = getToken;
     this.getCookie = getCookie;
     this.logger = logger;
+    this.latency = latency;
+    this.now = now;
 
     this.socket = null;
     this.stopped = true;
@@ -39,6 +41,9 @@ export class RollercoinGateway extends EventEmitter {
     this.heartbeatTimer = null;
     this.openTimer = null;
     this.connectGeneration = 0;
+    this.connectStartedAt = null;
+    this.pingSentAt = null;
+    this.lastPingMs = null;
   }
 
   start() {
@@ -117,6 +122,7 @@ export class RollercoinGateway extends EventEmitter {
     const generation = ++this.connectGeneration;
     this.attempts += 1;
     this.status = "connecting";
+    this.connectStartedAt = this.now();
     this.emit("status", this.stats());
     this.logger.info("gateway", `connecting to market feed (${reason})`);
 
@@ -137,6 +143,12 @@ export class RollercoinGateway extends EventEmitter {
     } catch (error) {
       this.lastError = error?.message || String(error);
       this.logger.error("gateway", `could not create socket: ${this.lastError}`);
+      if (this.latency) {
+        this.latency.record("wsHandshake", this.now() - this.connectStartedAt, {
+          ok: false,
+          error: this.lastError
+        });
+      }
       this.#scheduleReconnect();
       return;
     }
@@ -148,6 +160,12 @@ export class RollercoinGateway extends EventEmitter {
       const code = response.statusCode;
       this.lastError = `Handshake rejected with HTTP ${code}`;
       this.logger.warn("gateway", this.lastError);
+      if (this.latency) {
+        this.latency.record("wsHandshake", this.now() - this.connectStartedAt, {
+          ok: false,
+          error: this.lastError
+        });
+      }
       response.resume();
       request.destroy();
       if (code === 401 || code === 403) {
@@ -161,7 +179,10 @@ export class RollercoinGateway extends EventEmitter {
         socket.close(1000, "stale");
         return;
       }
-      this.connectedAt = Date.now();
+      this.connectedAt = this.now();
+      if (this.latency) {
+        this.latency.record("wsHandshake", this.now() - this.connectStartedAt, { ok: true });
+      }
       this.attempts = 0;
       this.reconnects += 1;
       this.lastError = null;
@@ -171,6 +192,7 @@ export class RollercoinGateway extends EventEmitter {
       this.heartbeatTimer = setInterval(() => {
         if (socket.readyState === WebSocket.OPEN) {
           try {
+            this.pingSentAt = this.now();
             socket.ping();
           } catch {
             /* ignore */
@@ -178,6 +200,15 @@ export class RollercoinGateway extends EventEmitter {
         }
       }, HEARTBEAT_MS);
       this.heartbeatTimer.unref?.();
+    });
+
+    socket.on("pong", () => {
+      if (generation !== this.connectGeneration) return;
+      if (this.pingSentAt === null) return;
+      const ms = this.now() - this.pingSentAt;
+      this.pingSentAt = null;
+      this.lastPingMs = ms;
+      if (this.latency) this.latency.record("wsPing", ms, { ok: true });
     });
 
     socket.on("message", (data, isBinary) => {
@@ -206,6 +237,7 @@ export class RollercoinGateway extends EventEmitter {
       this.connectedAt = null;
       if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
+      this.pingSentAt = null;
 
       if (this.stopped) {
         this.#setStatus("stopped");
@@ -213,6 +245,16 @@ export class RollercoinGateway extends EventEmitter {
       }
 
       this.lastError = reason ? `socket closed (${code}: ${reason})` : `socket closed (${code})`;
+      // A close during handshake still consumed upstream time; time it.
+      if (this.connectStartedAt !== null && this.status === "connecting") {
+        if (this.latency) {
+          this.latency.record("wsHandshake", this.now() - this.connectStartedAt, {
+            ok: false,
+            error: this.lastError
+          });
+        }
+        this.connectStartedAt = null;
+      }
       this.#setStatus(code === 4001 ? "auth-error" : "offline");
       this.logger.warn("gateway", this.lastError);
       this.#scheduleReconnect();
@@ -222,6 +264,13 @@ export class RollercoinGateway extends EventEmitter {
       if (generation !== this.connectGeneration) return;
       this.lastError = error?.message || String(error);
       this.logger.warn("gateway", `socket error: ${this.lastError}`);
+      if (this.connectStartedAt !== null && this.status === "connecting" && this.latency) {
+        this.latency.record("wsHandshake", this.now() - this.connectStartedAt, {
+          ok: false,
+          error: this.lastError
+        });
+        this.connectStartedAt = null;
+      }
     });
   }
 
@@ -252,7 +301,8 @@ export class RollercoinGateway extends EventEmitter {
       parseErrors: this.parseErrors,
       commands,
       upstream: new URL(this.url).host,
-      uptimeMs: this.connectedAt ? Date.now() - this.connectedAt : 0
+      uptimeMs: this.connectedAt ? this.now() - this.connectedAt : 0,
+      lastPingMs: this.lastPingMs
     };
   }
 }

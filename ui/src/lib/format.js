@@ -191,3 +191,35 @@ export function mergeHistory(history, point, bucket) {
   }
   return next;
 }
+
+/* ── latency ───────────────────────────────────────────────────────── */
+
+export function formatMs(value) {
+  const number = Number(value);
+  if (value === null || value === undefined || !Number.isFinite(number) || number < 0) return "—";
+  if (number < 1000) return `${Math.round(number)}ms`;
+  return `${(number / 1000).toFixed(2)}s`;
+}
+
+/** Color class for a latency value. */
+export function latencyClass(value) {
+  if (value === null || value === undefined) return "";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "";
+  if (number <= 250) return "is-hot";
+  if (number <= 800) return "";
+  if (number <= 2000) return "is-warn";
+  return "is-danger";
+}
+
+/** Compact sparkline bars for the last N latency samples. */
+export function sparkBars(values, count = 24) {
+  const list = Array.isArray(values) ? values.slice(-count) : [];
+  if (list.length === 0) return [];
+  const max = Math.max(1, ...list);
+  return list.map((value) => {
+    const number = Number(value);
+    const height = Number.isFinite(number) ? Math.max(12, Math.round((number / max) * 100)) : 12;
+    return { value: number, height };
+  });
+}

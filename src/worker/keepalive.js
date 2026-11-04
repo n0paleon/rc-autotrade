@@ -31,7 +31,8 @@ export class KeepaliveService extends EventEmitter {
     random = Math.random,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     suspendMs = DEFAULT_SUSPEND_MS,
-    jitterRatio = 0.1
+    jitterRatio = 0.1,
+    latency = null
   }) {
     super();
     const interval = Number(intervalMs);
@@ -42,6 +43,7 @@ export class KeepaliveService extends EventEmitter {
     this.logger = logger;
     this.dispatcher = dispatcher;
     this.fetchImpl = fetchImpl;
+    this.latency = latency;
     this.shouldProbe = shouldProbe;
     this.now = now;
     this.random = random;
@@ -201,7 +203,7 @@ export class KeepaliveService extends EventEmitter {
     timer.unref?.();
 
     try {
-      const response = await this.fetchImpl(this.url, {
+      const response = await this.#fetch(this.url, {
         method: "GET",
         headers: {
           accept: "application/json",
@@ -271,6 +273,12 @@ export class KeepaliveService extends EventEmitter {
     if (this.consecutiveFailures === 1 || this.consecutiveFailures % 10 === 0) {
       this.logger?.warn("keepalive", `probe failed: ${message} (${this.consecutiveFailures}x)`);
     }
+  }
+
+  /** Upstream probe fetch timed as a `keepalive` latency sample. */
+  #fetch(url, init) {
+    if (!this.latency) return this.fetchImpl(url, init);
+    return this.latency.measure("keepalive", () => this.fetchImpl(url, init), { okFn: () => true });
   }
 
   #lastRealRequestAt() {

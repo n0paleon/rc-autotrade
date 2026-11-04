@@ -372,6 +372,24 @@ Semua request API memakai satu pool keep-alive. Warm probe hanya dikirim bila ti
 nyata dalam ~90% interval, memakai `GET` publik (bukan payload palsu), dan otomatis berhenti
 5 menit bila menerima `403`/`429`.
 
+### Latency worker → upstream
+
+Worker mengukur RTT ke Rollercoin secara pasif di empat channel — tidak ada request tambahan
+yang dikirim hanya untuk pengukuran:
+
+| Channel | Sumber sampel |
+| --- | --- |
+| `HTTP` | Purchase, item-info, token refresh (termasuk yang gagal/timeout) |
+| `WARM PROBE` | Warm probe keepalive (`GET` periodik) |
+| `WS HANDSHAKE` | Koneksi socket market feed (connect → open) |
+| `WS PING` | Ping/pong heartbeat socket market feed (~25 detik sekali) |
+
+Setiap channel menyimpan sampel berjalan (maks 120) dan diekspos sebagai last/avg/p50/p95/min/max/
+jitter + sparkline di tab **LATENCY** control deck (pratinjau ringkas juga ada di HUD). Call yang
+gagal tetap dihitung karena tetap memakai waktu upstream. Tombol **UKUR SEKARANG** menjalankan
+warm probe on-demand via `POST /api/latency/probe`. `DELETE /api/history` menghapus sampel latency
+bersama statistik lainnya.
+
 `HOST=0.0.0.0` memungkinkan akses dari LAN. Jangan lakukan itu tanpa firewall/TLS, dan ingat
 control deck memegang kredensial Rollercoin.
 
@@ -402,7 +420,9 @@ Authorization: Bearer <access-key>
 | `POST` | `/api/session/push` | Endpoint bridge (CORS); balas token terbaru |
 | `POST` | `/api/session/refresh` | Refresh paksa |
 | `POST` | `/api/auth/rotate` | Rotasi access key (409 bila dipin env) |
-| `DELETE` | `/api/history` | Reset profit, counter, dan loot log |
+| `GET` | `/api/latency` | Statistik latency worker → upstream per channel (HTTP, warm probe, WS handshake, WS ping) |
+| `POST` | `/api/latency/probe` | Jalankan warm probe sekarang dan balas sampel baru |
+| `DELETE` | `/api/history` | Reset profit, counter, loot log, dan sampel latency |
 
 Error validasi memakai status `422` dan `fields`, misalnya:
 
@@ -422,7 +442,7 @@ Error validasi memakai status `422` dan `fields`, misalnya:
 - Auth: subprotocol `rcw.v1, <access-key>` (fallback query `?token=...`)
 - Client boleh mengirim `{ "type": "ping", "t": 123 }`; server membalas `{ "type": "pong", ... }`.
 - Event server: `hello`, `snapshot`, `log`, `market`, `order`, `history`, `stats`, `session`,
-  `gateway`, `settings`, `configs`, `history-cleared`.
+  `gateway`, `settings`, `configs`, `latency`, `history-cleared`.
 - `order.phase`: `submitted`, `accepted`, `filled`, `failed`, `dry`.
 - `market` membawa `price`, `stock`, `targetPrice`, `hot`, `at`.
 

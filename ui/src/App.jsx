@@ -27,7 +27,10 @@ import {
   shortId,
   stateLabel,
   successStats,
-  drawPixelAvatar
+  drawPixelAvatar,
+  formatMs,
+  latencyClass,
+  sparkBars
 } from "./lib/format.js";
 import { sound } from "./lib/sound.js";
 
@@ -307,6 +310,8 @@ function Hud({ snapshot, now, eps }) {
   const stats = snapshot.stats || {};
   const configs = snapshot.configs || [];
   const gateway = snapshot.gateway || {};
+  const latency = snapshot.latency || {};
+  const fresh = latency.freshest || null;
   const hot = configs.filter((config) => runtimeHot(config)).length;
   const armed = configs.filter((config) => config.active).length;
   const session = sessionSummary(snapshot.session, snapshot.settings, snapshot.worker, now);
@@ -339,6 +344,15 @@ function Hud({ snapshot, now, eps }) {
         <div className="stat-value stat-value-sm" id="stat-session">{session.value}</div>
         <div className="meter meter-thin"><i id="stat-session-meter" className={session.cls} style={{ width: `${session.width}%` }} /></div>
         <div className="stat-sub" id="stat-session-sub">{session.sub}</div>
+      </article>
+      <article className="stat stat-upstream">
+        <div className="stat-top"><span className="stat-label">UPSTREAM</span><Icon name="i-wifi" className="icon stat-icon" /></div>
+        <div className={`stat-value ${fresh ? latencyClass(fresh.last) : ""}`} id="stat-upstream">
+          {fresh ? formatMs(fresh.last) : "—"}
+        </div>
+        <div className="stat-sub" id="stat-upstream-sub">
+          {fresh ? `${fresh.channel.toUpperCase()} · ${relTime(fresh.lastAt)}` : "NO SAMPLES YET"}
+        </div>
       </article>
     </section>
   );
@@ -815,7 +829,107 @@ function LinkPanel({ snapshot, now, worker, notify, onEditSession, onBridge, onC
   );
 }
 
-function ConfigPanel({ snapshot, worker, notify, onReset, onReconnect, baseUrl }) {
+function LatencyChannel({ label, stats }) {
+  const bars = sparkBars(stats?.recent || []);
+  const count = stats?.count || 0;
+  return (
+    <div className="latency-row">
+      <div className="latency-head">
+        <span className="latency-label">{label}</span>
+        <span className={`latency-value ${latencyClass(stats?.last)}`}>{formatMs(stats?.last)}</span>
+        <span className="latency-count">{formatInt(count)} SAMPLES</span>
+      </div>
+      <div className="latency-stats">
+        <span>AVG <b>{formatMs(stats?.avg)}</b></span>
+        <span>P50 <b>{formatMs(stats?.p50)}</b></span>
+        <span>P95 <b className={latencyClass(stats?.p95)}>{formatMs(stats?.p95)}</b></span>
+        <span>MIN <b>{formatMs(stats?.min)}</b></span>
+        <span>MAX <b>{formatMs(stats?.max)}</b></span>
+        <span>JITTER <b>{formatMs(stats?.jitter)}</b></span>
+      </div>
+      <div className="latency-spark" aria-hidden="true">
+        {bars.length === 0 ? (
+          <span className="latency-empty">NO SAMPLES YET — BUY SOMETHING OR RUN A PROBE</span>
+        ) : (
+          bars.map((bar, index) => (
+            <i
+              key={index}
+              className={latencyClass(bar.value)}
+              style={{ height: `${bar.height}%` }}
+              title={`${formatMs(bar.value)}`}
+            />
+          ))
+        )}
+      </div>
+      {stats?.errors > 0 ? (
+        <span className="latency-error">{formatInt(stats.errors)} ERRORS · {stats.lastError || "—"}</span>
+      ) : null}
+    </div>
+  );
+}
+
+function ConfigPanel({ snapshot, worker, notify }) {
+  const latency = snapshot.latency || {};
+  const channels = latency.channels || {};
+  const fresh = latency.freshest || null;
+  const channelOrder = ["http", "keepalive", "wsHandshake", "wsPing"];
+  const channelLabels = {
+    http: "HTTP",
+    keepalive: "WARM PROBE",
+    wsHandshake: "WS HANDSHAKE",
+    wsPing: "WS PING"
+  };
+  const [probing, setProbing] = useState(false);
+  const runProbe = async () => {
+    setProbing(true);
+    try {
+      const result = await worker.refreshLatency();
+      if (result?.probe?.skipped) {
+        notify("info", "PROBE SKIPPED", "Keepalive probe is disabled (or mock mode).");
+      } else if (result?.probe?.ok) {
+        notify("success", "PROBE DONE", "Fresh upstream sample recorded.");
+      } else {
+        notify("warn", "PROBE FAILED", result?.probe?.error || "No response from upstream.");
+      }
+    } catch (error) {
+      notify("error", "PROBE FAILED", error.message);
+    } finally {
+      setProbing(false);
+    }
+  };
+
+  return (
+    <section className="panel tab-panel is-active">
+      <div className="panel-head"><h2><Icon name="i-wifi" /> UPSTREAM LATENCY</h2></div>
+      <div className="panel-body">
+        <div className="latency-panel">
+          <div className="latency-panel-head">
+            <span className="latency-panel-title">
+              <Icon name="i-wifi" className="icon icon-xs" /> WORKER → UPSTREAM
+            </span>
+            <button className="btn btn-sm" type="button" onClick={runProbe} disabled={probing}>
+              {probing ? "PROBING…" : "UKUR SEKARANG"}
+            </button>
+          </div>
+          <p className="latency-note">
+            {fresh
+              ? `Freshest: ${fresh.channel.toUpperCase()} ${formatMs(fresh.last)} · ${relTime(fresh.lastAt)}`
+              : "Passive — samples appear as the worker talks to Rollercoin."}
+          </p>
+          {channelOrder.map((key) => (
+            <LatencyChannel key={key} label={channelLabels[key]} stats={channels[key] || { count: 0, recent: [] }} />
+          ))}
+          <p className="latency-note">
+            HTTP covers purchases, item-info &amp; token refresh. Warm probe is the keepalive GET. WS handshake/ping
+            cover the market feed. Failures still count — they used upstream time.
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, baseUrl }) {
   const settings = snapshot.settings || {};
   const [delay, setDelay] = useState(String(settings.delayPerOrder ?? 200));
   const [maxOrders, setMaxOrders] = useState(String(settings.maxOrdersPerMinute ?? 60));
@@ -908,7 +1022,8 @@ function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSes
   const tabs = [
     { id: "feed", label: "FEED" },
     { id: "link", label: "LINK" },
-    { id: "config", label: "CONFIG" }
+    { id: "config", label: "CONFIG" },
+    { id: "latency", label: "LATENCY" }
   ];
   return (
     <aside className="side-col">
@@ -940,13 +1055,20 @@ function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSes
         />
       ) : null}
       {tab === "config" ? (
-        <ConfigPanel
+        <RuntimeConfigPanel
           snapshot={snapshot}
           worker={worker}
           notify={notify}
           onReset={onReset}
           onReconnect={onReconnect}
           baseUrl={baseUrl}
+        />
+      ) : null}
+      {tab === "latency" ? (
+        <ConfigPanel
+          snapshot={snapshot}
+          worker={worker}
+          notify={notify}
         />
       ) : null}
     </aside>

@@ -19,6 +19,9 @@ async function readJsonResponse(response) {
  * Thin Rollercoin HTTP client. The worker is intentionally stateless here:
  * cookies and bearer tokens come from the SessionManager so a token rotation
  * only has to happen in one place.
+ *
+ * Every call is timed as a `http` latency sample (including failed calls,
+ * which still consumed upstream time) via the injected LatencyTracker.
  */
 export class RollercoinApi {
   constructor({
@@ -27,7 +30,8 @@ export class RollercoinApi {
     logger,
     timeoutMs = 15_000,
     dispatcher = null,
-    fetchImpl = httpFetch
+    fetchImpl = httpFetch,
+    latency = null
   }) {
     this.baseUrl = baseUrl;
     this.session = session;
@@ -35,6 +39,7 @@ export class RollercoinApi {
     this.timeoutMs = timeoutMs;
     this.dispatcher = dispatcher;
     this.fetchImpl = fetchImpl;
+    this.latency = latency;
     this.lastRequestAt = 0;
   }
 
@@ -45,6 +50,12 @@ export class RollercoinApi {
 
   #touch() {
     this.lastRequestAt = Date.now();
+  }
+
+  /** Upstream fetch timed as an `http` latency sample (settles even on timeout). */
+  #fetch(url, init) {
+    if (!this.latency) return this.fetchImpl(url, init);
+    return this.latency.measure("http", () => this.fetchImpl(url, init), { okFn: () => true });
   }
 
   #headers({ json = true } = {}) {
@@ -69,7 +80,7 @@ export class RollercoinApi {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await this.fetchImpl(url, {
+      const response = await this.#fetch(url, {
         method,
         headers: this.#headers(),
         body: body === undefined ? undefined : JSON.stringify(body),
@@ -157,7 +168,7 @@ export class RollercoinApi {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8_000);
     try {
-      const response = await this.fetchImpl(url, {
+      const response = await this.#fetch(url, {
         method: "GET",
         headers: this.#headers(),
         signal: controller.signal,
@@ -212,7 +223,7 @@ export class RollercoinApi {
       // The access token is allowed to be expired here; the refresh token and
       // Cloudflare cookie are the credentials that matter.
       delete headers.authorization;
-      const response = await this.fetchImpl(url, {
+      const response = await this.#fetch(url, {
         method: "POST",
         headers,
         body: JSON.stringify({ refresh_token: refreshToken }),
