@@ -53,14 +53,7 @@ export class RollercoinGateway extends EventEmitter {
     this.connectGeneration += 1;
     const socket = this.socket;
     this.socket = null;
-    if (socket) {
-      try {
-        socket.removeAllListeners();
-        socket.close(1000, "worker shutdown");
-      } catch {
-        /* ignore */
-      }
-    }
+    this.#closeSocket(socket, "worker shutdown");
     this.#setStatus("stopped");
   }
 
@@ -72,16 +65,26 @@ export class RollercoinGateway extends EventEmitter {
     this.connectGeneration += 1;
     const socket = this.socket;
     this.socket = null;
-    if (socket) {
-      try {
-        socket.removeAllListeners();
-        socket.close(1000, "reconnect");
-      } catch {
-        /* ignore */
-      }
-    }
+    this.#closeSocket(socket, "reconnect");
     this.#setStatus("connecting");
     this.openTimer = setTimeout(() => this.#connect(reason), 150);
+  }
+
+  #closeSocket(socket, reason) {
+    if (!socket) return;
+    try {
+      socket.removeAllListeners();
+      // ws emits an "error" event when close()/terminate() races the opening
+      // handshake. Keep a no-op listener so shutdown never becomes uncaught.
+      socket.on("error", () => {});
+      if (socket.readyState === WebSocket.CONNECTING) {
+        socket.terminate();
+      } else {
+        socket.close(1000, reason);
+      }
+    } catch {
+      /* ignore */
+    }
   }
 
   #clearTimers() {
