@@ -239,10 +239,10 @@ export function latencyClass(value) {
   if (value === null || value === undefined) return "";
   const number = Number(value);
   if (!Number.isFinite(number)) return "";
-  if (number <= 250) return "is-hot";
-  if (number <= 800) return "";
-  if (number <= 2000) return "is-warn";
-  return "is-danger";
+  if (number <= 250) return "text-signal";
+  if (number <= 800) return "text-ink-dim";
+  if (number <= 2000) return "text-warn";
+  return "text-danger";
 }
 
 /** Compact sparkline bars for the last N latency samples. */

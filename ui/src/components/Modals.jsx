@@ -24,9 +24,9 @@ export async function copyText(text) {
   }
 }
 
-function FieldError({ message }) {
+function FieldError({ id, message }) {
   if (!message) return null;
-  return <em className="field-error">{message}</em>;
+  return <em id={id} className="field-error" role="alert">{message}</em>;
 }
 
 function ToggleRow({ checked, onChange, title, hint, disabled = false }) {
@@ -36,7 +36,7 @@ function ToggleRow({ checked, onChange, title, hint, disabled = false }) {
         {title}
         <small>{hint}</small>
       </span>
-      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} hidden disabled={disabled} />
+      <input type="checkbox" className="sr-only" checked={checked} onChange={(event) => onChange(event.target.checked)} disabled={disabled} />
       <span className="switch" aria-hidden="true" />
     </label>
   );
@@ -187,52 +187,73 @@ export function TargetModal({ config, onClose, worker, notify }) {
   };
 
   return (
-    <ModalShell title={editing ? "EDIT TARGET" : "DEPLOY TARGET"} onClose={onClose}>
-      <form className="modal-body" noValidate autoComplete="off" onSubmit={submit}>
-        <div className="form-grid">
-          <label className="field span-2">
-            <span>ITEM ID / MARKETPLACE URL</span>
+    <ModalShell
+      title={editing ? "Edit target" : "Deploy target"}
+      onClose={onClose}
+      footer={
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button className="btn" type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" type="submit" form="target-form" disabled={busy}>
+            {busy ? (editing ? "Saving…" : "Deploying…") : editing ? "Save target" : "Deploy target"}
+          </button>
+        </div>
+      }
+    >
+      <form id="target-form" className="modal-body" noValidate autoComplete="off" onSubmit={submit}>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="field sm:col-span-2">
+            <span>Item ID / marketplace URL</span>
             <input
-              className={`input${errors.itemId ? " is-invalid" : ""}`}
+              className={`input${errors.itemId ? " border-danger/60" : ""}`}
               name="itemId"
               value={itemId}
               onChange={(event) => setItemId(event.target.value)}
-              placeholder="6571aa39ca8bfef34adcd9e9"
+              placeholder="Paste item ID or marketplace URL"
               readOnly={editing}
               spellCheck="false"
+              aria-invalid={Boolean(errors.itemId)}
+              aria-describedby={errors.itemId ? "target-itemId-error" : undefined}
               required
             />
             <small>Paste the ID or the full Rollercoin marketplace URL. The label is resolved automatically.</small>
-            <FieldError message={errors.itemId} />
+            <FieldError id="target-itemId-error" message={errors.itemId} />
           </label>
 
-          <div className="auto-label span-2" data-auto-label data-state={auto.state}>
-            <div className="auto-label-head">
-              <span>AUTO LABEL</span>
-              <span className="auto-label-side">
+          <div className="auto-label sm:col-span-2" data-auto-label data-state={auto.state}>
+            <div className="flex items-center justify-between gap-2">
+              <span className="label">Auto label</span>
+              <span className="flex items-center gap-2">
                 {auto.rarity ? (
                   <span
-                    className="auto-label-rarity"
-                    style={auto.color ? { "--rarity": `#${auto.color}` } : undefined}
+                    className="rounded border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.08em]"
+                    style={auto.color ? { borderColor: `#${auto.color}`, color: `#${auto.color}` } : undefined}
                   >
                     {auto.rarity}
                   </span>
                 ) : null}
                 {auto.state === "warn" ? (
-                  <button className="auto-label-retry" type="button" onClick={() => lookupRef.current?.()}>
-                    RETRY
+                  <button
+                    className="font-mono text-[9px] uppercase tracking-[0.1em] text-warn underline-offset-2 hover:underline"
+                    type="button"
+                    onClick={() => lookupRef.current?.()}
+                  >
+                    Retry
                   </button>
                 ) : null}
               </span>
             </div>
-            <strong>{auto.label}</strong>
-            <small>From Rollercoin item-info: rarity + item name. Falls back to the item name when rarity is absent.</small>
+            <strong className="mt-1 block text-[13px] font-medium text-ink">{auto.label}</strong>
+            <small className="mt-0.5 block text-[11px] leading-snug text-faint">
+              From Rollercoin item-info: rarity + item name. Falls back to the item name when rarity is absent.
+            </small>
           </div>
 
           <label className="field">
-            <span>TARGET PRICE (RLT)</span>
+            <span>Target price (RLT)</span>
             <input
-              className={`input${errors.targetPrice ? " is-invalid" : ""}`}
+              className={`input${errors.targetPrice ? " border-danger/60" : ""}`}
               name="targetPrice"
               value={targetPrice}
               onChange={(event) => setTargetPrice(event.target.value)}
@@ -241,15 +262,17 @@ export function TargetModal({ config, onClose, worker, notify }) {
               step="0.000001"
               min="0.000001"
               placeholder="e.g. 0.100000"
+              aria-invalid={Boolean(errors.targetPrice)}
+              aria-describedby={errors.targetPrice ? "target-price-error" : undefined}
               required
             />
             <small>Never pay more than this per item.</small>
-            <FieldError message={errors.targetPrice} />
+            <FieldError id="target-price-error" message={errors.targetPrice} />
           </label>
           <label className="field">
-            <span>DESIRED QTY</span>
+            <span>Desired qty</span>
             <input
-              className={`input${errors.desiredQty ? " is-invalid" : ""}`}
+              className={`input${errors.desiredQty ? " border-danger/60" : ""}`}
               name="desiredQty"
               value={desiredQty}
               onChange={(event) => setDesiredQty(event.target.value)}
@@ -259,14 +282,16 @@ export function TargetModal({ config, onClose, worker, notify }) {
               min="1"
               max="10000"
               placeholder="e.g. 10"
+              aria-invalid={Boolean(errors.desiredQty)}
+              aria-describedby={errors.desiredQty ? "target-qty-error" : undefined}
               required
             />
-            <FieldError message={errors.desiredQty} />
+            <FieldError id="target-qty-error" message={errors.desiredQty} />
           </label>
           <label className="field">
-            <span>HIGH STOCK THRESHOLD</span>
+            <span>High stock threshold</span>
             <input
-              className={`input${errors.highStockThreshold ? " is-invalid" : ""}`}
+              className={`input${errors.highStockThreshold ? " border-danger/60" : ""}`}
               name="highStockThreshold"
               value={highStockThreshold}
               onChange={(event) => setHighStockThreshold(event.target.value)}
@@ -275,15 +300,17 @@ export function TargetModal({ config, onClose, worker, notify }) {
               step="1"
               min="1"
               placeholder="e.g. 20"
+              aria-invalid={Boolean(errors.highStockThreshold)}
+              aria-describedby={errors.highStockThreshold ? "target-high-error" : undefined}
               required
             />
             <small>At or above this stock, order qty doubles.</small>
-            <FieldError message={errors.highStockThreshold} />
+            <FieldError id="target-high-error" message={errors.highStockThreshold} />
           </label>
           <label className="field">
-            <span>MIN ACCEPTABLE QTY</span>
+            <span>Min acceptable qty</span>
             <input
-              className={`input${errors.minAcceptableQty ? " is-invalid" : ""}`}
+              className={`input${errors.minAcceptableQty ? " border-danger/60" : ""}`}
               name="minAcceptableQty"
               value={minAcceptableQty}
               onChange={(event) => setMinAcceptableQty(event.target.value)}
@@ -292,38 +319,33 @@ export function TargetModal({ config, onClose, worker, notify }) {
               step="1"
               min="1"
               placeholder="e.g. 1"
+              aria-invalid={Boolean(errors.minAcceptableQty)}
+              aria-describedby={errors.minAcceptableQty ? "target-min-error" : undefined}
               required
             />
             <small>Partial fills below this are skipped.</small>
-            <FieldError message={errors.minAcceptableQty} />
+            <FieldError id="target-min-error" message={errors.minAcceptableQty} />
           </label>
           <div className="field">
-            <span>MAX SPEND PER FILL</span>
+            <span>Max spend per fill</span>
             <output className="output-box">{maxSpend}</output>
             <small>Target price × doubled quantity ceiling.</small>
           </div>
         </div>
 
-        <ToggleRow
-          checked={allowPartialOrder}
-          onChange={setAllowPartialOrder}
-          title="ALLOW PARTIAL ORDER"
-          hint="Buy whatever is available above the minimum."
-        />
-        <ToggleRow
-          checked={active}
-          onChange={setActive}
-          title="ARM TARGET"
-          hint="Start hunting as soon as it is saved."
-        />
-
-        <div className="modal-actions">
-          <button className="btn" type="button" onClick={onClose}>
-            CANCEL
-          </button>
-          <button className="btn btn-primary" type="submit" disabled={busy}>
-            {busy ? (editing ? "SAVING…" : "DEPLOYING…") : editing ? "SAVE TARGET" : "DEPLOY TARGET"}
-          </button>
+        <div className="space-y-2">
+          <ToggleRow
+            checked={allowPartialOrder}
+            onChange={setAllowPartialOrder}
+            title="Allow partial order"
+            hint="Buy whatever is available above the minimum."
+          />
+          <ToggleRow
+            checked={active}
+            onChange={setActive}
+            title="Arm target"
+            hint="Start hunting as soon as it is saved."
+          />
         </div>
       </form>
     </ModalShell>
@@ -369,53 +391,72 @@ export function SessionModal({ session, onClose, worker, notify }) {
   };
 
   return (
-    <ModalShell title="LINK ROLLERCOIN SESSION" onClose={onClose}>
-      <form className="modal-body" noValidate autoComplete="off" onSubmit={submit}>
-        <p className="muted small">
-          Grab the tokens from a logged-in rollercoin.com tab: DevTools → Application → Local
-          Storage → <code>token</code> and <code>refreshToken</code>. The browser bridge can keep
-          them in sync automatically.
+    <ModalShell
+      title="Link Rollercoin session"
+      onClose={onClose}
+      footer={
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <button className="btn" type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" type="submit" form="session-form" disabled={busy}>
+            {busy ? "Saving…" : "Save session"}
+          </button>
+        </div>
+      }
+    >
+      <form id="session-form" className="modal-body" noValidate autoComplete="off" onSubmit={submit}>
+        <p className="text-[12px] leading-relaxed text-muted">
+          Grab the tokens from a logged-in rollercoin.com tab: DevTools → Application → Local Storage →{" "}
+          <code className="text-ink-dim">token</code> and <code className="text-ink-dim">refreshToken</code>. The
+          browser bridge can keep them in sync automatically.
         </p>
         <label className="field">
-          <span>ACCESS TOKEN</span>
+          <span>Access token</span>
           <textarea
             className="input"
             rows="3"
             value={accessToken}
             onChange={(event) => setAccessToken(event.target.value)}
             spellCheck="false"
+            aria-invalid={Boolean(errors.accessToken)}
+            aria-describedby={errors.accessToken ? "session-access-error" : undefined}
             placeholder={
               session.hasAccessToken
                 ? `Current ${session.accessPreview || "token"} — leave blank to keep`
                 : "Paste the Rollercoin access token"
             }
           />
-          <FieldError message={errors.accessToken} />
+          <FieldError id="session-access-error" message={errors.accessToken} />
         </label>
         <label className="field">
-          <span>REFRESH TOKEN</span>
+          <span>Refresh token</span>
           <textarea
             className="input"
             rows="2"
             value={refreshToken}
             onChange={(event) => setRefreshToken(event.target.value)}
             spellCheck="false"
+            aria-invalid={Boolean(errors.refreshToken)}
+            aria-describedby={errors.refreshToken ? "session-refresh-error" : undefined}
             placeholder={
               session.hasRefreshToken
                 ? `Current ${session.refreshPreview || "token"} — leave blank to keep`
                 : "Paste the refresh token"
             }
           />
-          <FieldError message={errors.refreshToken} />
+          <FieldError id="session-refresh-error" message={errors.refreshToken} />
         </label>
         <label className="field">
-          <span>CLOUDFLARE COOKIE <small className="inline-hint">OPTIONAL</small></span>
+          <span>Cloudflare cookie (optional)</span>
           <textarea
             className="input"
             rows="2"
             value={cookie}
             onChange={(event) => setCookie(event.target.value)}
             spellCheck="false"
+            aria-invalid={Boolean(errors.cookie)}
+            aria-describedby={errors.cookie ? "session-cookie-error" : undefined}
             placeholder={
               session.hasCookie
                 ? "A cookie is stored — leave blank to keep it"
@@ -423,24 +464,16 @@ export function SessionModal({ session, onClose, worker, notify }) {
             }
           />
           <small>Only needed if Rollercoin rejects API calls with a Cloudflare challenge.</small>
-          <FieldError message={errors.cookie} />
+          <FieldError id="session-cookie-error" message={errors.cookie} />
         </label>
         {session.hasCookie ? (
           <ToggleRow
             checked={clearCookie}
             onChange={setClearCookie}
-            title="CLEAR STORED COOKIE"
+            title="Clear stored cookie"
             hint="Remove the saved Cloudflare cookie without touching the tokens."
           />
         ) : null}
-        <div className="modal-actions">
-          <button className="btn" type="button" onClick={onClose}>
-            CANCEL
-          </button>
-          <button className="btn btn-primary" type="submit" disabled={busy}>
-            {busy ? "SAVING…" : "SAVE SESSION"}
-          </button>
-        </div>
       </form>
     </ModalShell>
   );
@@ -543,26 +576,30 @@ export function BridgeModal({ onClose, getConnection, notify }) {
   };
 
   return (
-    <ModalShell title="TOKEN BRIDGE" onClose={onClose} wide>
+    <ModalShell title="Token bridge" onClose={onClose} wide>
       <div className="modal-body">
-        <div className="bridge-mode" role="tablist" aria-label="Bridge mode">
+        <div className="grid grid-cols-2 gap-1 rounded-lg border border-line bg-carbon-900 p-1" role="tablist" aria-label="Bridge mode">
           <button
             type="button"
             role="tab"
             aria-selected={mode === "console"}
-            className={`bridge-mode-btn${mode === "console" ? " is-active" : ""}`}
+            className={`rounded-md px-2 py-1.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em] transition-colors ${
+              mode === "console" ? "bg-carbon-800 text-signal" : "text-muted hover:bg-carbon-850 hover:text-ink"
+            }`}
             onClick={() => setMode("console")}
           >
-            CONSOLE SNIPPET
+            Console snippet
           </button>
           <button
             type="button"
             role="tab"
             aria-selected={mode === "userscript"}
-            className={`bridge-mode-btn${mode === "userscript" ? " is-active" : ""}`}
+            className={`rounded-md px-2 py-1.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em] transition-colors ${
+              mode === "userscript" ? "bg-carbon-800 text-signal" : "text-muted hover:bg-carbon-850 hover:text-ink"
+            }`}
             onClick={() => setMode("userscript")}
           >
-            USERSCRIPT · AUTO
+            Userscript · auto
           </button>
         </div>
 
@@ -581,44 +618,50 @@ export function BridgeModal({ onClose, getConnection, notify }) {
           </ol>
         )}
 
-        <div className="code-wrap">
+        <div className="space-y-2">
           <pre className="code-block"><code>{code || (error || "Loading bridge…")}</code></pre>
-          <div className="bridge-actions">
+          <div className="flex flex-wrap gap-2">
             <button className="btn btn-primary btn-sm" type="button" onClick={copy}>
-              <Icon name="i-copy" className="icon icon-xs" />
-              {mode === "console" ? "COPY SNIPPET" : "COPY USERSCRIPT"}
+              <Icon name="i-copy" className="h-3 w-3" />
+              {mode === "console" ? "Copy snippet" : "Copy userscript"}
             </button>
             {mode === "userscript" ? (
               <button className="btn btn-ghost btn-sm" type="button" onClick={download}>
-                <Icon name="i-download" className="icon icon-xs" />
-                DOWNLOAD .USER.JS
+                <Icon name="i-download" className="h-3 w-3" />
+                Download .user.js
               </button>
             ) : null}
           </div>
         </div>
 
         {mode === "console" ? (
-          <p className="hint">
-            <Icon name="i-alert" className="icon icon-xs" />
-            Console mode uses the page's <code>fetch</code>, so Rollercoin's CSP or browser privacy
-            rules can block localhost with a CORS error. If that happens, switch to USERSCRIPT ·
-            AUTO. It also must be pasted again after a reload.
+          <p className="flex items-start gap-2 text-[11px] leading-relaxed text-faint">
+            <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
+            <span>
+              Console mode uses the page's <code className="text-ink-dim">fetch</code>, so Rollercoin's CSP or
+              browser privacy rules can block localhost with a CORS error. If that happens, switch to
+              Userscript · auto. It also must be pasted again after a reload.
+            </span>
           </p>
         ) : (
-          <p className="hint">
-            <Icon name="i-check" className="icon icon-xs" />
-            Userscript mode uses <code>GM_xmlhttpRequest</code>, which bypasses page CORS/CSP.
-            Install it once; after that you only need the worker running and a logged-in Rollercoin
-            tab. Regenerate it if you rotate the access key.
+          <p className="flex items-start gap-2 text-[11px] leading-relaxed text-faint">
+            <Icon name="i-check" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-signal" />
+            <span>
+              Userscript mode uses <code className="text-ink-dim">GM_xmlhttpRequest</code>, which bypasses page CORS
+              and CSP. Install it once; after that you only need the worker running and a logged-in Rollercoin tab.
+              Regenerate it if you rotate the access key.
+            </span>
           </p>
         )}
-        <p className="hint">
-          <Icon name="i-alert" className="icon icon-xs" />
-          Both variants contain this deck's access key. Keep them private and never paste them into
-          a public gist or chat.
+        <p className="flex items-start gap-2 text-[11px] leading-relaxed text-faint">
+          <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
+          <span>
+            Both variants contain this deck's access key. Keep them private and never paste them into a public gist
+            or chat.
+          </span>
         </p>
-        <div className="modal-actions">
-          <button className="btn" type="button" onClick={onClose}>CLOSE</button>
+        <div className="flex justify-end">
+          <button className="btn" type="button" onClick={onClose}>Close</button>
         </div>
       </div>
     </ModalShell>
@@ -627,11 +670,11 @@ export function BridgeModal({ onClose, getConnection, notify }) {
 
 export function ConfirmModal({ title, message, confirmLabel = "CONFIRM", danger = true, onConfirm, onCancel }) {
   return (
-    <ModalShell title={title} onClose={onCancel} small role="alertdialog">
+    <ModalShell title={title} onClose={onCancel} small role="alertdialog" titleColor={danger ? "danger" : "lime"}>
       <div className="modal-body">
-        <p className="confirm-message">{message}</p>
-        <div className="modal-actions">
-          <button className="btn" type="button" onClick={onCancel}>CANCEL</button>
+        <p className="text-[13px] leading-relaxed text-muted">{message}</p>
+        <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">
+          <button className="btn" type="button" onClick={onCancel} data-autofocus>Cancel</button>
           <button className={`btn ${danger ? "btn-danger" : "btn-primary"}`} type="button" onClick={onConfirm}>
             {confirmLabel}
           </button>
@@ -643,15 +686,15 @@ export function ConfirmModal({ title, message, confirmLabel = "CONFIRM", danger 
 
 export function KeyModal({ token, onClose, notify }) {
   return (
-    <ModalShell title="NEW ACCESS KEY" onClose={onClose}>
+    <ModalShell title="New access key" onClose={onClose}>
       <div className="modal-body">
-        <p className="muted">
-          The old key is dead and open control sockets were revoked. Save this key — it is shown once.
+        <p className="text-[12px] leading-relaxed text-muted">
+          The old key is dead and open control sockets were revoked. Save this key. It is shown once.
         </p>
         <div className="key-box">
           <code>{token}</code>
           <button
-            className="icon-btn"
+            className="icon-btn h-8 w-8 shrink-0"
             type="button"
             aria-label="Copy new access key"
             onClick={async () => {
@@ -662,13 +705,15 @@ export function KeyModal({ token, onClose, notify }) {
             <Icon name="i-copy" />
           </button>
         </div>
-        <p className="hint">
-          <Icon name="i-alert" className="icon icon-xs" />
-          This deck reconnects automatically. Other browser tabs must paste the new key. If you
-          installed the Token Bridge userscript, regenerate and reinstall it with this key.
+        <p className="flex items-start gap-2 text-[11px] leading-relaxed text-faint">
+          <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
+          <span>
+            This deck reconnects automatically. Other browser tabs must paste the new key. If you installed the
+            Token Bridge userscript, regenerate and reinstall it with this key.
+          </span>
         </p>
-        <div className="modal-actions">
-          <button className="btn btn-primary" type="button" onClick={onClose}>I SAVED IT</button>
+        <div className="flex justify-end">
+          <button className="btn btn-primary" type="button" onClick={onClose}>I saved it</button>
         </div>
       </div>
     </ModalShell>
