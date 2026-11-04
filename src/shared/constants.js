@@ -11,6 +11,9 @@ export const PRICE_SCALE = 1_000_000;
 /** How many confirmed/failed orders we keep in the loot log. */
 export const MAX_HISTORY = 200;
 
+/** Upper bound for the persistent per-product profit report. */
+export const MAX_REPORT_PRODUCTS = 500;
+
 /** How many log lines are buffered for clients that connect late. */
 export const LOG_BUFFER_SIZE = 250;
 

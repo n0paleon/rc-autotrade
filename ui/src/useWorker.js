@@ -197,6 +197,9 @@ export function useWorker({ notify }) {
         case "stats":
           setSnapshot((previous) => (previous ? { ...previous, stats: data } : previous));
           break;
+        case "report":
+          setSnapshot((previous) => (previous ? { ...previous, report: data } : previous));
+          break;
         case "session":
           setSnapshot((previous) => (previous ? { ...previous, session: data } : previous));
           break;
@@ -226,7 +229,9 @@ export function useWorker({ notify }) {
           }
           break;
         case "history-cleared":
-          setSnapshot((previous) => (previous ? { ...previous, history: [] } : previous));
+          setSnapshot((previous) =>
+            previous ? { ...previous, history: [], report: { since: Date.now(), items: [], totals: null } } : previous
+          );
           break;
         default:
           break;

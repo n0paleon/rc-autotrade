@@ -15,6 +15,7 @@ import {
   cardState,
   fixedPrice,
   formatCountdown,
+  formatDate,
   formatInt,
   formatRlt,
   formatSignedRlt,
@@ -457,12 +458,16 @@ function Hud({ snapshot, now, eps }) {
   );
 }
 
-function TargetCard({ config, onEdit, onDelete, onToggle, notify }) {
+function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
   const canvasRef = useRef(null);
   const [toggling, setToggling] = useState(false);
   const runtime = config.runtime || {};
   const state = cardState(config);
   const stats = successStats(config);
+  const productProfit = Number(product?.profitRlt) || 0;
+  const productFills = Number(product?.fills) || 0;
+  const productQty = Number(product?.qty) || 0;
+  const productMargin = product?.marginPct;
   const label = config.label || runtime.label || `ITEM ${shortId(config.itemId)}`;
   const itemType = itemTypeOf(config);
   const hot = runtimeHot(config);
@@ -573,6 +578,24 @@ function TargetCard({ config, onEdit, onDelete, onToggle, notify }) {
             <span className="font-mono text-[8px] text-faint min-[360px]:text-[9px]">RLT</span>
           </div>
         </div>
+        <div
+          className="col-span-2 flex items-center justify-between gap-3 bg-carbon-950/60 px-2.5 py-2 sm:px-3"
+          title="All-time profit for this product: (target price − buy price) × qty. Persisted across worker restarts and loot-log rotation."
+        >
+          <div className="min-w-0">
+            <span className="label">Profit · all time</span>
+            <div className="mt-0.5 flex items-baseline gap-1">
+              <strong className={`font-mono text-[17px] font-semibold leading-none tabular-nums min-[360px]:text-[19px] ${profitClass(productProfit)}`}>
+                {formatSignedRlt(productProfit)}
+              </strong>
+              <span className="font-mono text-[8px] text-faint min-[360px]:text-[9px]">RLT</span>
+            </div>
+          </div>
+          <div className="shrink-0 text-right font-mono text-[9px] uppercase leading-relaxed tracking-[0.08em] text-faint">
+            <p>{formatInt(productFills)} fills · {formatInt(productQty)} qty</p>
+            <p className="mt-0.5">{percentText(productMargin)} margin</p>
+          </div>
+        </div>
       </div>
 
       <div
@@ -645,7 +668,7 @@ function TargetCard({ config, onEdit, onDelete, onToggle, notify }) {
   );
 }
 
-function TargetsPanel({ configs, search, typeFilter, onSearch, onTypeFilter, onAdd, onEdit, onDelete, onToggle, notify }) {
+function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onTypeFilter, onAdd, onEdit, onDelete, onToggle, notify }) {
   const query = search.trim().toLowerCase();
   const filtered = configs.filter((config) => {
     if (typeFilter !== "all" && itemTypeOf(config) !== typeFilter) return false;
@@ -752,6 +775,7 @@ function TargetsPanel({ configs, search, typeFilter, onSearch, onTypeFilter, onA
               <TargetCard
                 key={config.itemId}
                 config={config}
+                product={reportByItem?.[String(config.itemId).toLowerCase()] || null}
                 onEdit={onEdit}
                 onDelete={onDelete}
                 onToggle={onToggle}
@@ -760,6 +784,238 @@ function TargetsPanel({ configs, search, typeFilter, onSearch, onTypeFilter, onA
             ))
           )}
         </div>
+      )}
+    </section>
+  );
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function downloadCsv(filename, rows) {
+  const csv = rows.map((row) => row.map(csvCell).join(",")).join("\r\n");
+  const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function profitClass(value) {
+  const number = Number(value) || 0;
+  return number > 0 ? "text-signal" : number < 0 ? "text-danger" : "text-ink-dim";
+}
+
+function percentText(value, digits = 1) {
+  const number = Number(value);
+  return value != null && Number.isFinite(number) ? `${number.toFixed(digits)}%` : "—";
+}
+
+function ReportPanel({ report, notify }) {
+  const items = report?.items || [];
+  const totals = report?.totals || null;
+  const since = Number(report?.since);
+
+  const exportCsv = () => {
+    if (items.length === 0) return;
+    const rows = [
+      [
+        "product",
+        "item_id",
+        "fills",
+        "failed",
+        "qty",
+        "spent_rlt",
+        "avg_buy_rlt",
+        "profit_rlt",
+        "margin_pct",
+        "success_pct",
+        "first_seen",
+        "last_seen"
+      ],
+      ...items.map((item) => [
+        item.label || item.itemId,
+        item.itemId,
+        item.fills,
+        item.failed,
+        item.qty,
+        item.spentRlt,
+        item.avgBuy,
+        item.profitRlt,
+        item.marginPct ?? "",
+        item.successPct ?? "",
+        item.firstAt ? new Date(item.firstAt).toISOString() : "",
+        item.lastAt ? new Date(item.lastAt).toISOString() : ""
+      ])
+    ];
+    downloadCsv(`turu-profit-by-product-${new Date().toISOString().slice(0, 10)}.csv`, rows);
+    notify?.("success", "REPORT EXPORTED", `${items.length} products written to CSV.`);
+  };
+
+  return (
+    <section className="panel min-w-0 xl:col-start-1 xl:row-start-3">
+      <div className="panel-head flex-wrap gap-y-2">
+        <h2 className="panel-title">
+          <Icon name="i-coin" className="h-3.5 w-3.5 text-signal/80" /> Profit by product
+          <span className="rounded border border-line bg-carbon-850 px-1.5 py-0.5 text-[9px] text-ink-dim">
+            {formatInt(items.length)}
+          </span>
+        </h2>
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-faint">
+            All time{Number.isFinite(since) && since > 0 ? ` · since ${formatDate(since)}` : ""}
+          </span>
+          <button
+            className="btn btn-ghost btn-sm"
+            type="button"
+            onClick={exportCsv}
+            disabled={items.length === 0}
+            title="Download every product row as CSV"
+          >
+            <Icon name="i-download" className="h-3 w-3" /> CSV
+          </button>
+        </div>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="flex flex-col items-center justify-center gap-2 px-6 py-12 text-center">
+          <Icon name="i-coin" className="h-6 w-6 text-faint" />
+          <p className="font-mono text-[10.5px] uppercase tracking-[0.14em] text-ink-dim">No product data yet</p>
+          <p className="text-[12px] text-faint">Filled and missed orders are aggregated here, per product, all time.</p>
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-px border-b border-line bg-line sm:grid-cols-4">
+            <div className="bg-carbon-900 px-4 py-2.5">
+              <span className="label">Total profit</span>
+              <p className={`mt-1 font-mono text-[18px] font-semibold leading-none tabular-nums ${profitClass(totals?.profitRlt)}`}>
+                {formatSignedRlt(totals?.profitRlt ?? 0)}
+              </p>
+              <p className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.1em] text-faint">RLT · all products</p>
+            </div>
+            <div className="bg-carbon-900 px-4 py-2.5">
+              <span className="label">Spend</span>
+              <p className="mt-1 font-mono text-[18px] font-semibold leading-none tabular-nums text-ink">
+                {formatRlt(totals?.spentRlt ?? 0)}
+              </p>
+              <p className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.1em] text-faint">
+                RLT · {formatInt(totals?.qty ?? 0)} items
+              </p>
+            </div>
+            <div className="bg-carbon-900 px-4 py-2.5">
+              <span className="label">Margin</span>
+              <p className={`mt-1 font-mono text-[18px] font-semibold leading-none tabular-nums ${profitClass(totals?.marginPct)}`}>
+                {percentText(totals?.marginPct)}
+              </p>
+              <p className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.1em] text-faint">Profit ÷ spend</p>
+            </div>
+            <div className="bg-carbon-900 px-4 py-2.5">
+              <span className="label">Fills / missed</span>
+              <p className="mt-1 font-mono text-[18px] font-semibold leading-none tabular-nums text-ink">
+                {formatInt(totals?.fills ?? 0)}
+                <span className="text-faint"> / {formatInt(totals?.failed ?? 0)}</span>
+              </p>
+              <p className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.1em] text-faint">Confirmed / missed</p>
+            </div>
+          </div>
+
+          <ul className="divide-y divide-line/40 md:hidden">
+            {items.map((item) => (
+              <li className="px-4 py-3" key={item.itemId || item.label}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-[12px] text-ink">{item.label || shortId(item.itemId)}</p>
+                    <p className="mt-0.5 font-mono text-[9px] uppercase tracking-[0.08em] text-faint">
+                      {formatInt(item.fills)} filled · {formatInt(item.failed)} missed · {formatInt(item.qty)} qty
+                    </p>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <p className={`font-mono text-[12px] tabular-nums ${profitClass(item.profitRlt)}`}>
+                      {formatSignedRlt(item.profitRlt)}
+                    </p>
+                    <p className="mt-0.5 font-mono text-[9px] uppercase tracking-[0.08em] text-faint">
+                      {percentText(item.marginPct)} margin
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-3 font-mono text-[9px] uppercase tracking-[0.08em] text-faint">
+                  <span>
+                    Spend {formatRlt(item.spentRlt)} · Avg {fixedPrice(item.avgBuy)}
+                  </span>
+                  <span className="shrink-0">{item.successPct == null ? "—" : `${formatInt(item.successPct)}%`} win</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+
+          <div className="hidden overflow-x-auto overscroll-contain md:block">
+            <table className="w-full min-w-[880px] border-collapse text-left font-mono text-[11px] tabular-nums">
+              <thead>
+                <tr className="border-b border-line text-[9px] uppercase tracking-[0.12em] text-faint">
+                  <th scope="col" className="px-4 py-2 font-medium">Product</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Fills</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Qty</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Spend</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Avg buy</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Profit</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Margin</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Success</th>
+                  <th scope="col" className="px-4 py-2 font-medium">Last</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line/40">
+                {items.map((item) => (
+                  <tr
+                    className="transition-colors hover:bg-carbon-850/40"
+                    key={item.itemId || item.label}
+                    title={item.itemId ? `item ${item.itemId}` : undefined}
+                  >
+                    <td className="max-w-[240px] truncate px-4 py-2 text-ink-dim">{item.label || shortId(item.itemId)}</td>
+                    <td className="px-3 py-2">
+                      <span className="text-signal">{formatInt(item.fills)}</span>
+                      <span className="text-faint"> / {formatInt(item.failed)}</span>
+                    </td>
+                    <td className="px-3 py-2 text-ink-dim">{formatInt(item.qty)}</td>
+                    <td className="px-3 py-2 text-ink-dim">{formatRlt(item.spentRlt)}</td>
+                    <td className="px-3 py-2 text-ink-dim">{fixedPrice(item.avgBuy)}</td>
+                    <td className={`px-3 py-2 ${profitClass(item.profitRlt)}`}>{formatSignedRlt(item.profitRlt)}</td>
+                    <td className={`px-3 py-2 ${profitClass(item.marginPct)}`}>{percentText(item.marginPct)}</td>
+                    <td className="px-3 py-2 text-muted">{item.successPct == null ? "—" : `${formatInt(item.successPct)}%`}</td>
+                    <td className="whitespace-nowrap px-4 py-2 text-faint">
+                      <span title={item.lastAt ? new Date(item.lastAt).toLocaleString() : undefined}>
+                        {item.lastAt ? relTime(item.lastAt) : "—"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="border-t border-line text-[10px]">
+                  <td className="px-4 py-2.5 uppercase tracking-[0.12em] text-faint">Total</td>
+                  <td className="px-3 py-2.5 text-ink-dim">
+                    {formatInt(totals?.fills ?? 0)}
+                    <span className="text-faint"> / {formatInt(totals?.failed ?? 0)}</span>
+                  </td>
+                  <td className="px-3 py-2.5 text-ink-dim">{formatInt(totals?.qty ?? 0)}</td>
+                  <td className="px-3 py-2.5 text-ink-dim">{formatRlt(totals?.spentRlt ?? 0)}</td>
+                  <td className="px-3 py-2.5 text-faint">—</td>
+                  <td className={`px-3 py-2.5 font-semibold ${profitClass(totals?.profitRlt)}`}>
+                    {formatSignedRlt(totals?.profitRlt ?? 0)}
+                  </td>
+                  <td className={`px-3 py-2.5 ${profitClass(totals?.marginPct)}`}>{percentText(totals?.marginPct)}</td>
+                  <td className="px-3 py-2.5 text-faint">—</td>
+                  <td className="px-4 py-2.5 text-faint">—</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </>
       )}
     </section>
   );
@@ -1458,6 +1714,14 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
 
   const eps = useEventRate(snapshot.gateway?.eventCount || 0);
   const baseUrl = worker.getConnection().baseUrl;
+  const reportByItem = useMemo(() => {
+    const map = {};
+    for (const item of snapshot.report?.items || []) {
+      const itemId = String(item.itemId || "").toLowerCase();
+      if (itemId) map[itemId] = item;
+    }
+    return map;
+  }, [snapshot.report]);
 
   const askConfirm = useCallback(
     (options) => new Promise((resolve) => setConfirmState({ ...options, resolve })),
@@ -1616,6 +1880,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
         />
         <TargetsPanel
           configs={snapshot.configs || []}
+          reportByItem={reportByItem}
           search={search}
           typeFilter={typeFilter}
           onSearch={setSearch}
@@ -1627,6 +1892,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           notify={notify}
         />
         <LootLog history={snapshot.history || []} onReset={resetStats} />
+        <ReportPanel report={snapshot.report} notify={notify} />
       </main>
       <footer className="border-t border-line">
         <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-1 px-3 py-4 font-mono text-[9px] uppercase tracking-[0.12em] text-faint sm:flex-row sm:items-center sm:justify-between sm:px-4 lg:px-6">

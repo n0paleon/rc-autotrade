@@ -40,6 +40,9 @@ function createHarness() {
     addHistory(entry) {
       this.state.history.unshift(entry);
       if (this.state.history.length > 200) this.state.history.length = 200;
+    },
+    reportView() {
+      return { since: 0, totals: {}, items: [] };
     }
   };
   let now = 1_000_000;

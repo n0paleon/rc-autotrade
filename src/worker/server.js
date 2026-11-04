@@ -299,6 +299,7 @@ export class ControlServer {
       settings: { ...this.store.state.settings },
       configs: this.configsView(),
       stats: { ...this.store.state.stats },
+      report: this.store.reportView(),
       history: this.store.state.history.slice(0, 60),
       pending: this.engine.pendingSnapshot(),
       workerTokenPreview: this.store.state.workerTokenPreview,
@@ -494,6 +495,11 @@ export class ControlServer {
 
     if (method === "GET" && path === "/api/state") {
       json(res, 200, { ok: true, ...this.snapshot() });
+      return;
+    }
+
+    if (method === "GET" && path === "/api/report") {
+      json(res, 200, { ok: true, report: this.store.reportView() });
       return;
     }
 
@@ -775,6 +781,7 @@ export class ControlServer {
       this.latency?.reset();
       this.logger.info("stats", "lifetime stats, per-target fill rates and loot log reset");
       this.broadcast("stats", this.store.state.stats);
+      this.broadcast("report", this.store.reportView());
       this.broadcast("latency", this.latencyView());
       this.broadcast("configs", this.configsView());
       this.broadcast("history-cleared", {});
