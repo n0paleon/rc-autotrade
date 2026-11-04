@@ -134,7 +134,7 @@ function BootScreen({ onLogin, busy, error }) {
       </div>
       <div className="relative grid w-full max-w-6xl items-center gap-10 lg:grid-cols-[1.08fr_0.92fr] lg:gap-14">
         <div className="boot-intro">
-          <p className="inline-flex items-center gap-2 border-2 border-line bg-night-900 px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.06em] text-gold shadow-[3px_3px_0_#05030f]">
+          <p className="inline-flex items-center gap-2 border-2 border-line bg-night-900 px-2 py-1 font-mono text-[12px] font-bold uppercase tracking-[0.08em] text-gold shadow-[3px_3px_0_#05030f]">
             <span className="led led-pulse bg-gold" /> Player 1 · TURU.RC
           </p>
           <div className="mt-5 flex items-start gap-4">
@@ -158,7 +158,7 @@ function BootScreen({ onLogin, busy, error }) {
               </li>
             ))}
           </ul>
-          <div className="mt-7 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10px] uppercase tracking-[0.06em] text-faint">
+          <div className="mt-7 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
             <span className="text-gold">8-bit loot run</span>
             <span aria-hidden="true">■</span>
             <span>Control deck v1.0</span>
@@ -170,7 +170,7 @@ function BootScreen({ onLogin, busy, error }) {
         <div className="panel boot-intro-delay w-full overflow-hidden">
           <div className="flex items-center justify-between gap-3 border-b-2 border-line bg-night-850/70 px-4 py-3">
             <span className="panel-title"><span className="led led-pulse bg-signal" />Player login</span>
-            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.06em] text-gold">Insert key</span>
+            <span className="font-mono text-[12px] font-bold uppercase tracking-[0.08em] text-gold">Insert key</span>
           </div>
           <form className="space-y-4 p-4 sm:p-5" autoComplete="off" onSubmit={submit}>
             <label className="field">
@@ -208,21 +208,21 @@ function BootScreen({ onLogin, busy, error }) {
               </div>
             </label>
             {error ? (
-              <div className="border-2 border-danger/60 bg-danger/10 px-3 py-2 font-mono text-[10px] uppercase tracking-[0.06em] text-danger shadow-[3px_3px_0_#05030f]" role="alert">
+              <div className="border-2 border-danger/60 bg-danger/10 px-3 py-2 font-mono text-[12px] uppercase tracking-[0.08em] text-danger shadow-[3px_3px_0_#05030f]" role="alert">
                 {error}
               </div>
             ) : null}
-            <button className="btn btn-primary btn-lg btn-block" type="submit" disabled={busy}>
+            <button className="btn btn-primary btn-lg btn-block" type="submit" disabled={busy} data-busy={busy ? "true" : undefined} aria-busy={busy}>
               {busy ? "Connecting…" : <>Press start <Icon name="i-play" className="h-3.5 w-3.5" /></>}
             </button>
           </form>
-          <div className="flex flex-wrap items-center justify-between gap-2 border-t-2 border-line bg-night-950/50 px-4 py-2.5 font-mono text-[10px] uppercase tracking-[0.06em] text-faint">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t-2 border-line bg-night-950/50 px-4 py-2.5 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
             <span className="flex items-center gap-1.5"><Icon name="i-shield" className="h-3 w-3 text-signal" /> Keys stay on this machine</span>
             <span className="text-violet">Worker v1.0</span>
           </div>
         </div>
 
-        <p className="text-center text-[12px] text-faint lg:col-span-2">
+        <p className="text-center text-[13px] text-faint lg:col-span-2">
           First run? The access key is printed in the worker terminal.
         </p>
       </div>
@@ -268,7 +268,7 @@ function Header({ snapshot, status, latency, now, soundOn, onSound, onLogout, on
   }
 
   return (
-    <header className="sticky top-0 z-40 border-b-2 border-line bg-night-950/92 pt-[env(safe-area-inset-top)] backdrop-blur-md">
+    <header className="deck-enter sticky top-0 z-40 border-b-2 border-line bg-night-950/92 pt-[env(safe-area-inset-top)] backdrop-blur-md">
       <div className="mx-auto flex min-h-14 w-full max-w-[1600px] items-center gap-3 px-3 sm:px-4 lg:px-6">
         <div className="flex min-w-0 items-center gap-2.5">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center border-2 border-[#05030f] bg-gold text-[#1a1000] shadow-[0_0_0_2px_var(--color-line-strong),3px_3px_0_#05030f] max-[359px]:hidden">
@@ -276,11 +276,11 @@ function Header({ snapshot, status, latency, now, soundOn, onSound, onLogout, on
           </div>
           <div className="min-w-0">
             <h1 className="flex items-center gap-2 leading-none">
-              <span className="font-display text-[22px] font-medium leading-none tracking-[0.06em] text-ink">TURU.RC</span>
-              <span className="hidden border border-pink/60 bg-pink/15 px-1 py-0.5 font-mono text-[9.5px] font-bold text-pink sm:inline">1P</span>
-              <span className="hidden truncate font-mono text-[10px] font-bold uppercase tracking-[0.06em] text-pink sm:inline">Market Sniper</span>
+              <span className="brand-wordmark text-[24px] leading-none text-ink">TURU.RC</span>
+              <span className="hidden border border-pink/60 bg-pink/15 px-1 py-0.5 font-mono text-[12px] font-bold text-pink sm:inline">1P</span>
+              <span className="hidden truncate font-mono text-[12px] font-bold uppercase tracking-[0.08em] text-pink sm:inline">Market Sniper</span>
             </h1>
-            <p className="mt-1 hidden font-mono text-[9.5px] uppercase tracking-[0.06em] text-faint sm:block">
+            <p className="mt-1 hidden font-mono text-[12px] uppercase tracking-[0.08em] text-faint sm:block">
               Arcade control deck
             </p>
           </div>
@@ -291,6 +291,8 @@ function Header({ snapshot, status, latency, now, soundOn, onSound, onLogout, on
             type="button"
             onClick={onTogglePause}
             disabled={pausing}
+            data-busy={pausing ? "true" : undefined}
+            aria-busy={pausing}
             aria-label={settings.paused ? "Start buying" : "Pause buying"}
             title={settings.paused ? "Resume all buying" : "Pause all buying; the market feed stays live"}
           >
@@ -303,11 +305,11 @@ function Header({ snapshot, status, latency, now, soundOn, onSound, onLogout, on
           <span id="conn-chip" className={`chip ${connClass}`} title={snapshot.gateway?.lastError || "Control-plane link status"}>
             <span className="led" />{connLabel}
           </span>
-          <span className="hidden items-center gap-1 font-mono text-[10px] text-info md:inline-flex" title="Control link round-trip">
+          <span className="hidden items-center gap-1 font-mono text-[12px] text-info md:inline-flex" title="Control link round-trip">
             <Icon name="i-wifi" className="h-3 w-3" />
             <span className="tabular-nums">{latency != null ? `${latency}ms` : "--"}</span>
           </span>
-          <span className="hidden items-center gap-1 font-mono text-[10px] text-violet lg:inline-flex" title="Local time">
+          <span className="hidden items-center gap-1 font-mono text-[12px] text-violet lg:inline-flex" title="Local time">
             <Icon name="i-clock" className="h-3 w-3" />
             <span className="tabular-nums">{formatTime(now)}</span>
           </span>
@@ -333,18 +335,29 @@ function Header({ snapshot, status, latency, now, soundOn, onSound, onLogout, on
 
 function Ticker({ configs, mock }) {
   const halves = [0, 1];
+  const [paused, setPaused] = useState(false);
   return (
-    <div className="border-b-2 border-line bg-night-900/70" aria-label="Market wire">
-      <div className="mx-auto flex h-9 w-full max-w-[1600px] items-center gap-3 px-3 sm:px-4 lg:px-6">
-        <div className="flex shrink-0 items-center gap-1.5 font-mono text-[9.5px] font-bold uppercase tracking-[0.06em] text-gold">
+    <div className="deck-enter deck-enter-1 border-b-2 border-line bg-night-900/70" aria-label="Market wire">
+      <div className="mx-auto flex h-11 w-full max-w-[1600px] items-center gap-3 px-3 sm:h-9 sm:px-4 lg:px-6">
+        <div className="flex shrink-0 items-center gap-1.5 font-mono text-[12px] font-bold uppercase tracking-[0.08em] text-gold">
           <span className="led led-pulse bg-gold" />Market wire
+          <button
+            className="ticker-pause icon-btn h-10 w-10 sm:h-7 sm:w-7"
+            type="button"
+            aria-label={paused ? "Play market wire" : "Pause market wire"}
+            aria-pressed={paused}
+            title={paused ? "Resume the wire" : "Pause the wire"}
+            onClick={() => setPaused((value) => !value)}
+          >
+            <Icon name={paused ? "i-play" : "i-pause"} className="h-3 w-3" />
+          </button>
         </div>
-        <div className="ticker-track min-w-0 flex-1">
+        <div className="ticker-track min-w-0 flex-1" data-paused={paused ? "true" : undefined}>
           <div className="ticker-content" style={{ animationDuration: `${Math.max(26, configs.length * 8)}s` }}>
             {halves.map((half) => (
               <div className="flex shrink-0 items-center" key={half}>
                 {configs.length === 0 ? (
-                  <span className="px-4 font-mono text-[10px] uppercase tracking-[0.06em] text-faint">
+                  <span className="px-4 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
                     No targets deployed. The market is quiet.
                   </span>
                 ) : (
@@ -352,12 +365,12 @@ function Ticker({ configs, mock }) {
                     const runtime = config.runtime || {};
                     const hot = runtimeHot(config);
                     return (
-                      <span className="flex shrink-0 items-center gap-2 border-r-2 border-line/70 px-3 font-mono text-[10px]" key={`${half}-${config.itemId}`}>
+                      <span className="flex shrink-0 items-center gap-2 border-r-2 border-line/70 px-3 font-mono text-[12px]" key={`${half}-${config.itemId}`}>
                         <span className="text-ink-dim">{config.label || `ITEM ${shortId(config.itemId)}`}</span>
                         <span className={hot ? "text-gold" : "text-info"}>
                           {Number.isFinite(runtime.lastPrice) ? `${fixedPrice(runtime.lastPrice)} RLT` : "—"}
                         </span>
-                        <span className="text-[10px] uppercase tracking-[0.06em] text-violet">
+                        <span className="text-[12px] uppercase tracking-[0.08em] text-violet">
                           {Number.isFinite(runtime.lastStock) ? `Book ${formatInt(runtime.lastStock)}` : "Waiting"}
                         </span>
                         <span className="text-line-strong" aria-hidden="true">◆</span>
@@ -369,7 +382,7 @@ function Ticker({ configs, mock }) {
             ))}
           </div>
         </div>
-        <div className={`chip h-5 shrink-0 ${mock ? "chip-warn" : "chip-online"}`}>
+        <div className={`chip h-5 shrink-0 max-[359px]:hidden ${mock ? "chip-warn" : "chip-online"}`}>
           {mock ? "Mock" : "Live"}
         </div>
       </div>
@@ -398,10 +411,10 @@ function Hud({ snapshot, now, eps }) {
           <span className="label">Profit</span>
           <Icon name="i-coin" className="stat-icon h-4 w-4 max-sm:hidden" />
         </div>
-        <div className={`mt-1 font-display text-[30px] font-medium leading-none tabular-nums tracking-[0.06em] [text-shadow:2px_2px_0_#05030f] sm:text-[34px] ${profit > 0 ? "text-gold" : "text-ink"}`} id="stat-profit">
+        <div className={`stat-hero mt-1 text-[32px] leading-none [text-shadow:2px_2px_0_#05030f] sm:text-[36px] ${profit > 0 ? "text-gold" : "text-ink"}`} id="stat-profit">
           {formatRlt(stats.profitRlt)}
         </div>
-        <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.06em] text-faint" id="stat-profit-sub">
+        <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint" id="stat-profit-sub">
           RLT · {formatInt(stats.bought)} items looted
         </div>
       </article>
@@ -410,10 +423,10 @@ function Hud({ snapshot, now, eps }) {
           <span className="label">Loot secured</span>
           <Icon name="i-target" className="stat-icon h-4 w-4 max-sm:hidden" />
         </div>
-        <div className="mt-1.5 font-mono text-[19px] font-bold leading-none tabular-nums text-signal" id="stat-filled">
+        <div className="mt-1.5 font-mono text-[20px] font-bold leading-none tabular-nums text-signal" id="stat-filled">
           {formatInt(stats.filled)}
         </div>
-        <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.06em] text-faint">
+        <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
           <span id="stat-failed">{formatInt(stats.failed)}</span> missed · <span id="stat-bought">{formatInt(stats.bought)}</span> items
         </div>
       </article>
@@ -422,10 +435,10 @@ function Hud({ snapshot, now, eps }) {
           <span className="label">Targets</span>
           <Icon name="i-bolt" className="stat-icon h-4 w-4 max-sm:hidden" />
         </div>
-        <div className="mt-1.5 font-mono text-[19px] font-bold leading-none tabular-nums text-info" id="stat-targets">
+        <div className="mt-1.5 font-mono text-[20px] font-bold leading-none tabular-nums text-info" id="stat-targets">
           {formatInt(configs.length)}
         </div>
-        <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.06em] text-faint">
+        <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
           <span id="stat-armed">{formatInt(armed)}</span> armed · <span id="stat-hot">{formatInt(hot)}</span> in range
         </div>
       </article>
@@ -434,10 +447,10 @@ function Hud({ snapshot, now, eps }) {
           <span className="label">Market events</span>
           <Icon name="i-wifi" className="stat-icon h-4 w-4 max-sm:hidden" />
         </div>
-        <div className="mt-1.5 font-mono text-[19px] font-bold leading-none tabular-nums text-pink" id="stat-events">
+        <div className="mt-1.5 font-mono text-[20px] font-bold leading-none tabular-nums text-pink" id="stat-events">
           {formatInt(gateway.eventCount || 0)}
         </div>
-        <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.06em] text-faint">
+        <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
           <span id="stat-eps">{eps.toFixed(1)}</span>/s · <span id="stat-uptime">{formatUptime(now - (snapshot.startedAt || now))}</span>
         </div>
       </article>
@@ -450,9 +463,9 @@ function Hud({ snapshot, now, eps }) {
           {session.value}
         </div>
         <div className="meter meter-thin mt-2.5">
-          <i id="stat-session-meter" className={session.cls} style={{ width: `${session.width}%` }} />
+          <i id="stat-session-meter" className={session.cls} style={{ "--meter-value": `${session.width}%` }} />
         </div>
-        <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.06em] text-faint" id="stat-session-sub">
+        <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint" id="stat-session-sub">
           {session.sub}
         </div>
       </article>
@@ -461,10 +474,10 @@ function Hud({ snapshot, now, eps }) {
           <span className="label">Upstream</span>
           <Icon name="i-wifi" className="stat-icon h-4 w-4 max-sm:hidden" />
         </div>
-        <div className={`mt-1.5 font-mono text-[19px] font-bold leading-none tabular-nums ${fresh ? latencyClass(fresh.last) : "text-muted"}`} id="stat-upstream">
+        <div className={`mt-1.5 font-mono text-[20px] font-bold leading-none tabular-nums ${fresh ? latencyClass(fresh.last) : "text-muted"}`} id="stat-upstream">
           {fresh ? formatMs(fresh.last) : "—"}
         </div>
-        <div className="mt-2 font-mono text-[10px] uppercase tracking-[0.06em] text-faint" id="stat-upstream-sub">
+        <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint" id="stat-upstream-sub">
           {fresh ? `${fresh.channel.toUpperCase()} · ${relTime(fresh.lastAt)}` : "No samples yet"}
         </div>
       </article>
@@ -477,6 +490,13 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
   const [toggling, setToggling] = useState(false);
   const runtime = config.runtime || {};
   const state = cardState(config);
+  const [statePulse, setStatePulse] = useState(0);
+  const previousState = useRef(state);
+  useEffect(() => {
+    if (previousState.current === state) return;
+    previousState.current = state;
+    setStatePulse((value) => value + 1);
+  }, [state]);
   const stats = successStats(config);
   const productProfit = Number(product?.profitRlt) || 0;
   const productFills = Number(product?.fills) || 0;
@@ -515,7 +535,7 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
       <div className="flex items-start gap-3">
         <canvas
           ref={canvasRef}
-          className="item-avatar h-12 w-12 shrink-0 bg-night-950"
+          className="item-avatar h-12 w-12 shrink-0 bg-night-950 max-[359px]:hidden"
           width="8"
           height="8"
           aria-hidden="true"
@@ -523,12 +543,12 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
         />
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
-            <h3 className="product-title truncate text-[14px] leading-tight text-ink">{label}</h3>
-            <span className="type-badge shrink-0" data-type={itemType} title="Marketplace item type">{itemTypeLabel(itemType)}</span>
+            <h3 className="product-title line-clamp-2 min-w-0 text-[14px] leading-tight text-ink" title={label}>{label}</h3>
           </div>
-          <div className="mt-1 flex items-center gap-2">
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <span className="type-badge shrink-0" data-type={itemType} title="Marketplace item type">{itemTypeLabel(itemType)}</span>
             <button
-              className="-my-1 inline-flex min-h-6 items-center gap-1 whitespace-nowrap py-1 font-mono text-[10px] text-muted transition-colors hover:text-gold"
+              className="-my-1 inline-flex min-h-6 items-center gap-1 whitespace-nowrap py-1 font-mono text-[12px] text-muted transition-colors hover:text-gold"
               type="button"
               title="Copy item ID"
               onClick={async () => {
@@ -552,7 +572,7 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
           </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2">
-          <span className="state-chip" data-state={state}>{stateLabel(state)}</span>
+          <span key={statePulse} className={`state-chip${statePulse ? " state-chip-pulse" : ""}`} data-state={state}>{stateLabel(state)}</span>
           <label className="relative -m-2 inline-flex cursor-pointer items-center p-2" title="Arm or disarm this target">
             <input
               type="checkbox"
@@ -578,19 +598,19 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
         <div className="bg-info/5 px-2.5 py-2 sm:px-3">
           <span className="label">Market</span>
           <div className="mt-0.5 flex items-baseline gap-1">
-            <strong className={`font-mono text-[17px] font-bold leading-none tabular-nums min-[360px]:text-[19px] ${hot ? "text-gold" : "text-info"}`}>
+            <strong className={`font-mono text-[18px] font-bold leading-none tabular-nums min-[360px]:text-[20px] ${hot ? "text-gold" : "text-info"}`}>
               {Number.isFinite(runtime.lastPrice) ? fixedPrice(runtime.lastPrice) : "—"}
             </strong>
-            <span className="font-mono text-[9.5px] text-faint min-[360px]:text-[10px]">RLT</span>
+            <span className="font-mono text-[12px] text-faint">RLT</span>
           </div>
         </div>
         <div className="bg-gold/5 px-2.5 py-2 sm:px-3">
           <span className="label">Target</span>
           <div className="mt-0.5 flex items-baseline gap-1">
-            <strong className="font-mono text-[17px] font-bold leading-none tabular-nums text-gold min-[360px]:text-[19px]">
+            <strong className="font-mono text-[18px] font-bold leading-none tabular-nums text-gold min-[360px]:text-[20px]">
               {fixedPrice(config.targetPrice)}
             </strong>
-            <span className="font-mono text-[9.5px] text-faint min-[360px]:text-[10px]">RLT</span>
+            <span className="font-mono text-[12px] text-faint">RLT</span>
           </div>
         </div>
         <div
@@ -600,13 +620,13 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
           <div className="min-w-0">
             <span className="label">Profit · all time</span>
             <div className="mt-0.5 flex items-baseline gap-1">
-              <strong className={`font-mono text-[17px] font-bold leading-none tabular-nums min-[360px]:text-[19px] ${profitClass(productProfit)}`}>
+              <strong className={`font-mono text-[18px] font-bold leading-none tabular-nums min-[360px]:text-[20px] ${profitClass(productProfit)}`}>
                 {formatSignedRlt(productProfit)}
               </strong>
-              <span className="font-mono text-[9.5px] text-faint min-[360px]:text-[10px]">RLT</span>
+              <span className="font-mono text-[12px] text-faint">RLT</span>
             </div>
           </div>
-          <div className="shrink-0 text-right font-mono text-[10px] uppercase leading-relaxed tracking-[0.06em] text-faint">
+          <div className="shrink-0 text-right font-mono text-[12px] uppercase leading-relaxed tracking-[0.08em] text-faint">
             <p>{formatInt(productFills)} fills · {formatInt(productQty)} qty</p>
             <p className="mt-0.5">{percentText(productMargin)} margin</p>
           </div>
@@ -623,14 +643,14 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
       >
         <span className="label">Allowed range</span>
         {hasRange ? (
-          <span className="flex items-baseline gap-1 font-mono text-[10px] tabular-nums text-ink-dim">
+          <span className="flex items-baseline gap-1 font-mono text-[12px] tabular-nums text-ink-dim">
             <b className="text-info">{rangeMin ?? "—"}</b>
             <span className="text-faint">–</span>
             <b className="text-pink">{rangeMax ?? "—"}</b>
-            <span className="text-[9.5px] uppercase tracking-wide text-faint">RLT</span>
+            <span className="text-[12px] uppercase tracking-wide text-faint">RLT</span>
           </span>
         ) : (
-          <span className="font-mono text-[10px] uppercase tracking-wide text-faint">Waiting for frame</span>
+          <span className="font-mono text-[12px] uppercase tracking-wide text-faint">Waiting for frame</span>
         )}
       </div>
 
@@ -642,14 +662,14 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
       >
         <div className="flex items-center justify-between gap-2">
           <span className="label">Purchase success</span>
-          <span className={`font-mono text-[12px] font-bold tabular-nums ${rateColor}`}>
+          <span className={`font-mono text-[13px] font-bold tabular-nums ${rateColor}`}>
             {rate == null ? "—" : `${rate}%`}
           </span>
         </div>
         <div className="meter">
-          <i className={rateBar} style={{ width: `${rate ?? 0}%` }} />
+          <i className={rateBar} style={{ "--meter-value": `${rate ?? 0}%` }} />
         </div>
-        <div className="flex items-center justify-between gap-2 font-mono text-[10px] uppercase tracking-[0.06em] text-faint">
+        <div className="flex items-center justify-between gap-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
           <span>{stats.completed ? `${formatInt(stats.fills)} filled · ${formatInt(stats.failures)} failed` : "No completed orders"}</span>
           <span className="tabular-nums">{stats.fills}/{stats.completed}</span>
         </div>
@@ -664,7 +684,7 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
 
       <div className="mt-auto flex items-end justify-between gap-3 border-t-2 border-line pt-2.5">
         <span
-          className={`min-w-0 truncate font-mono text-[10px] uppercase tracking-[0.06em] ${
+          className={`min-w-0 truncate font-mono text-[12px] uppercase tracking-[0.08em] ${
             lastWin ? "text-signal" : lastError ? "text-danger" : "text-faint"
           }`}
         >
@@ -701,12 +721,12 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onT
 
 
   return (
-    <section className="panel max-xl:order-1 xl:col-start-1 xl:row-start-1" data-accent="cyan">
+    <section className="panel min-w-0 max-xl:order-1 xl:col-start-1 xl:row-start-1" data-accent="cyan">
       <div className="panel-head flex-wrap gap-y-2">
         <h2 className="panel-title">
           <Icon name="i-target" className="h-4 w-4 text-info" />
           Target fleet
-          <span className="border-2 border-[#05030f] bg-info px-1.5 py-0.5 font-mono text-[10px] font-bold text-[#001a24]">
+          <span className="border-2 border-[#05030f] bg-info px-1.5 py-0.5 font-mono text-[12px] font-bold text-[#001a24]">
             {configs.length}
           </span>
         </h2>
@@ -761,7 +781,7 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onT
             <Icon name="i-target" className="h-7 w-7" />
           </span>
           <div>
-            <p className="font-mono text-[12px] font-semibold uppercase tracking-[0.14em] text-ink-dim">No targets deployed</p>
+            <p className="font-mono text-[13px] font-semibold uppercase tracking-[0.14em] text-ink-dim">No targets deployed</p>
             <p className="mx-auto mt-1 max-w-sm text-[13px] leading-relaxed text-faint">
               Add an item ID, set your price ceiling, and the worker will hunt the market for you.
             </p>
@@ -771,10 +791,10 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onT
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4 p-4 md:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 p-4 lg:grid-cols-2">
           {filtered.length === 0 ? (
             <div className="col-span-full flex flex-col items-center gap-2 py-10 text-center">
-              <p className="font-mono text-[12px] font-semibold uppercase tracking-[0.14em] text-ink-dim">No matches</p>
+              <p className="font-mono text-[13px] font-semibold uppercase tracking-[0.14em] text-ink-dim">No matches</p>
               <p className="max-w-sm text-[13px] leading-relaxed text-faint">
                 {query
                   ? `Nothing matches “${search}”. Try another label or item ID.`
@@ -874,10 +894,10 @@ function ReportPanel({ report, notify }) {
       <div className="panel-head flex-wrap gap-y-2">
         <h2 className="panel-title">
           <Icon name="i-coin" className="h-4 w-4 text-gold" /> Profit by product
-          <span className="border-2 border-[#05030f] bg-violet px-1.5 py-0.5 font-mono text-[10px] font-bold text-[#16002e]">{formatInt(items.length)}</span>
+          <span className="border-2 border-[#05030f] bg-violet px-1.5 py-0.5 font-mono text-[12px] font-bold text-[#16002e]">{formatInt(items.length)}</span>
         </h2>
         <div className="flex items-center gap-2">
-          <span className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-faint">
+          <span className="font-mono text-[13px] uppercase tracking-[0.1em] text-faint">
             All time{Number.isFinite(since) && since > 0 ? ` · since ${formatDate(since)}` : ""}
           </span>
           <button
@@ -895,7 +915,7 @@ function ReportPanel({ report, notify }) {
       {items.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-2 px-6 py-12 text-center">
           <Icon name="i-coin" className="h-6 w-6 text-faint" />
-          <p className="font-mono text-[11.5px] uppercase tracking-[0.14em] text-ink-dim">No product data yet</p>
+          <p className="font-mono text-[13px] uppercase tracking-[0.14em] text-ink-dim">No product data yet</p>
           <p className="text-[13px] text-faint">Filled and missed orders are aggregated here, per product, all time.</p>
         </div>
       ) : (
@@ -903,34 +923,34 @@ function ReportPanel({ report, notify }) {
           <div className="grid grid-cols-2 gap-[2px] border-b-2 border-line bg-line sm:grid-cols-4">
             <div className="stat-tile" data-accent="gold">
               <span className="label">Total profit</span>
-              <p className={`mt-1 font-mono text-[18px] font-semibold leading-none tabular-nums ${profitClass(totals?.profitRlt)}`}>
+              <p className={`mt-1 font-mono text-[20px] font-semibold leading-none tabular-nums ${profitClass(totals?.profitRlt)}`}>
                 {formatSignedRlt(totals?.profitRlt ?? 0)}
               </p>
-              <p className="mt-1.5 font-mono text-[10.5px] uppercase tracking-[0.1em] text-faint">RLT · all products</p>
+              <p className="mt-1.5 font-mono text-[13px] uppercase tracking-[0.1em] text-faint">RLT · all products</p>
             </div>
             <div className="stat-tile" data-accent="cyan">
               <span className="label">Spend</span>
-              <p className="mt-1 font-mono text-[18px] font-semibold leading-none tabular-nums text-info">
+              <p className="mt-1 font-mono text-[20px] font-semibold leading-none tabular-nums text-info">
                 {formatRlt(totals?.spentRlt ?? 0)}
               </p>
-              <p className="mt-1.5 font-mono text-[10.5px] uppercase tracking-[0.1em] text-faint">
+              <p className="mt-1.5 font-mono text-[13px] uppercase tracking-[0.1em] text-faint">
                 RLT · {formatInt(totals?.qty ?? 0)} items
               </p>
             </div>
             <div className="stat-tile" data-accent="lime">
               <span className="label">Margin</span>
-              <p className={`mt-1 font-mono text-[18px] font-semibold leading-none tabular-nums ${profitClass(totals?.marginPct)}`}>
+              <p className={`mt-1 font-mono text-[20px] font-semibold leading-none tabular-nums ${profitClass(totals?.marginPct)}`}>
                 {percentText(totals?.marginPct)}
               </p>
-              <p className="mt-1.5 font-mono text-[10.5px] uppercase tracking-[0.1em] text-faint">Profit ÷ spend</p>
+              <p className="mt-1.5 font-mono text-[13px] uppercase tracking-[0.1em] text-faint">Profit ÷ spend</p>
             </div>
             <div className="stat-tile" data-accent="pink">
               <span className="label">Fills / missed</span>
-              <p className="mt-1 font-mono text-[18px] font-semibold leading-none tabular-nums text-pink">
+              <p className="mt-1 font-mono text-[20px] font-semibold leading-none tabular-nums text-pink">
                 {formatInt(totals?.fills ?? 0)}
                 <span className="text-faint"> / {formatInt(totals?.failed ?? 0)}</span>
               </p>
-              <p className="mt-1.5 font-mono text-[10.5px] uppercase tracking-[0.1em] text-faint">Confirmed / missed</p>
+              <p className="mt-1.5 font-mono text-[13px] uppercase tracking-[0.1em] text-faint">Confirmed / missed</p>
             </div>
           </div>
 
@@ -940,7 +960,7 @@ function ReportPanel({ report, notify }) {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="truncate text-[13px] text-ink">{item.label || shortId(item.itemId)}</p>
-                    <p className="mt-0.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-faint">
+                    <p className="mt-0.5 font-mono text-[13px] uppercase tracking-[0.08em] text-faint">
                       {formatInt(item.fills)} filled · {formatInt(item.failed)} missed · {formatInt(item.qty)} qty
                     </p>
                   </div>
@@ -948,12 +968,12 @@ function ReportPanel({ report, notify }) {
                     <p className={`font-mono text-[13px] tabular-nums ${profitClass(item.profitRlt)}`}>
                       {formatSignedRlt(item.profitRlt)}
                     </p>
-                    <p className="mt-0.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-faint">
+                    <p className="mt-0.5 font-mono text-[13px] uppercase tracking-[0.08em] text-faint">
                       {percentText(item.marginPct)} margin
                     </p>
                   </div>
                 </div>
-                <div className="mt-2 flex items-center justify-between gap-3 font-mono text-[10.5px] uppercase tracking-[0.08em] text-faint">
+                <div className="mt-2 flex items-center justify-between gap-3 font-mono text-[13px] uppercase tracking-[0.08em] text-faint">
                   <span>
                     Spend {formatRlt(item.spentRlt)} · Avg {fixedPrice(item.avgBuy)}
                   </span>
@@ -964,9 +984,9 @@ function ReportPanel({ report, notify }) {
           </ul>
 
           <div className="hidden overflow-x-auto overscroll-contain md:block">
-            <table className="w-full min-w-[880px] border-collapse text-left font-mono text-[12px] tabular-nums">
+            <table className="w-full min-w-[880px] border-collapse text-left font-mono text-[13px] tabular-nums">
               <thead>
-                <tr className="border-b-2 border-line text-[10px] uppercase tracking-[0.06em] text-faint">
+                <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
                   <th scope="col" className="px-4 py-2 font-medium">Product</th>
                   <th scope="col" className="px-3 py-2 font-medium">Fills</th>
                   <th scope="col" className="px-3 py-2 font-medium">Qty</th>
@@ -1005,7 +1025,7 @@ function ReportPanel({ report, notify }) {
                 ))}
               </tbody>
               <tfoot>
-                <tr className="border-t-2 border-line text-[11px]">
+                <tr className="border-t-2 border-line text-[12px]">
                   <td className="px-4 py-2.5 uppercase tracking-[0.12em] text-faint">Total</td>
                   <td className="px-3 py-2.5 text-ink-dim">
                     {formatInt(totals?.fills ?? 0)}
@@ -1032,11 +1052,11 @@ function ReportPanel({ report, notify }) {
 
 function LootLog({ history, onReset }) {
   return (
-    <section className="panel flex h-[380px] flex-col max-xl:order-3 xl:col-start-1 xl:row-start-2" data-accent="gold">
+    <section className="panel flex h-[380px] min-w-0 flex-col max-xl:order-3 xl:col-start-1 xl:row-start-2" data-accent="gold">
       <div className="panel-head shrink-0">
         <h2 className="panel-title">
           <Icon name="i-coin" className="h-4 w-4 text-gold" /> Loot log
-          <span className="border-2 border-[#05030f] bg-gold px-1.5 py-0.5 font-mono text-[10px] font-bold text-[#1a1000]">{history.length}</span>
+          <span className="border-2 border-[#05030f] bg-gold px-1.5 py-0.5 font-mono text-[12px] font-bold text-[#1a1000]">{history.length}</span>
         </h2>
         <button className="btn btn-ghost btn-sm" type="button" onClick={onReset}>
           <Icon name="i-trash" className="h-3 w-3" /> Reset
@@ -1045,7 +1065,7 @@ function LootLog({ history, onReset }) {
       {history.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
           <Icon name="i-coin" className="h-6 w-6 text-faint" />
-          <p className="font-mono text-[11.5px] uppercase tracking-[0.14em] text-ink-dim">No loot yet</p>
+          <p className="font-mono text-[13px] uppercase tracking-[0.14em] text-ink-dim">No loot yet</p>
           <p className="text-[13px] text-faint">Confirmed fills will drop here with profit and latency.</p>
         </div>
       ) : (
@@ -1053,23 +1073,24 @@ function LootLog({ history, onReset }) {
           <ul className="min-h-0 flex-1 divide-y divide-line/40 overflow-y-auto overscroll-contain md:hidden">
             {history.slice(0, 60).map((entry) => (
               <li
-                className="flex items-start justify-between gap-3 px-4 py-2.5"
+                className={`flex items-start justify-between gap-3 px-4 py-2.5${isRecent(entry.at, 6000) ? " loot-entry" : ""}`}
                 key={entry.id || `${entry.orderId}-${entry.at}`}
+                data-status={entry.status}
                 title={entry.note || (entry.orderId ? `order ${entry.orderId}` : undefined)}
               >
                 <div className="min-w-0">
                   <p className="truncate text-[13px] text-ink-dim">{entry.label || shortId(entry.itemId)}</p>
-                  <p className="mt-0.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-faint">
+                  <p className="mt-0.5 font-mono text-[13px] uppercase tracking-[0.08em] text-faint">
                     {formatTime(entry.at)} · {formatInt(entry.qty)} × {fixedPrice(entry.unitPrice)} RLT
                   </p>
                   {entry.status === "failed" ? (
-                    <p className="mt-0.5 truncate font-mono text-[10.5px] text-danger/80" title={entry.message || entry.note || undefined}>
+                    <p className="mt-0.5 truncate font-mono text-[13px] text-danger/80" title={entry.message || entry.note || undefined}>
                       {entry.message || entry.note || "failed"}
                     </p>
                   ) : null}
                 </div>
                 <div className="shrink-0 text-right">
-                  <p className={`font-mono text-[12px] tabular-nums ${entry.profitRlt > 0 ? "text-gold" : entry.profitRlt < 0 ? "text-danger" : "text-ink-dim"}`}>
+                  <p className={`font-mono text-[13px] tabular-nums ${entry.profitRlt > 0 ? "text-gold" : entry.profitRlt < 0 ? "text-danger" : "text-ink-dim"}`}>
                     {entry.status === "failed" ? "0.000000" : formatSignedRlt(entry.profitRlt)}
                   </p>
                   <span className={`status-pill mt-1${entry.status === "failed" ? " is-failed" : ""}`}>
@@ -1079,10 +1100,10 @@ function LootLog({ history, onReset }) {
               </li>
             ))}
           </ul>
-          <div className="hidden min-h-0 flex-1 overflow-auto overscroll-contain md:block">
-            <table className="w-full min-w-[760px] border-collapse text-left font-mono text-[12px] tabular-nums">
+          <div className="hidden min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain md:block">
+            <table className="w-full min-w-[760px] border-collapse text-left font-mono text-[13px] tabular-nums">
               <thead className="sticky top-0 z-10 bg-night-900">
-                <tr className="border-b-2 border-line text-[10px] uppercase tracking-[0.06em] text-faint">
+                <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
                   <th scope="col" className="px-4 py-2 font-medium">Time</th>
                   <th scope="col" className="px-3 py-2 font-medium">Item</th>
                   <th scope="col" className="px-3 py-2 font-medium">Qty</th>
@@ -1097,8 +1118,9 @@ function LootLog({ history, onReset }) {
               <tbody className="divide-y divide-line/40">
                 {history.slice(0, 60).map((entry) => (
                   <tr
-                    className="transition-colors hover:bg-night-850/60"
+                    className={`transition-colors hover:bg-night-850/60${isRecent(entry.at, 6000) ? " loot-entry" : ""}`}
                     key={entry.id || `${entry.orderId}-${entry.at}`}
+                    data-status={entry.status}
                     title={entry.note || (entry.orderId ? `order ${entry.orderId}` : undefined)}
                   >
                     <td className="whitespace-nowrap px-4 py-2 text-faint">{formatTime(entry.at)}</td>
@@ -1195,7 +1217,7 @@ function FeedPanel({ logs, onClear, notify }) {
   return (
     <section className="panel flex h-[clamp(15rem,52dvh,27.5rem)] flex-col xl:h-[560px]" data-accent="lime">
       <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-2.5">
-        <div className="flex items-center gap-1.5 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
+        <div className="flex items-center gap-1.5 font-mono text-[12px] font-semibold uppercase tracking-[0.14em] text-muted">
           <span className="led led-pulse bg-signal" />Live event log
         </div>
         <div className="flex items-center gap-1">
@@ -1238,9 +1260,9 @@ function FeedPanel({ logs, onClear, notify }) {
           aria-label="Worker event log"
           onScroll={handleFeedScroll}
         >
-          {shown.length === 0 ? <div className="px-3 py-2 font-mono text-[11px] text-faint">[SYS] Waiting for events…</div> : null}
+          {shown.length === 0 ? <div className="px-3 py-2 font-mono text-[12px] text-faint">[SYS] Waiting for events…</div> : null}
           {shown.map((entry) => (
-            <div className="log-line" key={entry.id} data-level={entry.level || "info"} data-scope={String(entry.scope || "sys").toLowerCase()}>
+            <div className={`log-line${isRecent(entry.at, 4000) ? " log-line-new" : ""}`} key={entry.id} data-level={entry.level || "info"} data-scope={String(entry.scope || "sys").toLowerCase()}>
               <span className="log-time">{formatTime(entry.at)}</span>
               <span className="log-scope">{String(entry.scope || "sys").toUpperCase()}</span>
               <span className="log-msg">{entry.message}</span>
@@ -1248,7 +1270,7 @@ function FeedPanel({ logs, onClear, notify }) {
           ))}
         </div>
       </div>
-      <div className="flex items-center justify-between gap-2 border-t-2 border-line px-3 py-2 font-mono text-[10px] uppercase tracking-[0.06em] text-faint">
+      <div className="flex items-center justify-between gap-2 border-t-2 border-line px-3 py-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
         <span className={`inline-flex items-center gap-1.5 ${paused ? "text-gold" : !tailing ? "text-info" : "text-signal"}`}>
           <span className="led led-sm" /> {paused ? "Paused" : tailing ? "Tailing" : "Tail paused"}
         </span>
@@ -1333,14 +1355,14 @@ function LinkPanel({ snapshot, now, worker, notify, onEditSession, onBridge, onC
       </div>
       <div className="panel-body">
         <div className="border-2 border-line bg-night-950/60 p-3">
-          <div className="flex items-center justify-between gap-2 font-mono text-[10.5px] uppercase tracking-[0.12em] text-faint">
+          <div className="flex items-center justify-between gap-2 font-mono text-[13px] uppercase tracking-[0.12em] text-faint">
             <span>Access token</span>
             <span className="tabular-nums text-violet">{countdown}</span>
           </div>
           <div className="meter mt-2">
-            <i id="token-meter" className={meterClass} style={{ width: `${meterWidth}%` }} />
+            <i id="token-meter" className={meterClass} style={{ "--meter-value": `${meterWidth}%` }} />
           </div>
-          <p className="mt-2 text-[12px] leading-snug text-faint">
+          <p className="mt-2 text-[13px] leading-snug text-faint">
             {!session.hasAccessToken
               ? "No Rollercoin session linked. Paste a token or use the bridge."
               : session.lastError
@@ -1362,7 +1384,7 @@ function LinkPanel({ snapshot, now, worker, notify, onEditSession, onBridge, onC
         </dl>
 
         <div className="grid grid-cols-2 gap-2">
-          <button className="btn btn-sm" type="button" onClick={refresh} disabled={!session.hasRefreshToken || refreshing}>
+          <button className="btn btn-sm" type="button" onClick={refresh} disabled={!session.hasRefreshToken || refreshing} data-busy={refreshing ? "true" : undefined} aria-busy={refreshing}>
             <Icon name="i-refresh" className="h-3 w-3" /> {refreshing ? "Refreshing…" : "Refresh now"}
           </button>
           <button className="btn btn-primary btn-sm" type="button" onClick={onEditSession}>Edit tokens</button>
@@ -1385,7 +1407,7 @@ function LinkPanel({ snapshot, now, worker, notify, onEditSession, onBridge, onC
           <input type="checkbox" className="sr-only" checked={Boolean(settings.autoRefresh)} onChange={(event) => toggleAuto(event.target.checked)} />
           <span className="switch" aria-hidden="true" />
         </label>
-        <p className="flex items-start gap-1.5 text-[11.5px] leading-snug text-faint">
+        <p className="flex items-start gap-1.5 text-[13px] leading-snug text-faint">
           <Icon name="i-alert" className="mt-0.5 h-3 w-3 text-warn/80" />
           <span>Tokens are stored in <code className="text-ink-dim">data/state.json</code> with owner-only permissions.</span>
         </p>
@@ -1402,7 +1424,7 @@ function LatencyChannel({ label, stats }) {
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <span className="label">{label}</span>
         <span className={`font-mono text-[14px] font-semibold tabular-nums ${latencyClass(stats?.last)}`}>{formatMs(stats?.last)}</span>
-        <span className="ml-auto font-mono text-[10.5px] uppercase tracking-[0.08em] text-faint">{formatInt(count)} samples</span>
+        <span className="ml-auto font-mono text-[13px] uppercase tracking-[0.08em] text-faint">{formatInt(count)} samples</span>
       </div>
       <div className="mt-2 grid grid-cols-3 gap-1.5 sm:grid-cols-6">
         {[
@@ -1413,15 +1435,15 @@ function LatencyChannel({ label, stats }) {
           ["Max", stats?.max],
           ["Jitter", stats?.jitter]
         ].map(([key, value, tone]) => (
-          <span key={key} className="flex flex-col gap-0.5 border border-line/70 bg-night-900/60 px-1.5 py-1 font-mono text-[9.5px] uppercase tracking-[0.06em] text-faint">
+          <span key={key} className="flex flex-col gap-0.5 border border-line/70 bg-night-900/60 px-1.5 py-1 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
             {key}
-            <b className={`text-[11px] font-semibold tabular-nums ${tone || "text-ink-dim"}`}>{formatMs(value)}</b>
+            <b className={`text-[12px] font-semibold tabular-nums ${tone || "text-ink-dim"}`}>{formatMs(value)}</b>
           </span>
         ))}
       </div>
       <div className="mt-2 flex h-10 items-end gap-[2px]" aria-hidden="true">
         {bars.length === 0 ? (
-          <span className="font-mono text-[10.5px] uppercase tracking-wide text-faint">No samples yet. Buy something or run a probe.</span>
+          <span className="font-mono text-[13px] uppercase tracking-wide text-faint">No samples yet. Buy something or run a probe.</span>
         ) : (
           bars.map((bar, index) => (
             <i
@@ -1434,7 +1456,7 @@ function LatencyChannel({ label, stats }) {
         )}
       </div>
       {stats?.errors > 0 ? (
-        <span className="mt-1.5 block font-mono text-[10.5px] uppercase tracking-wide text-danger">
+        <span className="mt-1.5 block font-mono text-[13px] uppercase tracking-wide text-danger">
           {formatInt(stats.errors)} errors · {stats.lastError || "—"}
         </span>
       ) : null}
@@ -1496,15 +1518,15 @@ function ConfigPanel({ snapshot, worker, notify }) {
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="label flex items-center gap-1.5"><Icon name="i-wifi" className="h-3 w-3" /> Worker → upstream</span>
           <span className="flex items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-wide text-signal" title="Panel refreshes automatically every 5 seconds">
+            <span className="inline-flex items-center gap-1.5 font-mono text-[13px] uppercase tracking-wide text-signal" title="Panel refreshes automatically every 5 seconds">
               <span className="led led-pulse" /> Auto · 5s
             </span>
-            <button className="btn btn-sm" type="button" onClick={runProbe} disabled={probing}>
+            <button className="btn btn-sm" type="button" onClick={runProbe} disabled={probing} data-busy={probing ? "true" : undefined} aria-busy={probing}>
               {probing ? "Probing…" : "Probe now"}
             </button>
           </span>
         </div>
-        <p className="text-[12px] leading-snug text-faint">
+        <p className="text-[13px] leading-snug text-faint">
           {fresh
             ? `Freshest: ${fresh.channel.toUpperCase()} ${formatMs(fresh.last)} · ${relTime(fresh.lastAt)}`
             : "Passive. Samples appear as the worker talks to Rollercoin."}
@@ -1514,7 +1536,7 @@ function ConfigPanel({ snapshot, worker, notify }) {
             <LatencyChannel key={key} label={channelLabels[key]} stats={channels[key] || { count: 0, recent: [] }} />
           ))}
         </div>
-        <p className="text-[11.5px] leading-relaxed text-faint">
+        <p className="text-[13px] leading-relaxed text-faint">
           HTTP covers purchases, item info and token refresh. Warm probe is the keepalive GET. WS handshake and ping cover the market feed. Failures still count because they used upstream time.
         </p>
       </div>
@@ -1576,7 +1598,7 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, ba
               <small>Hard burst protection.</small>
             </label>
           </div>
-          <button className="btn btn-primary btn-sm btn-block" type="submit" disabled={saving}>
+          <button className="btn btn-primary btn-sm btn-block" type="submit" disabled={saving} data-busy={saving ? "true" : undefined} aria-busy={saving}>
             {saving ? "Saving…" : "Save numeric config"}
           </button>
         </form>
@@ -1595,15 +1617,15 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, ba
         <div className="space-y-1.5 border-2 border-line bg-night-950/60 p-3">
           <div className="flex items-center justify-between gap-3">
             <span className="label">Worker</span>
-            <code className="truncate font-mono text-[11px] text-ink-dim">{baseUrl}</code>
+            <code className="truncate font-mono text-[12px] text-ink-dim">{baseUrl}</code>
           </div>
           <div className="flex items-center justify-between gap-3">
             <span className="label">Upstream</span>
-            <code className="truncate font-mono text-[11px] text-ink-dim">{snapshot.gateway?.upstream || "—"}</code>
+            <code className="truncate font-mono text-[12px] text-ink-dim">{snapshot.gateway?.upstream || "—"}</code>
           </div>
           <div className="flex items-center justify-between gap-3">
             <span className="label">Version</span>
-            <code className="font-mono text-[11px] text-ink-dim">v{snapshot.version || "1.0.0"}</code>
+            <code className="font-mono text-[12px] text-ink-dim">v{snapshot.version || "1.0.0"}</code>
           </div>
         </div>
         <button className="btn btn-ghost btn-sm btn-block" type="button" onClick={onReconnect}>
@@ -1611,10 +1633,10 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, ba
         </button>
 
         <div className="space-y-2 border-2 border-danger/50 bg-danger/5 p-3">
-          <h3 className="flex items-center gap-1.5 font-mono text-[11px] font-semibold uppercase tracking-[0.14em] text-danger">
+          <h3 className="flex items-center gap-1.5 font-mono text-[12px] font-semibold uppercase tracking-[0.14em] text-danger">
             <Icon name="i-alert" className="h-3.5 w-3.5" /> Danger zone
           </h3>
-          <p className="text-[12px] leading-snug text-muted">
+          <p className="text-[13px] leading-snug text-muted">
             Wipes lifetime profit, fill counters, per-target success rates and the loot log. Targets stay untouched.
           </p>
           <button className="btn btn-danger btn-sm btn-block" type="button" onClick={onReset}>Reset lifetime stats</button>
@@ -1647,36 +1669,38 @@ function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSes
           </button>
         ))}
       </div>
-      {tab === "feed" ? <FeedPanel logs={logs} onClear={worker.clearLogs} notify={notify} /> : null}
-      {tab === "link" ? (
-        <LinkPanel
-          snapshot={snapshot}
-          now={now}
-          worker={worker}
-          notify={notify}
-          onEditSession={onEditSession}
-          onBridge={onBridge}
-          onClearSession={onClearSession}
-          onRotate={onRotate}
-        />
-      ) : null}
-      {tab === "config" ? (
-        <RuntimeConfigPanel
-          snapshot={snapshot}
-          worker={worker}
-          notify={notify}
-          onReset={onReset}
-          onReconnect={onReconnect}
-          baseUrl={baseUrl}
-        />
-      ) : null}
-      {tab === "latency" ? (
-        <ConfigPanel
-          snapshot={snapshot}
-          worker={worker}
-          notify={notify}
-        />
-      ) : null}
+      <div key={tab} className="tab-panel flex min-w-0 flex-col gap-3">
+        {tab === "feed" ? <FeedPanel logs={logs} onClear={worker.clearLogs} notify={notify} /> : null}
+        {tab === "link" ? (
+          <LinkPanel
+            snapshot={snapshot}
+            now={now}
+            worker={worker}
+            notify={notify}
+            onEditSession={onEditSession}
+            onBridge={onBridge}
+            onClearSession={onClearSession}
+            onRotate={onRotate}
+          />
+        ) : null}
+        {tab === "config" ? (
+          <RuntimeConfigPanel
+            snapshot={snapshot}
+            worker={worker}
+            notify={notify}
+            onReset={onReset}
+            onReconnect={onReconnect}
+            baseUrl={baseUrl}
+          />
+        ) : null}
+        {tab === "latency" ? (
+          <ConfigPanel
+            snapshot={snapshot}
+            worker={worker}
+            notify={notify}
+          />
+        ) : null}
+      </div>
     </aside>
   );
 }
@@ -1688,7 +1712,7 @@ function ToastStack({ toasts, onDismiss }) {
       aria-live="polite"
     >
       {toasts.map((toast) => (
-        <div key={toast.id} className={`toast ${toast.kind} w-full cursor-pointer`} onClick={() => onDismiss(toast.id)} role="status">
+        <div key={toast.id} className={`toast ${toast.kind} w-full cursor-pointer${toast.leaving ? " is-leaving" : ""}`} onClick={() => onDismiss(toast.id)} role="status">
           <Icon
             name={toast.kind === "success" ? "i-check" : toast.kind === "error" || toast.kind === "warn" ? "i-alert" : "i-bolt"}
             className={`mt-0.5 h-3.5 w-3.5 ${
@@ -1702,8 +1726,8 @@ function ToastStack({ toasts, onDismiss }) {
             }`}
           />
           <div className="min-w-0">
-            <span className="block font-mono text-[11px] font-semibold uppercase tracking-[0.12em] text-ink">{toast.title}</span>
-            <span className="mt-0.5 block text-[12.5px] leading-snug text-muted">{toast.message}</span>
+            <span className="block font-sans text-[12px] font-semibold uppercase tracking-[0.08em] text-ink">{toast.title}</span>
+            <span className="mt-0.5 block text-[13px] leading-relaxed text-muted">{toast.message}</span>
           </div>
         </div>
       ))}
@@ -1873,10 +1897,10 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
         pausing={pausing}
       />
       <Ticker configs={snapshot.configs || []} mock={snapshot.worker?.mock} />
-      <div className="mx-auto w-full max-w-[1600px] px-3 pt-4 sm:px-4 lg:px-6">
+      <div className="deck-enter deck-enter-2 mx-auto w-full max-w-[1600px] px-3 pt-4 sm:px-4 lg:px-6">
         <Hud snapshot={snapshot} now={now} eps={eps} />
       </div>
-      <main className="mx-auto mt-4 grid w-full max-w-[1600px] gap-4 px-3 pb-10 sm:px-4 lg:px-6 xl:grid-cols-[minmax(0,1fr)_380px] xl:items-start">
+      <main className="deck-enter deck-enter-3 mx-auto mt-4 grid w-full max-w-[1600px] gap-4 px-3 pb-10 sm:px-4 lg:px-6 xl:grid-cols-[minmax(0,1fr)_380px] xl:items-start">
         <SidePanel
           tab={tab}
           setTab={setTab}
@@ -1911,7 +1935,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       </main>
       <div className="pixel-stripe mt-8" aria-hidden="true" />
       <footer className="border-t-2 border-line bg-night-950/70">
-        <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-1 px-3 py-4 font-mono text-[10px] uppercase tracking-[0.06em] text-faint sm:flex-row sm:items-center sm:justify-between sm:px-4 lg:px-6">
+        <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-1 px-3 py-4 font-mono text-[12px] uppercase tracking-[0.08em] text-faint sm:flex-row sm:items-center sm:justify-between sm:px-4 lg:px-6">
           <span>
             <span id="footer-mode" className="text-gold">{snapshot.worker?.mock ? "MOCK" : "LIVE"}</span> · WORKER v
             <span id="footer-version">{snapshot.version || "1.0.0"}</span>

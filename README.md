@@ -1,8 +1,8 @@
 # TURU.RC // MARKET SNIPER
 
-Headless **Rollercoin marketplace sniper** dengan control deck bergaya arcade dan tipografi **Arcana**, dibangun dengan React 19 + Tailwind CSS v4.
+Headless **Rollercoin marketplace sniper** dengan control deck bergaya arcade, dibangun dengan React 19 + Tailwind CSS v4. Tiga peran tipografi: **Arcana** untuk display, **Chakra Petch** untuk UI dan teks, **JetBrains Mono** untuk data.
 
-> Font UI: **Arcana** oleh vilogsign. File demo di `public/fonts/` gratis untuk penggunaan pribadi; untuk distribusi komersial, beli lisensi penuh dari author.
+> Font: **Arcana** oleh vilogsign. File demo di `public/fonts/` gratis untuk penggunaan pribadi; untuk distribusi komersial, beli lisensi penuh dari author. **Chakra Petch** dan **JetBrains Mono** berlisensi OFL; file lisensinya ada di `public/fonts/`.
 
 Dulu `trade.js` harus ditempel di console browser dan ikut melambat saat tab inactive.
 Sekarang engine berjalan sebagai proses Node.js terpisah; browser hanya menjadi **data plane**

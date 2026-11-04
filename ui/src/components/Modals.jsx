@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Icon, ModalShell } from "./ModalShell.jsx";
+import { Icon, ModalShell, useModalClose } from "./ModalShell.jsx";
 import { fixedPrice, shortId } from "../lib/format.js";
 
 export async function copyText(text) {
@@ -72,6 +72,7 @@ function validateTargetLocally(target) {
 }
 
 export function TargetModal({ config, onClose, worker, notify }) {
+  const { closeRef, close } = useModalClose();
   const editing = Boolean(config);
   const [itemId, setItemId] = useState(config?.itemId || "");
   const [itemType, setItemType] = useState(config?.itemType || "mutation_component");
@@ -174,7 +175,7 @@ export function TargetModal({ config, onClose, worker, notify }) {
     try {
       await worker.saveTarget(target, config?.itemId);
       notify("success", editing ? "TARGET UPDATED" : "TARGET DEPLOYED", auto.label || shortId(target.itemId));
-      onClose();
+      close();
     } catch (error) {
       if (error.fields && Object.keys(error.fields).length > 0) {
         setErrors(error.fields);
@@ -190,12 +191,13 @@ export function TargetModal({ config, onClose, worker, notify }) {
     <ModalShell
       title={editing ? "Edit target" : "Deploy target"}
       onClose={onClose}
+      closeRef={closeRef}
       footer={
         <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-          <button className="btn" type="button" onClick={onClose}>
+          <button className="btn" type="button" onClick={close}>
             Cancel
           </button>
-          <button className="btn btn-primary" type="submit" form="target-form" disabled={busy}>
+          <button className="btn btn-primary" type="submit" form="target-form" disabled={busy} data-busy={busy ? "true" : undefined} aria-busy={busy}>
             {busy ? (editing ? "Saving…" : "Deploying…") : editing ? "Save target" : "Deploy target"}
           </button>
         </div>
@@ -227,7 +229,7 @@ export function TargetModal({ config, onClose, worker, notify }) {
               <span className="flex items-center gap-2">
                 {auto.rarity ? (
                   <span
-                    className="border-2 border-[#05030f] px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.06em]"
+                    className="border-2 border-[#05030f] px-1.5 py-0.5 font-mono text-[12px] uppercase tracking-[0.08em]"
                     style={auto.color ? { borderColor: `#${auto.color}`, color: `#${auto.color}` } : undefined}
                   >
                     {auto.rarity}
@@ -235,7 +237,7 @@ export function TargetModal({ config, onClose, worker, notify }) {
                 ) : null}
                 {auto.state === "warn" ? (
                   <button
-                    className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-gold underline-offset-2 hover:underline"
+                    className="font-mono text-[13px] uppercase tracking-[0.1em] text-gold underline-offset-2 hover:underline"
                     type="button"
                     onClick={() => lookupRef.current?.()}
                   >
@@ -245,7 +247,7 @@ export function TargetModal({ config, onClose, worker, notify }) {
               </span>
             </div>
             <strong className="mt-1 block text-[14px] font-medium text-ink">{auto.label}</strong>
-            <small className="mt-0.5 block text-[12px] leading-snug text-faint">
+            <small className="mt-0.5 block text-[13px] leading-snug text-faint">
               From Rollercoin item-info: rarity + item name. Falls back to the item name when rarity is absent.
             </small>
           </div>
@@ -353,6 +355,7 @@ export function TargetModal({ config, onClose, worker, notify }) {
 }
 
 export function SessionModal({ session, onClose, worker, notify }) {
+  const { closeRef, close } = useModalClose();
   const [accessToken, setAccessToken] = useState("");
   const [refreshToken, setRefreshToken] = useState("");
   const [cookie, setCookie] = useState("");
@@ -379,7 +382,7 @@ export function SessionModal({ session, onClose, worker, notify }) {
     try {
       await worker.saveSession(body);
       notify("success", "SESSION SAVED", "The worker is re-linking to the market feed.");
-      onClose();
+      close();
     } catch (error) {
       if (error.fields && Object.keys(error.fields).length > 0) {
         setErrors(error.fields);
@@ -394,12 +397,13 @@ export function SessionModal({ session, onClose, worker, notify }) {
     <ModalShell
       title="Link Rollercoin session"
       onClose={onClose}
+      closeRef={closeRef}
       footer={
         <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-          <button className="btn" type="button" onClick={onClose}>
+          <button className="btn" type="button" onClick={close}>
             Cancel
           </button>
-          <button className="btn btn-primary" type="submit" form="session-form" disabled={busy}>
+          <button className="btn btn-primary" type="submit" form="session-form" disabled={busy} data-busy={busy ? "true" : undefined} aria-busy={busy}>
             {busy ? "Saving…" : "Save session"}
           </button>
         </div>
@@ -508,6 +512,7 @@ function buildUserscript(code, baseUrl) {
 }
 
 export function BridgeModal({ onClose, getConnection, notify }) {
+  const { closeRef, close } = useModalClose();
   const [mode, setMode] = useState("console");
   const [snippet, setSnippet] = useState("");
   const [userscript, setUserscript] = useState("");
@@ -576,7 +581,7 @@ export function BridgeModal({ onClose, getConnection, notify }) {
   };
 
   return (
-    <ModalShell title="Token bridge" onClose={onClose} wide>
+    <ModalShell title="Token bridge" onClose={onClose} closeRef={closeRef} wide>
       <div className="modal-body">
         <div className="tab-rail grid-cols-2" role="tablist" aria-label="Bridge mode">
           <button
@@ -631,7 +636,7 @@ export function BridgeModal({ onClose, getConnection, notify }) {
         </div>
 
         {mode === "console" ? (
-          <p className="flex items-start gap-2 text-[12px] leading-relaxed text-faint">
+          <p className="flex items-start gap-2 text-[13px] leading-relaxed text-faint">
             <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
             <span>
               Console mode uses the page's <code className="text-ink-dim">fetch</code>, so Rollercoin's CSP or
@@ -640,7 +645,7 @@ export function BridgeModal({ onClose, getConnection, notify }) {
             </span>
           </p>
         ) : (
-          <p className="flex items-start gap-2 text-[12px] leading-relaxed text-faint">
+          <p className="flex items-start gap-2 text-[13px] leading-relaxed text-faint">
             <Icon name="i-check" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-signal" />
             <span>
               Userscript mode uses <code className="text-ink-dim">GM_xmlhttpRequest</code>, which bypasses page CORS
@@ -649,7 +654,7 @@ export function BridgeModal({ onClose, getConnection, notify }) {
             </span>
           </p>
         )}
-        <p className="flex items-start gap-2 text-[12px] leading-relaxed text-faint">
+        <p className="flex items-start gap-2 text-[13px] leading-relaxed text-faint">
           <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
           <span>
             Both variants contain this deck's access key. Keep them private and never paste them into a public gist
@@ -657,7 +662,7 @@ export function BridgeModal({ onClose, getConnection, notify }) {
           </span>
         </p>
         <div className="flex justify-end">
-          <button className="btn" type="button" onClick={onClose}>Close</button>
+          <button className="btn" type="button" onClick={close}>Close</button>
         </div>
       </div>
     </ModalShell>
@@ -665,12 +670,13 @@ export function BridgeModal({ onClose, getConnection, notify }) {
 }
 
 export function ConfirmModal({ title, message, confirmLabel = "CONFIRM", danger = true, onConfirm, onCancel }) {
+  const { closeRef, close } = useModalClose();
   return (
-    <ModalShell title={title} onClose={onCancel} small role="alertdialog" titleColor={danger ? "danger" : "lime"}>
+    <ModalShell title={title} onClose={onCancel} closeRef={closeRef} small role="alertdialog" titleColor={danger ? "danger" : "lime"}>
       <div className="modal-body">
         <p className="text-[14px] leading-relaxed text-muted">{message}</p>
         <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">
-          <button className="btn" type="button" onClick={onCancel} data-autofocus>Cancel</button>
+          <button className="btn" type="button" onClick={close} data-autofocus>Cancel</button>
           <button className={`btn ${danger ? "btn-danger" : "btn-primary"}`} type="button" onClick={onConfirm}>
             {confirmLabel}
           </button>
@@ -681,8 +687,9 @@ export function ConfirmModal({ title, message, confirmLabel = "CONFIRM", danger 
 }
 
 export function KeyModal({ token, onClose, notify }) {
+  const { closeRef, close } = useModalClose();
   return (
-    <ModalShell title="New access key" onClose={onClose}>
+    <ModalShell title="New access key" onClose={onClose} closeRef={closeRef}>
       <div className="modal-body">
         <p className="text-[13px] leading-relaxed text-muted">
           The old key is dead and open control sockets were revoked. Save this key. It is shown once.
@@ -701,7 +708,7 @@ export function KeyModal({ token, onClose, notify }) {
             <Icon name="i-copy" />
           </button>
         </div>
-        <p className="flex items-start gap-2 text-[12px] leading-relaxed text-faint">
+        <p className="flex items-start gap-2 text-[13px] leading-relaxed text-faint">
           <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
           <span>
             This deck reconnects automatically. Other browser tabs must paste the new key. If you installed the
@@ -709,7 +716,7 @@ export function KeyModal({ token, onClose, notify }) {
           </span>
         </p>
         <div className="flex justify-end">
-          <button className="btn btn-primary" type="button" onClick={onClose}>I saved it</button>
+          <button className="btn btn-primary" type="button" onClick={close}>I saved it</button>
         </div>
       </div>
     </ModalShell>

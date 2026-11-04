@@ -68,7 +68,7 @@ export default function PriceChart({ history, targetPrice }) {
   return (
     <div className="border-2 border-line bg-night-950/60 p-2.5">
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-        <div className="flex items-baseline gap-2 whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.06em] text-faint">
+        <div className="flex items-baseline gap-2 whitespace-nowrap font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
           Price history
           {change !== null && (
             <span className={`tabular-nums ${change >= 0 ? "text-signal" : "text-danger"}`}>
@@ -88,7 +88,7 @@ export default function PriceChart({ history, targetPrice }) {
               type="button"
               role="tab"
               aria-selected={timeframe === key}
-              className={`inline-flex h-6 min-w-6 items-center justify-center px-1.5 font-mono text-[9.5px] uppercase tracking-[0.06em] transition-colors ${
+              className={`inline-flex h-6 min-w-6 items-center justify-center px-1.5 font-mono text-[12px] uppercase tracking-[0.08em] transition-[color,background-color,transform] duration-100 active:translate-y-px ${
                 timeframe === key ? "bg-gold font-bold text-[#1a1000]" : "text-faint hover:bg-night-850 hover:text-ink-dim"
               }`}
               onClick={() => setTimeframe(key)}
@@ -105,7 +105,7 @@ export default function PriceChart({ history, targetPrice }) {
         aria-label={`Price history over ${TIMEFRAMES[timeframe].label}${change !== null ? `, ${change >= 0 ? "up" : "down"} ${Math.abs(change).toFixed(1)} percent` : ""}`}
       >
         {data.length < 2 ? (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-night-950/60 font-mono text-[10px] uppercase tracking-[0.06em] text-faint">
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-night-950/60 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
             {data.length === 0 ? "Collecting data" : "1 tick received"}
           </div>
         ) : null}
@@ -125,7 +125,7 @@ export default function PriceChart({ history, targetPrice }) {
               tickFormatter={(value) =>
                 timeframe === "1h" ? `${String(new Date(value).getHours()).padStart(2, "0")}:00` : formatTime(value).slice(0, 5)
               }
-              tick={{ fill: "#8576c4", fontSize: 9, fontFamily: "Arcana, sans-serif", letterSpacing: "0.06em" }}
+              tick={{ fill: "#8576c4", fontSize: 12, fontFamily: "JetBrains Mono, monospace", letterSpacing: "0.02em" }}
               tickLine={false}
               axisLine={false}
               minTickGap={26}
