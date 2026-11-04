@@ -27,6 +27,7 @@ import {
   shortId,
   stateLabel,
   successStats,
+  trimPrice,
   drawPixelAvatar,
   formatMs,
   latencyClass,
@@ -367,6 +368,9 @@ function TargetCard({ config, onEdit, onDelete, onToggle, notify }) {
   const label = config.label || runtime.label || `ITEM ${shortId(config.itemId)}`;
   const hot = runtimeHot(config);
   const rate = stats.rate;
+  const rangeMin = Number.isFinite(runtime.allowedPriceMin) ? trimPrice(runtime.allowedPriceMin) : null;
+  const rangeMax = Number.isFinite(runtime.allowedPriceMax) ? trimPrice(runtime.allowedPriceMax) : null;
+  const hasRange = rangeMin !== null || rangeMax !== null;
 
   useEffect(() => {
     drawPixelAvatar(canvasRef.current, config.itemId, config.rarityColor);
@@ -434,6 +438,27 @@ function TargetCard({ config, onEdit, onDelete, onToggle, notify }) {
           <strong className="quote-value">{fixedPrice(config.targetPrice)}</strong>
           <span className="quote-unit">RLT</span>
         </div>
+      </div>
+
+      <div
+        className="range-block"
+        title={
+          runtime.allowedAt
+            ? `Allowed price band from the marketplace frame · updated ${relTime(runtime.allowedAt)}`
+            : "The worker has not received an allowed price band for this item yet."
+        }
+      >
+        <span className="range-label">ALLOWED RANGE</span>
+        {hasRange ? (
+          <span className="range-values">
+            <b>{rangeMin ?? "—"}</b>
+            <span className="range-sep">–</span>
+            <b>{rangeMax ?? "—"}</b>
+            <span className="range-unit">RLT</span>
+          </span>
+        ) : (
+          <span className="range-empty">WAITING FOR FRAME</span>
+        )}
       </div>
 
       <MemoChart history={runtime.history || []} targetPrice={config.targetPrice} />

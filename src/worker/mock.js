@@ -201,7 +201,11 @@ export class MockUpstream extends EventEmitter {
       item_id: config.itemId,
       currency: "RLT",
       item_type: "mutation_component",
-      data: { list }
+      data: {
+        list,
+        allowedPriceMin: Math.max(1, Math.round(bestRaw * 0.5)),
+        allowedPriceMax: bestRaw * 6
+      }
     });
   }
 

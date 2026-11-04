@@ -1751,6 +1751,55 @@ textarea.input {
   color: var(--ink);
 }
 
+.range-block {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 9px 5px;
+  border: 1px solid var(--line-soft);
+  background: rgba(4, 8, 16, 0.45);
+}
+
+.range-label {
+  font-family: var(--font-display);
+  font-size: 6px;
+  letter-spacing: 0.5px;
+  color: var(--muted-2);
+  white-space: nowrap;
+}
+
+.range-values {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+  font-size: 19px;
+  line-height: 1.1;
+  letter-spacing: 0.4px;
+  color: var(--muted-2);
+}
+
+.range-values b {
+  font-weight: 400;
+  color: var(--cyan);
+  white-space: nowrap;
+}
+
+.range-values b:last-of-type {
+  color: var(--ink);
+}
+
+.range-unit {
+  color: var(--muted-2);
+}
+
+.range-empty {
+  font-size: 17px;
+  letter-spacing: 0.4px;
+  color: var(--muted-2);
+}
+
 .meter-row {
   display: flex;
   align-items: center;

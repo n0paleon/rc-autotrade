@@ -8,6 +8,14 @@ export function fixedPrice(value) {
   return Number.isFinite(number) ? priceFmt.format(number) : "—";
 }
 
+const trimFmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 6 });
+
+/** Same precision as fixedPrice, but trailing zeros are dropped. */
+export function trimPrice(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? trimFmt.format(number) : "—";
+}
+
 export function formatRlt(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number.toFixed(6) : "0.000000";

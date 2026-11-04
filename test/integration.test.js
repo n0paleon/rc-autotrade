@@ -129,6 +129,13 @@ test("mock engine fills a seeded target", { timeout: TIMEOUT }, async () => {
   assert.equal(snapshot.settings?.dryRun, false, "dry run must be off");
   assert.ok(snapshot.stats.filled > 0, `expected at least one simulated fill\n${output}`);
   assert.ok(snapshot.history.length > 0);
+  const ranged = snapshot.configs.find(
+    (config) =>
+      Number.isFinite(config.runtime?.allowedPriceMin) &&
+      Number.isFinite(config.runtime?.allowedPriceMax)
+  );
+  assert.ok(ranged, `expected the market frame to cache an allowed price band\n${output}`);
+  assert.ok(ranged.runtime.allowedPriceMax > ranged.runtime.allowedPriceMin);
   assert.equal(snapshot.startedAt > 0, true);
 });
 
