@@ -1,18 +1,18 @@
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  writeFileSync
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
-import { MAX_HISTORY, MAX_REPORT_PRODUCTS } from "../shared/constants.js";
+import {
+  MAX_HISTORY,
+  MAX_REPORT_PRODUCTS,
+  PRICE_HISTORY_LIMIT,
+  PRICE_RETENTION_DAYS
+} from "../shared/constants.js";
 import { roundPrice } from "../shared/rules.js";
 import { validateSettings, validateTargets } from "../shared/validation.js";
+import { closeDatabase, openDatabase } from "./db.js";
 
 const STATE_VERSION = 1;
+const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_SETTINGS = Object.freeze({
   delayPerOrder: 200,
   maxOrdersPerMinute: 60,
@@ -197,11 +197,16 @@ function sanitizeStats(raw, fallback) {
 }
 
 /**
- * Persistent runtime state, split into two atomic files:
- *   - state.json    : session, targets, settings, stats (no loot history)
- *   - loot-log.json : confirmed/failed fill history
+ * Persistent runtime state backed by SQLite (`data/rollercoin.db`).
  *
- * Writes are debounced; `flush()` forces both files synchronously for shutdown.
+ * Kept API-compatible with the old JSON store: consumers still read
+ * `store.state.*` and call `save()`/`flush()`, but writes now touch individual
+ * rows inside a transaction instead of rewriting the whole document. The same
+ * database also holds the market cache (`market_snapshot` + `price_points`)
+ * so a restart can show the last known prices while waiting for fresh frames.
+ *
+ * Legacy `state.json` / `loot-log.json` files are imported once on first boot
+ * and then renamed to `*.migrated-<timestamp>`; nothing is deleted.
  */
 export class Store {
   constructor({ dataDir, logger }) {
@@ -209,92 +214,455 @@ export class Store {
     this.logger = logger;
     this.stateFile = join(dataDir, "state.json");
     this.historyFile = join(dataDir, "loot-log.json");
+    this.dbFile = join(dataDir, "rollercoin.db");
+    this.db = null;
+    this.stmts = null;
     this.state = defaultState();
     this.dirty = false;
     this.timer = null;
     this.writeErrorLogged = false;
-    this.historyDirty = false;
-    this.historyTimer = null;
-    this.historyErrorLogged = false;
+    this.pruneTimer = null;
+    this.migrated = false;
   }
 
   load() {
     mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
+    this.db = openDatabase({ dataDir: this.dataDir, logger: this.logger });
+    this.stmts = this.#prepareStatements();
+
+    const bootstrapped = this.stmts.metaGet.get("bootstrapped")?.value === "1";
+    const imported = bootstrapped ? "skipped" : this.#importLegacyJson();
+    this.#ensureRows();
+    // A failed import keeps the JSON files untouched and retries on the next
+    // boot instead of silently starting from an empty database.
+    if (imported !== "failed") this.#setMeta("bootstrapped", "1");
+
+    this.#hydrateFromDb();
+    this.#backfillReportIfEmpty();
+    this.#prunePriceHistory();
+    this.#schedulePrune();
+
+    return this;
+  }
+
+  // ── schema plumbing ──────────────────────────────────────────────────────
+
+  #prepareStatements() {
+    const db = this.db;
+    return {
+      metaAll: db.prepare("SELECT key, value FROM meta"),
+      metaGet: db.prepare("SELECT value FROM meta WHERE key = ?"),
+      metaSet: db.prepare(
+        "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+      ),
+      metaDelete: db.prepare("DELETE FROM meta WHERE key = ?"),
+
+      sessionGet: db.prepare("SELECT * FROM session WHERE id = 1"),
+      sessionUpsert: db.prepare(`
+        INSERT INTO session
+          (id, access_token, refresh_token, cookie, source, updated_at, last_refresh_at, refresh_count, last_error)
+        VALUES
+          (1, @access_token, @refresh_token, @cookie, @source, @updated_at, @last_refresh_at, @refresh_count, @last_error)
+        ON CONFLICT(id) DO UPDATE SET
+          access_token = excluded.access_token,
+          refresh_token = excluded.refresh_token,
+          cookie = excluded.cookie,
+          source = excluded.source,
+          updated_at = excluded.updated_at,
+          last_refresh_at = excluded.last_refresh_at,
+          refresh_count = excluded.refresh_count,
+          last_error = excluded.last_error
+      `),
+
+      settingsGet: db.prepare("SELECT * FROM settings WHERE id = 1"),
+      settingsInit: db.prepare(`
+        INSERT OR IGNORE INTO settings
+          (id, delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused)
+        VALUES (1, @delay_per_order, @max_orders_per_minute, @dry_run, @auto_refresh, @paused)
+      `),
+      settingsUpsert: db.prepare(`
+        INSERT INTO settings
+          (id, delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused)
+        VALUES
+          (1, @delay_per_order, @max_orders_per_minute, @dry_run, @auto_refresh, @paused)
+        ON CONFLICT(id) DO UPDATE SET
+          delay_per_order = excluded.delay_per_order,
+          max_orders_per_minute = excluded.max_orders_per_minute,
+          dry_run = excluded.dry_run,
+          auto_refresh = excluded.auto_refresh,
+          paused = excluded.paused
+      `),
+
+      statsGet: db.prepare("SELECT * FROM stats WHERE id = 1"),
+      statsUpsert: db.prepare(`
+        INSERT INTO stats
+          (id, since, profit_rlt, spent_rlt, bought, filled, failed, orders_sent)
+        VALUES
+          (1, @since, @profit_rlt, @spent_rlt, @bought, @filled, @failed, @orders_sent)
+        ON CONFLICT(id) DO UPDATE SET
+          since = excluded.since,
+          profit_rlt = excluded.profit_rlt,
+          spent_rlt = excluded.spent_rlt,
+          bought = excluded.bought,
+          filled = excluded.filled,
+          failed = excluded.failed,
+          orders_sent = excluded.orders_sent
+      `),
+
+      targetsAll: db.prepare("SELECT * FROM targets ORDER BY rowid"),
+      targetsClear: db.prepare("DELETE FROM targets"),
+      targetUpsert: db.prepare(`
+        INSERT INTO targets
+          (item_id, label, item_type, rarity_color, target_price, desired_qty,
+           high_stock_threshold, min_acceptable_qty, allow_partial_order, active, created_at, updated_at)
+        VALUES
+          (@item_id, @label, @item_type, @rarity_color, @target_price, @desired_qty,
+           @high_stock_threshold, @min_acceptable_qty, @allow_partial_order, @active, @created_at, @updated_at)
+        ON CONFLICT(item_id) DO UPDATE SET
+          label = excluded.label,
+          item_type = excluded.item_type,
+          rarity_color = excluded.rarity_color,
+          target_price = excluded.target_price,
+          desired_qty = excluded.desired_qty,
+          high_stock_threshold = excluded.high_stock_threshold,
+          min_acceptable_qty = excluded.min_acceptable_qty,
+          allow_partial_order = excluded.allow_partial_order,
+          active = excluded.active,
+          created_at = excluded.created_at,
+          updated_at = excluded.updated_at
+      `),
+
+      orderInsert: db.prepare(`
+        INSERT INTO orders
+          (id, order_id, item_id, label, qty, unit_price, total_price, target_price,
+           profit_rlt, status, at, latency_ms, note, message)
+        VALUES
+          (@id, @order_id, @item_id, @label, @qty, @unit_price, @total_price, @target_price,
+           @profit_rlt, @status, @at, @latency_ms, @note, @message)
+        ON CONFLICT(id) DO UPDATE SET
+          order_id = excluded.order_id,
+          item_id = excluded.item_id,
+          label = excluded.label,
+          qty = excluded.qty,
+          unit_price = excluded.unit_price,
+          total_price = excluded.total_price,
+          target_price = excluded.target_price,
+          profit_rlt = excluded.profit_rlt,
+          status = excluded.status,
+          at = excluded.at,
+          latency_ms = excluded.latency_ms,
+          note = excluded.note,
+          message = excluded.message
+      `),
+      ordersRecent: db.prepare("SELECT * FROM orders ORDER BY at DESC, rowid DESC LIMIT ?"),
+      ordersAll: db.prepare("SELECT * FROM orders ORDER BY at ASC, rowid ASC"),
+      ordersClear: db.prepare("DELETE FROM orders"),
+
+      productsAll: db.prepare("SELECT * FROM report_products"),
+      productsClear: db.prepare("DELETE FROM report_products"),
+      productUpsert: db.prepare(`
+        INSERT INTO report_products
+          (product_key, item_id, label, fills, failed, qty, spent_rlt, profit_rlt, first_at, last_at)
+        VALUES
+          (@product_key, @item_id, @label, @fills, @failed, @qty, @spent_rlt, @profit_rlt, @first_at, @last_at)
+        ON CONFLICT(product_key) DO UPDATE SET
+          item_id = excluded.item_id,
+          label = excluded.label,
+          fills = excluded.fills,
+          failed = excluded.failed,
+          qty = excluded.qty,
+          spent_rlt = excluded.spent_rlt,
+          profit_rlt = excluded.profit_rlt,
+          first_at = excluded.first_at,
+          last_at = excluded.last_at
+      `),
+      productDelete: db.prepare("DELETE FROM report_products WHERE product_key = ?"),
+
+      snapshotsAll: db.prepare("SELECT * FROM market_snapshot"),
+      snapshotUpsert: db.prepare(`
+        INSERT INTO market_snapshot
+          (item_id, last_price, last_stock, allowed_price_min, allowed_price_max, allowed_at, item_type, seen_at)
+        VALUES
+          (@item_id, @last_price, @last_stock, @allowed_price_min, @allowed_price_max, @allowed_at, @item_type, @seen_at)
+        ON CONFLICT(item_id) DO UPDATE SET
+          last_price = excluded.last_price,
+          last_stock = excluded.last_stock,
+          allowed_price_min = excluded.allowed_price_min,
+          allowed_price_max = excluded.allowed_price_max,
+          allowed_at = excluded.allowed_at,
+          item_type = excluded.item_type,
+          seen_at = excluded.seen_at
+      `),
+
+      pointsRange: db.prepare(`
+        SELECT bucket_at, price FROM price_points
+        WHERE item_id = ? AND bucket_at >= ?
+        ORDER BY bucket_at DESC LIMIT ?
+      `),
+      pointUpsert: db.prepare(`
+        INSERT INTO price_points (item_id, bucket_at, price) VALUES (?, ?, ?)
+        ON CONFLICT(item_id, bucket_at) DO UPDATE SET price = excluded.price
+      `),
+      pointsPrune: db.prepare("DELETE FROM price_points WHERE bucket_at < ?")
+    };
+  }
+
+  #tx(fn) {
+    if (this.db.inTransaction) {
+      fn();
+      return;
+    }
+    this.db.transaction(fn)();
+  }
+
+  #setMeta(key, value) {
+    if (value === null || value === undefined) {
+      this.stmts.metaDelete.run(key);
+      return;
+    }
+    this.stmts.metaSet.run(key, String(value));
+  }
+
+  #getMeta(key) {
+    return this.stmts.metaGet.get(key)?.value ?? null;
+  }
+
+  #ensureRows() {
+    const now = Date.now();
+    this.#tx(() => {
+      this.db.prepare("INSERT OR IGNORE INTO session (id) VALUES (1)").run();
+      this.stmts.settingsInit.run({
+        delay_per_order: DEFAULT_SETTINGS.delayPerOrder,
+        max_orders_per_minute: DEFAULT_SETTINGS.maxOrdersPerMinute,
+        dry_run: 0,
+        auto_refresh: 1,
+        paused: 0
+      });
+      this.db.prepare("INSERT OR IGNORE INTO stats (id, since) VALUES (1, ?)").run(now);
+      if (!this.#getMeta("created_at")) this.#setMeta("created_at", now);
+    });
+  }
+
+  // ── legacy JSON import ───────────────────────────────────────────────────
+
+  #importLegacyJson() {
+    const hasState = existsSync(this.stateFile);
+    const hasHistory = existsSync(this.historyFile);
+    if (!hasState && !hasHistory) return "none";
 
     let parsed = null;
-    let hadLegacyHistory = false;
-
-    if (!existsSync(this.stateFile)) {
-      this.logger?.info("store", `fresh state created at ${this.stateFile}`);
-    } else {
+    if (hasState) {
       try {
-        const raw = readFileSync(this.stateFile, "utf8");
-        parsed = JSON.parse(raw);
-        hadLegacyHistory = Object.prototype.hasOwnProperty.call(parsed ?? {}, "history");
+        parsed = JSON.parse(readFileSync(this.stateFile, "utf8"));
       } catch (error) {
-        const backup = `${this.stateFile}.corrupt-${Date.now()}`;
-        try {
-          renameSync(this.stateFile, backup);
-        } catch {
-          /* ignore */
-        }
+        this.#archive(`${this.stateFile}.corrupt-${Date.now()}`, this.stateFile);
         this.logger?.error(
           "store",
-          `state.json could not be loaded (${error.message}); backup: ${backup}`
+          `state.json could not be read (${error.message}); left as backup and starting empty`
         );
         parsed = null;
       }
     }
 
-    if (parsed) this.#hydrate(parsed);
-    this.#loadHistory(parsed?.history);
-    this.#backfillReportFromHistory();
+    this.#hydrate(parsed && typeof parsed === "object" ? parsed : null);
+    const history = this.#readLegacyHistory(parsed?.history, hasHistory);
+    this.state.history = history;
 
-    // Even when loot-log.json already exists, rewrite an older state.json once
-    // so the history array no longer lives there.
-    if (hadLegacyHistory) {
-      this.dirty = true;
-      this.flush();
+    // Older files have no report block: rebuild it from the imported loot log.
+    if (Object.keys(this.state.report.items).length === 0 && history.length > 0) {
+      for (const entry of history) this.#recordProduct(entry, { persist: false });
+      this.state.report.since = Math.min(this.state.report.since, this.state.stats.since);
     }
 
-    return this;
+    try {
+      this.#tx(() => {
+        this.#writeSession();
+        this.#writeSettings();
+        this.#writeStats();
+        this.stmts.targetsClear.run();
+        for (const config of this.state.configs) this.#writeTarget(config);
+        for (const entry of history) this.#writeOrder(entry);
+        this.stmts.productsClear.run();
+        for (const [key, product] of Object.entries(this.state.report.items)) {
+          this.#writeProduct(product, key);
+        }
+        this.#setMeta("created_at", this.state.createdAt);
+        this.#setMeta("report_since", this.state.report.since);
+        this.#setMeta("worker_token_hash", this.state.workerTokenHash);
+        this.#setMeta("worker_token_preview", this.state.workerTokenPreview);
+      });
+    } catch (error) {
+      this.logger?.error("store", `legacy JSON import failed: ${error.message}`);
+      return "failed";
+    }
+
+    this.#archive(this.stateFile, `${this.stateFile}.migrated-${Date.now()}`);
+    this.#archive(this.historyFile, `${this.historyFile}.migrated-${Date.now()}`);
+    this.migrated = true;
+    this.logger?.info(
+      "store",
+      `imported legacy JSON into ${this.dbFile}` +
+        (history.length ? ` (${history.length} loot entries, ${this.state.configs.length} targets)` : "")
+    );
+    return "ok";
   }
 
-  #loadHistory(legacyEntries) {
-    let loaded = null;
+  #archive(from, to) {
+    if (!existsSync(from)) return;
+    try {
+      renameSync(from, to);
+    } catch (error) {
+      this.logger?.warn("store", `could not archive ${from}: ${error.message}`);
+    }
+  }
 
-    if (existsSync(this.historyFile)) {
+  #readLegacyHistory(legacyEntries, hasHistoryFile) {
+    if (hasHistoryFile) {
       try {
         const parsed = JSON.parse(readFileSync(this.historyFile, "utf8"));
-        loaded = sanitizeHistory(Array.isArray(parsed) ? parsed : parsed?.history);
-        this.state.history = loaded;
+        return sanitizeHistory(Array.isArray(parsed) ? parsed : parsed?.history);
       } catch (error) {
-        const backup = `${this.historyFile}.corrupt-${Date.now()}`;
-        try {
-          renameSync(this.historyFile, backup);
-        } catch {
-          /* ignore */
-        }
+        this.#archive(`${this.historyFile}.corrupt-${Date.now()}`, this.historyFile);
         this.logger?.error(
           "store",
-          `loot-log.json could not be loaded (${error.message}); backup: ${backup}`
+          `loot-log.json could not be read (${error.message}); falling back to state.json history`
         );
-        loaded = null;
       }
+    }
+    return sanitizeHistory(legacyEntries);
+  }
+
+  // ── hydration ────────────────────────────────────────────────────────────
+
+  #targetsFromDb() {
+    return this.stmts.targetsAll.all().map((row) => ({
+      itemId: row.item_id,
+      label: row.label,
+      itemType: row.item_type,
+      ...(row.rarity_color ? { rarityColor: row.rarity_color } : {}),
+      targetPrice: row.target_price,
+      desiredQty: row.desired_qty,
+      highStockThreshold: row.high_stock_threshold,
+      minAcceptableQty: row.min_acceptable_qty,
+      allowPartialOrder: row.allow_partial_order === 1,
+      active: row.active === 1,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    }));
+  }
+
+  #hydrateFromDb() {
+    const base = defaultState();
+    const meta = {};
+    for (const row of this.stmts.metaAll.all()) meta[row.key] = row.value;
+
+    const configsResult = validateTargets(this.#targetsFromDb());
+    if (!configsResult.ok) {
+      this.logger?.warn(
+        "store",
+        `dropped invalid saved targets: ${Object.values(configsResult.errors).slice(0, 3).join(" ")}`
+      );
     }
 
-    if (loaded === null) {
-      const legacy = sanitizeHistory(legacyEntries);
-      this.state.history = legacy;
-      if (legacy.length > 0) {
-        this.logger?.info(
-          "store",
-          `migrating ${legacy.length} loot entries from state.json to ${this.historyFile}`
-        );
-        this.historyDirty = true;
-        this.flushHistory();
-      }
+    const settingsRow = this.stmts.settingsGet.get();
+    const settingsResult = validateSettings({
+      ...DEFAULT_SETTINGS,
+      ...(settingsRow
+        ? {
+            delayPerOrder: settingsRow.delay_per_order,
+            maxOrdersPerMinute: settingsRow.max_orders_per_minute,
+            dryRun: settingsRow.dry_run === 1,
+            autoRefresh: settingsRow.auto_refresh === 1,
+            paused: settingsRow.paused === 1
+          }
+        : {})
+    });
+
+    const sessionRow = this.stmts.sessionGet.get() ?? {};
+    const statsRow = this.stmts.statsGet.get();
+    const stats = sanitizeStats(
+      statsRow
+        ? {
+            since: statsRow.since,
+            profitRlt: statsRow.profit_rlt,
+            spentRlt: statsRow.spent_rlt,
+            bought: statsRow.bought,
+            filled: statsRow.filled,
+            failed: statsRow.failed,
+            ordersSent: statsRow.orders_sent
+          }
+        : null,
+      base.stats
+    );
+
+    const products = this.stmts.productsAll.all();
+    const items = {};
+    for (const row of products) {
+      items[row.product_key] = {
+        itemId: row.item_id,
+        label: row.label,
+        fills: row.fills,
+        failed: row.failed,
+        qty: row.qty,
+        spentRlt: row.spent_rlt,
+        profitRlt: row.profit_rlt,
+        firstAt: row.first_at,
+        lastAt: row.last_at
+      };
     }
+
+    const reportSince = Number(meta.report_since) || stats.since;
+
+    this.state = {
+      ...base,
+      createdAt: Number(meta.created_at) || base.createdAt,
+      updatedAt: base.updatedAt,
+      workerTokenHash: meta.worker_token_hash || null,
+      workerTokenPreview: meta.worker_token_preview || null,
+      session: {
+        accessToken: typeof sessionRow.access_token === "string" ? sessionRow.access_token : "",
+        refreshToken: typeof sessionRow.refresh_token === "string" ? sessionRow.refresh_token : "",
+        cookie: typeof sessionRow.cookie === "string" ? sessionRow.cookie : "",
+        updatedAt: asNullableTime(sessionRow.updated_at),
+        source: typeof sessionRow.source === "string" ? sessionRow.source.slice(0, 40) : null,
+        lastRefreshAt: asNullableTime(sessionRow.last_refresh_at),
+        refreshCount: Math.floor(asFinite(sessionRow.refresh_count)),
+        lastError:
+          typeof sessionRow.last_error === "string" ? sessionRow.last_error.slice(0, 200) : null
+      },
+      configs: configsResult.values,
+      settings: settingsResult.ok
+        ? { ...DEFAULT_SETTINGS, ...settingsResult.value }
+        : { ...DEFAULT_SETTINGS },
+      stats,
+      report: { since: reportSince, items },
+      history: this.stmts.ordersRecent.all(MAX_HISTORY).map((row) => this.#orderToEntry(row))
+    };
+  }
+
+  /**
+   * Older databases may have orders without a report aggregate (legacy
+   * loot-log import). Rebuild the aggregate once from every stored order so the
+   * panel keeps lifetime totals instead of restarting at zero.
+   */
+  #backfillReportIfEmpty() {
+    if (Object.keys(this.state.report.items).length > 0) return;
+    const rows = this.stmts.ordersAll.all();
+    if (rows.length === 0) return;
+
+    for (const row of rows) this.#recordProduct(this.#orderToEntry(row), { persist: false });
+    this.state.report.since = Math.min(this.state.report.since, this.state.stats.since);
+
+    this.#tx(() => {
+      this.stmts.productsClear.run();
+      for (const product of Object.values(this.state.report.items)) this.#writeProduct(product);
+      this.#setMeta("report_since", this.state.report.since);
+    });
+
+    this.logger?.info(
+      "store",
+      `rebuilt profit report for ${Object.keys(this.state.report.items).length} products from ${rows.length} orders`
+    );
   }
 
   #hydrate(raw) {
@@ -334,29 +702,127 @@ export class Store {
         lastError: typeof sessionSource.lastError === "string" ? sessionSource.lastError.slice(0, 200) : null
       },
       configs: configsResult.values,
-      settings: settingsResult.ok ? { ...DEFAULT_SETTINGS, ...settingsResult.value } : { ...DEFAULT_SETTINGS },
+      settings: settingsResult.ok
+        ? { ...DEFAULT_SETTINGS, ...settingsResult.value }
+        : { ...DEFAULT_SETTINGS },
       stats,
       report: sanitizeReport(source.report, stats.since),
       history: []
     };
   }
 
-  /**
-   * Older state files have no report block. Rebuild it from the loot log once so
-   * the panel has data immediately after an upgrade instead of starting empty.
-   */
-  #backfillReportFromHistory() {
-    if (this.state.history.length === 0) return;
-    if (Object.keys(this.state.report.items).length > 0) return;
-    for (const entry of this.state.history) this.#recordProduct(entry);
-    this.state.report.since = Math.min(this.state.report.since, this.state.stats.since);
-    this.logger?.info(
-      "store",
-      `rebuilt profit report for ${Object.keys(this.state.report.items).length} products from the loot log`
-    );
-    this.dirty = true;
-    this.flush();
+  // ── row writers ──────────────────────────────────────────────────────────
+
+  #writeSession() {
+    const session = this.state.session;
+    this.stmts.sessionUpsert.run({
+      access_token: session.accessToken ?? "",
+      refresh_token: session.refreshToken ?? "",
+      cookie: session.cookie ?? "",
+      source: session.source ?? null,
+      updated_at: session.updatedAt ?? null,
+      last_refresh_at: session.lastRefreshAt ?? null,
+      refresh_count: Math.floor(asFinite(session.refreshCount)),
+      last_error: session.lastError ?? null
+    });
   }
+
+  #writeSettings() {
+    const settings = this.state.settings;
+    this.stmts.settingsUpsert.run({
+      delay_per_order: settings.delayPerOrder,
+      max_orders_per_minute: settings.maxOrdersPerMinute,
+      dry_run: settings.dryRun ? 1 : 0,
+      auto_refresh: settings.autoRefresh ? 1 : 0,
+      paused: settings.paused ? 1 : 0
+    });
+  }
+
+  #writeStats() {
+    const stats = this.state.stats;
+    this.stmts.statsUpsert.run({
+      since: stats.since,
+      profit_rlt: stats.profitRlt,
+      spent_rlt: stats.spentRlt,
+      bought: stats.bought,
+      filled: stats.filled,
+      failed: stats.failed,
+      orders_sent: stats.ordersSent
+    });
+  }
+
+  #writeTarget(config) {
+    const now = Date.now();
+    this.stmts.targetUpsert.run({
+      item_id: config.itemId,
+      label: config.label ?? "",
+      item_type: config.itemType ?? "mutation_component",
+      rarity_color: config.rarityColor ?? null,
+      target_price: config.targetPrice,
+      desired_qty: config.desiredQty,
+      high_stock_threshold: config.highStockThreshold,
+      min_acceptable_qty: config.minAcceptableQty,
+      allow_partial_order: config.allowPartialOrder === false ? 0 : 1,
+      active: config.active === false ? 0 : 1,
+      created_at: config.createdAt ?? now,
+      updated_at: config.updatedAt ?? now
+    });
+  }
+
+  #writeOrder(entry) {
+    this.stmts.orderInsert.run({
+      id: entry.id,
+      order_id: entry.orderId ?? null,
+      item_id: entry.itemId ?? "",
+      label: entry.label ?? "",
+      qty: entry.qty ?? 0,
+      unit_price: entry.unitPrice ?? 0,
+      total_price: entry.totalPrice ?? 0,
+      target_price: entry.targetPrice ?? 0,
+      profit_rlt: entry.profitRlt ?? 0,
+      status: entry.status === "failed" ? "failed" : "filled",
+      at: entry.at ?? Date.now(),
+      latency_ms: entry.latencyMs ?? null,
+      note: entry.note ?? null,
+      message: entry.message ?? null
+    });
+  }
+
+  #writeProduct(product, key = productKey(product.itemId, product.label)) {
+    this.stmts.productUpsert.run({
+      product_key: key,
+      item_id: product.itemId ?? "",
+      label: product.label ?? "",
+      fills: product.fills ?? 0,
+      failed: product.failed ?? 0,
+      qty: product.qty ?? 0,
+      spent_rlt: product.spentRlt ?? 0,
+      profit_rlt: product.profitRlt ?? 0,
+      first_at: product.firstAt ?? Date.now(),
+      last_at: product.lastAt ?? Date.now()
+    });
+  }
+
+  #orderToEntry(row) {
+    return {
+      id: row.id,
+      orderId: row.order_id,
+      itemId: row.item_id,
+      label: row.label,
+      qty: row.qty,
+      unitPrice: row.unit_price,
+      totalPrice: row.total_price,
+      targetPrice: row.target_price,
+      profitRlt: row.profit_rlt,
+      status: row.status,
+      at: row.at,
+      latencyMs: row.latency_ms,
+      note: row.note,
+      message: row.message
+    };
+  }
+
+  // ── public API (unchanged surface) ───────────────────────────────────────
 
   /**
    * Resolves the worker access key.
@@ -368,7 +834,7 @@ export class Store {
       if (this.state.workerTokenHash !== hash) {
         this.state.workerTokenHash = hash;
         this.state.workerTokenPreview = previewToken(envToken);
-        this.save();
+        this.#persistToken();
       }
       return { plaintext: null, preview: this.state.workerTokenPreview, source: "env" };
     }
@@ -380,8 +846,7 @@ export class Store {
     const token = createWorkerToken();
     this.state.workerTokenHash = hashToken(token);
     this.state.workerTokenPreview = previewToken(token);
-    this.save();
-    this.flush();
+    this.#persistToken();
     return { plaintext: token, preview: this.state.workerTokenPreview, source: "generated" };
   }
 
@@ -401,9 +866,19 @@ export class Store {
     const token = createWorkerToken();
     this.state.workerTokenHash = hashToken(token);
     this.state.workerTokenPreview = previewToken(token);
-    this.save();
-    this.flush();
+    this.#persistToken();
     return token;
+  }
+
+  #persistToken() {
+    try {
+      this.#tx(() => {
+        this.#setMeta("worker_token_hash", this.state.workerTokenHash);
+        this.#setMeta("worker_token_preview", this.state.workerTokenPreview);
+      });
+    } catch (error) {
+      this.logger?.error("store", `failed to persist worker key: ${error.message}`);
+    }
   }
 
   setSession(patch, { source = "ui" } = {}) {
@@ -417,7 +892,7 @@ export class Store {
     session.source = patch.source || source;
     session.updatedAt = Date.now();
     session.lastError = null;
-    this.save();
+    this.#persistSession();
     return this.sessionStatus();
   }
 
@@ -429,12 +904,20 @@ export class Store {
     session.refreshCount += 1;
     session.lastError = null;
     session.source = "refresh";
-    this.save();
+    this.#persistSession();
   }
 
   markSessionError(message) {
     this.state.session.lastError = String(message).slice(0, 200);
-    this.save();
+    this.#persistSession();
+  }
+
+  #persistSession() {
+    try {
+      this.#tx(() => this.#writeSession());
+    } catch (error) {
+      this.logger?.error("store", `failed to persist session: ${error.message}`);
+    }
   }
 
   sessionStatus() {
@@ -487,7 +970,7 @@ export class Store {
     this.save();
   }
 
-  #recordProduct(entry) {
+  #recordProduct(entry, { persist = true } = {}) {
     if (!entry || typeof entry !== "object") return;
     const report = this.state.report;
     const key = productKey(entry.itemId, entry.label);
@@ -512,20 +995,27 @@ export class Store {
       product.profitRlt = roundPrice(product.profitRlt + asSigned(entry.profitRlt));
     }
 
-    this.#trimReport();
+    this.#trimReport(persist);
+    // The just-updated product may itself have been trimmed off the list.
+    if (persist && report.items[key]) this.#writeProduct(report.items[key], key);
+    return product;
   }
 
-  #trimReport() {
+  #trimReport(persist = true) {
     const items = this.state.report.items;
     const keys = Object.keys(items);
     if (keys.length <= MAX_REPORT_PRODUCTS) return;
     keys.sort((a, b) => items[a].profitRlt - items[b].profitRlt);
-    for (const key of keys.slice(0, keys.length - MAX_REPORT_PRODUCTS)) delete items[key];
+    const drop = keys.slice(0, keys.length - MAX_REPORT_PRODUCTS);
+    for (const key of drop) {
+      delete items[key];
+      if (persist) this.stmts.productDelete.run(key);
+    }
   }
 
   /**
    * All-time profit grouped by product. The aggregate is persisted in
-   * state.json, so it keeps counting past MAX_HISTORY loot-log rotation.
+   * `report_products`, so it keeps counting past MAX_HISTORY loot-log rotation.
    */
   reportView() {
     const report = this.state.report;
@@ -576,10 +1066,23 @@ export class Store {
   }
 
   addHistory(entry) {
-    this.state.history.unshift(entry);
+    const normalized = sanitizeHistory([entry])[0];
+    if (!normalized) return;
+
+    this.state.history.unshift(normalized);
     if (this.state.history.length > MAX_HISTORY) this.state.history.length = MAX_HISTORY;
-    this.#recordProduct(entry);
-    this.saveHistory();
+
+    this.#recordProduct(normalized);
+    try {
+      // Order and stats commit together: a crash cannot leave a fill in the
+      // loot log while the session totals still miss it.
+      this.#tx(() => {
+        this.#writeOrder(normalized);
+        this.#writeStats();
+      });
+    } catch (error) {
+      this.logger?.error("store", `failed to persist order ${normalized.id}: ${error.message}`);
+    }
     this.save();
   }
 
@@ -596,10 +1099,88 @@ export class Store {
     };
     this.state.report = { since: now, items: {} };
     this.state.history = [];
-    this.saveHistory();
+
+    this.#tx(() => {
+      this.stmts.ordersClear.run();
+      this.stmts.productsClear.run();
+      this.#writeStats();
+      this.#setMeta("report_since", now);
+    });
     this.save();
-    this.flush();
   }
+
+  // ── market cache ─────────────────────────────────────────────────────────
+
+  /** Latest snapshot per item, keyed by lowercase item id. */
+  loadMarketSnapshots() {
+    const out = {};
+    for (const row of this.stmts.snapshotsAll.all()) {
+      out[row.item_id] = {
+        lastPrice: row.last_price,
+        lastStock: row.last_stock,
+        allowedPriceMin: row.allowed_price_min,
+        allowedPriceMax: row.allowed_price_max,
+        allowedAt: row.allowed_at,
+        itemType: row.item_type,
+        seenAt: row.seen_at
+      };
+    }
+    return out;
+  }
+
+  saveMarketSnapshot(snapshot) {
+    this.stmts.snapshotUpsert.run({
+      item_id: String(snapshot.itemId).toLowerCase(),
+      last_price: snapshot.lastPrice ?? null,
+      last_stock: snapshot.lastStock ?? null,
+      allowed_price_min: snapshot.allowedPriceMin ?? null,
+      allowed_price_max: snapshot.allowedPriceMax ?? null,
+      allowed_at: snapshot.allowedAt ?? null,
+      item_type: snapshot.itemType ?? null,
+      seen_at: snapshot.seenAt ?? Date.now()
+    });
+  }
+
+  /** Batched variant used on shutdown so a restart resumes with fresh data. */
+  saveMarketSnapshots(snapshots) {
+    if (!Array.isArray(snapshots) || snapshots.length === 0) return;
+    this.#tx(() => {
+      for (const snapshot of snapshots) this.saveMarketSnapshot(snapshot);
+    });
+  }
+
+  /** Oldest → newest minute points for one item. */
+  loadPriceHistory(itemId, { limit = PRICE_HISTORY_LIMIT, since = 0 } = {}) {
+    const rows = this.stmts.pointsRange.all(String(itemId).toLowerCase(), since, limit);
+    return rows.reverse().map((row) => ({ t: row.bucket_at, p: row.price }));
+  }
+
+  recordPricePoint(itemId, bucketAt, price) {
+    this.stmts.pointUpsert.run(String(itemId).toLowerCase(), bucketAt, price);
+  }
+
+  #prunePriceHistory() {
+    const cutoff = Date.now() - PRICE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    try {
+      const result = this.stmts.pointsPrune.run(cutoff);
+      if (result.changes > 0) {
+        this.logger?.info(
+          "store",
+          `pruned ${result.changes} price points older than ${PRICE_RETENTION_DAYS} days`
+        );
+      }
+    } catch (error) {
+      this.logger?.warn("store", `price point prune failed: ${error.message}`);
+    }
+  }
+
+  #schedulePrune() {
+    if (this.pruneTimer) return;
+    this.pruneTimer = setInterval(() => this.#prunePriceHistory(), PRUNE_INTERVAL_MS);
+    this.pruneTimer.unref?.();
+  }
+
+  // ── persistence ──────────────────────────────────────────────────────────
 
   save() {
     this.dirty = true;
@@ -611,65 +1192,26 @@ export class Store {
     this.timer.unref?.();
   }
 
-  saveHistory() {
-    this.historyDirty = true;
-    if (this.historyTimer) return;
-    this.historyTimer = setTimeout(() => {
-      this.historyTimer = null;
-      if (this.historyDirty) this.flushHistory();
-    }, 120);
-    this.historyTimer.unref?.();
-  }
+  /** Compatibility shims: orders are written immediately in addHistory(). */
+  saveHistory() {}
 
-  flushHistory() {
-    if (!this.historyDirty) return;
-    this.historyDirty = false;
-    const temp = `${this.historyFile}.tmp`;
-    try {
-      writeFileSync(
-        temp,
-        JSON.stringify(
-          {
-            version: 1,
-            updatedAt: Date.now(),
-            history: this.state.history
-          },
-          null,
-          2
-        ),
-        { mode: 0o600 }
-      );
-      renameSync(temp, this.historyFile);
-      try {
-        chmodSync(this.historyFile, 0o600);
-      } catch {
-        /* non-posix filesystems */
-      }
-      this.historyErrorLogged = false;
-    } catch (error) {
-      if (!this.historyErrorLogged) {
-        this.logger?.error("store", `failed to persist loot log: ${error.message}`);
-        this.historyErrorLogged = true;
-      }
-      this.historyDirty = true;
-    }
-  }
+  flushHistory() {}
 
   flush() {
-    this.flushHistory();
     if (!this.dirty) return;
     this.dirty = false;
     this.state.updatedAt = Date.now();
-    const { history: _history, ...persisted } = this.state;
-    const temp = `${this.stateFile}.tmp`;
     try {
-      writeFileSync(temp, JSON.stringify(persisted, null, 2), { mode: 0o600 });
-      renameSync(temp, this.stateFile);
-      try {
-        chmodSync(this.stateFile, 0o600);
-      } catch {
-        /* non-posix filesystems */
-      }
+      this.#tx(() => {
+        this.#writeSettings();
+        this.#writeStats();
+        const ids = [];
+        for (const config of this.state.configs) {
+          ids.push(config.itemId);
+          this.#writeTarget(config);
+        }
+        this.#deleteMissingTargets(ids);
+      });
       this.writeErrorLogged = false;
     } catch (error) {
       if (!this.writeErrorLogged) {
@@ -679,6 +1221,25 @@ export class Store {
       // Retry on the next tick rather than losing the mutation entirely.
       this.dirty = true;
     }
+  }
+
+  #deleteMissingTargets(ids) {
+    if (ids.length === 0) {
+      this.stmts.targetsClear.run();
+      return;
+    }
+    const placeholders = ids.map(() => "?").join(",");
+    this.db.prepare(`DELETE FROM targets WHERE item_id NOT IN (${placeholders})`).run(...ids);
+  }
+
+  close() {
+    if (this.pruneTimer) clearInterval(this.pruneTimer);
+    this.pruneTimer = null;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.flush();
+    closeDatabase(this.db);
+    this.db = null;
   }
 }
 

@@ -1,12 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { Store, jwtExpiry } from "../src/worker/store.js";
 
 function tempDir() {
   return mkdtempSync(join(tmpdir(), "turuc-store-"));
+}
+
+function readDb(dir) {
+  return new Database(join(dir, "rollercoin.db"), { readonly: true });
 }
 
 test("store generates, verifies and rotates worker keys", () => {
@@ -24,14 +29,16 @@ test("store generates, verifies and rotates worker keys", () => {
     assert.equal(store.verifyWorkerToken(generated.plaintext), false);
 
     if (process.platform !== "win32") {
-      assert.equal(statSync(join(dir, "state.json")).mode & 0o777, 0o600);
+      assert.equal(statSync(join(dir, "rollercoin.db")).mode & 0o777, 0o600);
     }
+    assert.equal(existsSync(join(dir, "state.json")), false, "no JSON file is created");
+    store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("store persists session, targets and history", () => {
+test("store persists session, targets and history in SQLite", () => {
   const dir = tempDir();
   try {
     const store = new Store({ dataDir: dir, logger: null }).load();
@@ -66,14 +73,20 @@ test("store persists session, targets and history", () => {
     });
     store.flush();
 
-    const persistedState = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
-    assert.equal(Object.prototype.hasOwnProperty.call(persistedState, "history"), false);
-    const lootLog = JSON.parse(readFileSync(join(dir, "loot-log.json"), "utf8"));
-    assert.equal(lootLog.history.length, 1);
-    assert.equal(lootLog.history[0].profitRlt, 0.1);
+    const db = readDb(dir);
+    const order = db.prepare("SELECT * FROM orders WHERE id = ?").get("order-1");
+    const targets = db.prepare("SELECT * FROM targets").all();
+    const session = db.prepare("SELECT * FROM session WHERE id = 1").get();
+    db.close();
+
+    assert.equal(targets.length, 1);
+    assert.equal(targets[0].label, "NEON SHARD");
+    assert.equal(order.profit_rlt, 0.1);
+    assert.equal(order.message, "-");
+    assert.equal(session.access_token, "access-token-123456");
 
     if (process.platform !== "win32") {
-      assert.equal(statSync(join(dir, "loot-log.json")).mode & 0o777, 0o600);
+      assert.equal(statSync(join(dir, "rollercoin.db")).mode & 0o777, 0o600);
     }
 
     const reloaded = new Store({ dataDir: dir, logger: null }).load();
@@ -84,6 +97,7 @@ test("store persists session, targets and history", () => {
     assert.equal(reloaded.state.history[0].profitRlt, 0.1);
     assert.equal(reloaded.state.history[0].message, "-");
     assert.equal(reloaded.state.stats.filled, 0);
+    reloaded.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -104,11 +118,12 @@ test("store clears session credentials on explicit flags", () => {
     assert.equal(cleared.hasRefreshToken, false);
     assert.equal(cleared.hasCookie, false);
 
-    store.flush();
+    store.close();
     const reloaded = new Store({ dataDir: dir, logger: null }).load();
     assert.equal(reloaded.state.session.accessToken, "");
     assert.equal(reloaded.state.session.refreshToken, "");
     assert.equal(reloaded.state.session.cookie, "");
+    reloaded.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -128,6 +143,7 @@ test("store can clear a single credential while keeping the others", () => {
     assert.equal(cleared.hasAccessToken, true);
     assert.equal(cleared.hasRefreshToken, true);
     assert.equal(cleared.hasCookie, false);
+    store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -163,15 +179,16 @@ test("backfills loot messages: dash for fills, reason for failures", () => {
     );
 
     const store = new Store({ dataDir: dir, logger: null }).load();
-    const [failed, filled] = store.state.history;
-    assert.equal(failed.message, "marketplace rejected the order");
-    assert.equal(filled.message, "-");
+    const byId = Object.fromEntries(store.state.history.map((entry) => [entry.id, entry]));
+    assert.equal(byId["failed-1"].message, "marketplace rejected the order");
+    assert.equal(byId["filled-1"].message, "-");
+    store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("migrates legacy state.json history into a separate loot-log.json", () => {
+test("imports legacy state.json once and archives the JSON files", () => {
   const dir = tempDir();
   try {
     const legacyEntry = {
@@ -208,10 +225,22 @@ test("migrates legacy state.json history into a separate loot-log.json", () => {
     assert.equal(store.state.history[0].id, "legacy-1");
     assert.equal(store.state.history[0].message, "-");
 
-    const persistedState = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
-    const lootLog = JSON.parse(readFileSync(join(dir, "loot-log.json"), "utf8"));
-    assert.equal(Object.prototype.hasOwnProperty.call(persistedState, "history"), false);
-    assert.equal(lootLog.history[0].id, "legacy-1");
+    assert.equal(existsSync(join(dir, "state.json")), false, "legacy file is renamed");
+    assert.equal(
+      readdirSync(dir).filter((name) => name.startsWith("state.json.migrated-")).length,
+      1
+    );
+
+    const db = readDb(dir);
+    const order = db.prepare("SELECT * FROM orders WHERE id = ?").get("legacy-1");
+    db.close();
+    assert.equal(order.label, "LEGACY");
+
+    const reloaded = new Store({ dataDir: dir, logger: null }).load();
+    assert.equal(reloaded.state.history.length, 1, "reload does not import twice");
+    assert.equal(reloaded.state.history[0].id, "legacy-1");
+    store.close();
+    reloaded.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -226,9 +255,102 @@ test("store drops invalid saved targets instead of crashing", () => {
     ];
     store.dirty = true;
     store.flush();
+    store.close();
 
     const reloaded = new Store({ dataDir: dir, logger: null }).load();
     assert.deepEqual(reloaded.state.configs, []);
+    reloaded.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("market snapshots and price points survive a restart", () => {
+  const dir = tempDir();
+  const itemId = "6571aa39ca8bfef34adcd9e9";
+  const now = Date.now();
+  const bucket = Math.floor(now / 60_000) * 60_000;
+
+  try {
+    const store = new Store({ dataDir: dir, logger: null }).load();
+    store.upsertConfig({
+      itemId,
+      label: "NEON SHARD",
+      targetPrice: 0.1,
+      desiredQty: 10,
+      highStockThreshold: 20,
+      minAcceptableQty: 1,
+      allowPartialOrder: true,
+      active: true
+    });
+    store.flush();
+    store.saveMarketSnapshot({
+      itemId,
+      lastPrice: 0.05,
+      lastStock: 12,
+      allowedPriceMin: 0.01,
+      allowedPriceMax: 0.2,
+      allowedAt: now,
+      itemType: "rack",
+      seenAt: now
+    });
+    store.recordPricePoint(itemId, bucket - 60_000, 0.06);
+    store.recordPricePoint(itemId, bucket, 0.05);
+    store.recordPricePoint(itemId, now - 20 * 24 * 60 * 60 * 1000, 0.5);
+
+    // A flush must not wipe the snapshot (targets are upserted, not deleted wholesale).
+    store.flush();
+    store.close();
+
+    const reloaded = new Store({ dataDir: dir, logger: null }).load();
+    const snapshot = reloaded.loadMarketSnapshots()[itemId];
+    assert.equal(snapshot.lastPrice, 0.05);
+    assert.equal(snapshot.lastStock, 12);
+    assert.equal(snapshot.itemType, "rack");
+
+    const points = reloaded.loadPriceHistory(itemId);
+    assert.deepEqual(
+      points.map((point) => point.p),
+      [0.06, 0.05],
+      "old points are pruned and the rest stay in chronological order"
+    );
+    assert.equal(reloaded.loadPriceHistory(itemId, { limit: 1 }).length, 1);
+
+    reloaded.removeConfig(itemId);
+    reloaded.flush();
+    assert.deepEqual(reloaded.loadMarketSnapshots(), {}, "removing a target cascades to its snapshot");
+    reloaded.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("report and lifetime stats survive loot-log rotation", () => {
+  const dir = tempDir();
+  try {
+    const store = new Store({ dataDir: dir, logger: null }).load();
+    for (let index = 0; index < 5; index += 1) {
+      store.addHistory({
+        id: `order-${index}`,
+        itemId: "6571aa39ca8bfef34adcd9e9",
+        label: "NEON SHARD",
+        qty: 1,
+        unitPrice: 0.09,
+        totalPrice: 0.09,
+        targetPrice: 0.1,
+        profitRlt: 0.01,
+        status: index === 4 ? "failed" : "filled",
+        at: 1_000 + index
+      });
+    }
+    store.close();
+
+    const reloaded = new Store({ dataDir: dir, logger: null }).load();
+    const report = reloaded.reportView();
+    assert.equal(report.items.length, 1);
+    assert.equal(report.items[0].fills, 4);
+    assert.equal(report.items[0].failed, 1);
+    reloaded.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

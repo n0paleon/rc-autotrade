@@ -7,7 +7,7 @@ dist/
 
 # runtime state & secrets
 data/
-state.json
+state.json*
 .env
 .env.*
 !.env.example
@@ -18,6 +18,9 @@ state.json
 *.p12
 *.sqlite
 *.db
+*.db-wal
+*.db-shm
+loot-log.json*
 
 # local QA / tooling
 .qa/

@@ -71,6 +71,10 @@ function printBanner({ config, serverUrl, tokenInfo, mock }) {
 }
 
 async function main() {
+  // Every runtime file (SQLite db, -wal, -shm, backups) holds credentials or
+  // order data; create them 0600 by default instead of relying on chmod alone.
+  process.umask(0o077);
+
   const config = loadConfig();
   const logger = createLogger({ level: config.logLevel });
   const startedAt = Date.now();
@@ -162,6 +166,10 @@ async function main() {
     }
   });
 
+  // Show the last known prices immediately after a restart instead of an empty
+  // deck. Live frames overwrite these as soon as they arrive.
+  engine.hydrateMarket();
+
   const server = new ControlServer({
     config,
     store,
@@ -241,7 +249,7 @@ async function main() {
     } catch (error) {
       logger.error("worker", `shutdown error: ${error?.message || error}`);
     } finally {
-      store.flush();
+      store.close();
       setTimeout(() => process.exit(0), 50).unref?.();
     }
   }
@@ -251,7 +259,7 @@ async function main() {
 
   process.on("uncaughtException", (error) => {
     logger.error("worker", `uncaught exception: ${error?.stack || error}`);
-    store.flush();
+    store.close();
     process.exit(1);
   });
 

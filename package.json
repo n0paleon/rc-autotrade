@@ -20,6 +20,7 @@
     "pm2:start": "npm run build && pm2 startOrReload ecosystem.config.cjs --update-env"
   },
   "dependencies": {
+    "better-sqlite3": "^12.11.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "recharts": "^3.10.1",

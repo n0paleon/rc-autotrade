@@ -602,6 +602,14 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
               {Number.isFinite(runtime.lastPrice) ? fixedPrice(runtime.lastPrice) : "—"}
             </strong>
             <span className="font-mono text-[12px] text-faint">RLT</span>
+            {runtime.stale && Number.isFinite(runtime.seenAt) ? (
+              <span
+                className="ml-auto font-mono text-[10px] uppercase tracking-[0.08em] text-faint"
+                title={`Cached snapshot from ${relTime(runtime.seenAt)} — waiting for a live market frame`}
+              >
+                cached
+              </span>
+            ) : null}
           </div>
         </div>
         <div className="bg-gold/5 px-2.5 py-2 sm:px-3">

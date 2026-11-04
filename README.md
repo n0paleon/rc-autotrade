@@ -52,7 +52,7 @@ untuk login, mengatur target, memantau market, dan melihat loot.
   hasil build `dist/` sehingga tetap same-origin dan tanpa CDN runtime.
 - **Session manager** — menyimpan access/refresh token, memperbarui token sebelum kedaluwarsa,
   mencoba ulang sekali saat request kena `401`, dan bisa diganti atau **dihapus langsung dari UI**
-  (termasuk cookie Cloudflare) tanpa menyentuh `data/state.json` secara manual.
+  (termasuk cookie Cloudflare) tanpa menyentuh database `data/rollercoin.db` secara manual.
 - **Token bridge** — opsional: console snippet sekali pakai atau **userscript Tampermonkey** yang
   dipasang sekali dan otomatis menyinkronkan token setiap 30 detik, bahkan saat tab background.
 - **Safety rails** — cooldown antar order, batas order per menit, backoff saat purchase ditolak,
@@ -221,8 +221,8 @@ Catatan:
 - Gunakan **satu instance** (`fork`), jangan `-i max`/cluster. Worker memegang satu koneksi
   WebSocket dan state order; beberapa instance bisa saling menimpa state dan mengirim order ganda.
 - `.env` dibaca oleh worker dari `cwd` (`ecosystem.config.cjs` mengarah ke root project).
-- Data target/session dan agregat profit per produk tetap di `data/state.json`; loot log ada di
-  `data/loot-log.json`. PM2 restart tidak menghapus keduanya.
+- Data target/session, loot log, agregat profit, dan cache harga pasar ada di database SQLite
+  `data/rollercoin.db` (mode WAL). PM2 restart tidak menghapusnya.
 - Log default ada di `~/.pm2/logs/`. Jangan commit log karena bisa memuat access key saat boot pertama.
 - `pm2 startup` membutuhkan sudo. Jika tidak tersedia, jalankan PM2 dari systemd user service.
 
@@ -301,7 +301,7 @@ Perilaku pembelian:
   mode live mulai kosong dan terisi seiring waktu. History runtime hilang saat worker restart.
 - **Profit** di dashboard = `(targetPrice - hargaBeli) × qty`, yaitu selisih terhadap harga target,
   bukan hasil penjualan kembali.
-- **PROFIT BY PRODUCT** mengagregasi semua fill dan failure per `itemId` ke `state.json`
+- **PROFIT BY PRODUCT** mengagregasi semua fill dan failure per `itemId` ke tabel `report_products` di `data/rollercoin.db`
   (`report.items`). Karena counter disimpan terpisah dari loot log, laporan tetap akurat setelah
   loot log berputar melewati `MAX_HISTORY = 200` dan setelah worker restart. Kolomnya: fills,
   failed, qty, spend, avg buy, profit, margin (`profit / spend`), success rate, dan last activity.
@@ -487,7 +487,7 @@ adalah ambang batas bawahnya.
 
 ### `maxSpendPerFill` — plafon teoretis, bukan field
 
-Nilai abu-abu di form target **tidak dikirim** ke worker dan tidak disimpan di `state.json`. UI
+Nilai abu-abu di form target **tidak dikirim** ke worker dan tidak disimpan ke database. UI
 menghitungnya sebagai `targetPrice × desiredQty × 2` supaya Anda bisa melihat skenario terburuk
 satu fill: harga pas di target **dan** high-stock menyala.
 
@@ -573,7 +573,7 @@ rate limit, backoff, no-token); kondisi itu terlihat di log `scan`/`order` dan d
 4. Buka tab **LINK → PASTE TOKEN** di control deck.
 5. Isi cookie Cloudflare hanya jika API purchase ditolak (lihat troubleshooting).
 
-Worker menyimpan access + refresh token di `data/state.json` (mode `0600`) dan otomatis
+Worker menyimpan access + refresh token di `data/rollercoin.db` (mode `0600`) dan otomatis
 memperbarui access token **2 menit sebelum** JWT kedaluwarsa. Token Rollercoin umumnya berumur
 600 detik, jadi refresh terjadi sekitar tiap 8 menit — bukan tiap 30 detik. Untuk token opaque,
 fallback-nya tiap 25 menit. Refresh terjadwal **tidak** menutup/membuka ulang market socket;
@@ -650,7 +650,7 @@ salin header cookie dari request browser (minimal `cf_clearance`, sering juga `_
 | `HOST` | `127.0.0.1` | Bind address control plane |
 | `PORT` | `8787` | Port control plane (`0` = pilih acak) |
 | `WORKER_TOKEN` | — | Pin access key (>= 16 karakter) |
-| `DATA_DIR` | `./data` | Lokasi `state.json` dan `loot-log.json` |
+| `DATA_DIR` | `./data` | Lokasi database `rollercoin.db` (+ `-wal`/`-shm`) |
 | `RC_API_BASE` | `https://rollercoin.com` | Base URL API |
 | `RC_WS_URL` | `wss://nws.rollercoin.com/` | URL market socket |
 | `RC_COOKIE` | — | Cookie header awal (bisa juga dari UI) |
@@ -989,14 +989,24 @@ pm2 restart rc-autotrade --update-env
 
 ## Data dan keamanan
 
-- `data/state.json` berisi token sesi Rollercoin (plaintext), target, settings, dan statistik.
-  **Tidak** lagi menyimpan loot log.
-- `data/loot-log.json` berisi history fill/failure (maks 200 entri) dan ditulis terpisah dengan
-  atomic write. Tiap entri punya field `message`: `"-"` untuk fill, dan alasan error untuk failure.
-  Kedua file dibuat `0600`, direktori `0700`.
-- Saat pertama start setelah update, history lama di `state.json` otomatis dimigrasikan ke
-  `loot-log.json`, lalu `state.json` ditulis ulang tanpa field `history`. Jangan commit atau backup
-  isi `data/` ke tempat publik.
+- `data/rollercoin.db` adalah database SQLite (mode WAL) berisi token sesi Rollercoin (plaintext),
+  target, settings, statistik, loot log, agregat profit per produk, dan cache harga pasar. File
+  dibuat `0600`, direktori `0700`; `rollercoin.db-wal`/`-shm` ikut di-`chmod 0600` saat dibuka.
+- Order fill/failure disimpan di tabel `orders` tanpa batas 200. UI tetap menampilkan 60 terbaru
+  dan engine memakai 200 terbaru untuk cek duplikat. Agregat profit ada di `report_products`,
+  jadi tetap utuh walau history berputar. Tiap entri punya field `message`: `"-"` untuk fill,
+  dan alasan error untuk failure.
+- Cache pasar (`market_snapshot` + `price_points`) membuat deck langsung terisi setelah restart.
+  Data ini hanya untuk tampilan: order tetap hanya direncanakan dari frame socket live, dan badge
+  `cached` menandai harga yang belum diperbarui frame baru.
+- Titik harga 1 menit disimpan 14 hari lalu dipangkas otomatis (saat boot dan tiap 6 jam). Ubah
+  `PRICE_RETENTION_DAYS` di `src/shared/constants.js` kalau butuh histori lebih panjang.
+- Database lama dari versi JSON dimigrasikan otomatis saat boot pertama: `state.json` dan
+  `loot-log.json` diimpor lalu di-rename menjadi `*.migrated-<timestamp>` (tidak dihapus).
+  Jangan commit atau backup isi `data/` ke tempat publik.
+- Backup: `sqlite3 data/rollercoin.db ".backup 'backup.db'"` saat worker berjalan, atau copy
+  `rollercoin.db` setelah worker berhenti. Jangan menaruh `DATA_DIR` di NFS/folder sync (Dropbox,
+  OneDrive) karena WAL butuh locking lokal.
 - Access key worker **tidak** disimpan plaintext; hanya hash SHA-256 + preview.
 - Token Rollercoin tidak pernah dikirim ke UI dalam bentuk penuh; UI hanya menampilkan preview.
   Pengecualian: `/api/session/push` membalas token penuh ke snippet bridge yang sudah terautentikasi.
@@ -1038,7 +1048,8 @@ Cakupan:
 - `validation.test.js` — schema target, URL, duplikat, settings, session.
 - `rules.test.js` — price/qty/high-stock/partial, rate limiter, konversi micro-RLT.
 - `events.test.js` — normalisasi frame market, fill, dan frame lain.
-- `store.test.js` — key generation/rotation, persistensi, sanitasi state, JWT exp.
+- `store.test.js` — key generation/rotation, persistensi SQLite, migrasi JSON, market cache, JWT exp.
+- `engine-cache.test.js` — snapshot hasil hydrate hanya untuk tampilan dan tidak memicu order.
 - `bridge.test.js` — transport `GM_xmlhttpRequest` + sinkronisasi token dua arah.
 - `item-info.test.js` — auto label, fallback tanpa `rarityGroup`, deteksi tipe (rack), cache, kegagalan API.
 - `engine.test.js` — order gagal tidak menambah book; fill sukses menguranginya.
