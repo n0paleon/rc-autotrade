@@ -283,6 +283,28 @@ export class MockUpstream extends EventEmitter {
     };
   }
 
+  async fetchItemOrders({ itemId, itemType = "mutation_component" }) {
+    return this.#timedHttp(() => this.#fetchItemOrders({ itemId, itemType }));
+  }
+
+  async #fetchItemOrders({ itemId }) {
+    const config = this.store.state.configs.find(
+      (candidate) => candidate.itemId.toLowerCase() === String(itemId).toLowerCase()
+    );
+    const target = config?.targetPrice ?? 0.1;
+    return {
+      ok: true,
+      status: 200,
+      data: {
+        allowedPriceMin: Math.round(target * 0.5 * 1_000_000) / 1_000_000,
+        allowedPriceMax: Math.round(target * 8 * 1_000_000) / 1_000_000,
+        list: [],
+        rest: { price: Math.round(target * 2 * 1_000_000), quantity: 0 },
+        totalCount: 0
+      }
+    };
+  }
+
   async refreshSession(refreshToken) {
     return this.#timedHttp(() => this.#refreshSession(refreshToken));
   }

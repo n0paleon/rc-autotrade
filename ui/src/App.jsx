@@ -358,15 +358,17 @@ function Hud({ snapshot, now, eps }) {
   );
 }
 
-function TargetCard({ config, onEdit, onDelete, onToggle, notify }) {
+function TargetCard({ config, onEdit, onDelete, onToggle, worker, notify }) {
   const canvasRef = useRef(null);
   const [toggling, setToggling] = useState(false);
+  const [fetching, setFetching] = useState(false);
   const runtime = config.runtime || {};
   const state = cardState(config);
   const stats = successStats(config);
   const label = config.label || runtime.label || `ITEM ${shortId(config.itemId)}`;
   const hot = runtimeHot(config);
   const rate = stats.rate;
+  const hasAllowed = Number.isFinite(config.allowedPriceMin) && Number.isFinite(config.allowedPriceMax);
 
   useEffect(() => {
     drawPixelAvatar(canvasRef.current, config.itemId, config.rarityColor);
@@ -462,6 +464,55 @@ function TargetCard({ config, onEdit, onDelete, onToggle, notify }) {
         <span className="tag">MAX <b>{fixedPrice(config.targetPrice * config.desiredQty * 2)}</b></span>
       </div>
 
+      <div className="allowed-block">
+        <div className="allowed-top">
+          <span className="allowed-label">ALLOWED PRICE RANGE</span>
+          <button
+            className="btn btn-ghost btn-sm"
+            type="button"
+            disabled={fetching}
+            title="Fetch allowedPriceMin / allowedPriceMax from the marketplace (manual, cached)"
+            onClick={async () => {
+              setFetching(true);
+              try {
+                const result = await worker.fetchAllowedPrice(config.itemId);
+                const min = result?.allowedPrice?.min;
+                const max = result?.allowedPrice?.max;
+                notify(
+                  "success",
+                  "ALLOWED RANGE SAVED",
+                  `${label} · MIN ${min != null ? fixedPrice(min) : "—"} · MAX ${max != null ? fixedPrice(max) : "—"} RLT`
+                );
+              } catch (error) {
+                notify("error", "FETCH FAILED", error.message);
+              } finally {
+                setFetching(false);
+              }
+            }}
+          >
+            <Icon name="i-refresh" className="icon icon-xs" /> {fetching ? "FETCHING…" : "FETCH RANGE"}
+          </button>
+        </div>
+        {hasAllowed ? (
+          <>
+            <div className="allowed-values">
+              <span>MIN <b>{fixedPrice(config.allowedPriceMin)} RLT</b></span>
+              <span>MAX <b>{fixedPrice(config.allowedPriceMax)} RLT</b></span>
+            </div>
+            <div className="allowed-foot">
+              <span>
+                {config.itemType ? `TYPE ${config.itemType.toUpperCase()} · ` : ""}
+                {config.allowedPriceAt ? `SNAPSHOT ${relTime(config.allowedPriceAt)}` : "SNAPSHOT —"}
+              </span>
+            </div>
+          </>
+        ) : (
+          <div className="allowed-foot">
+            <span>NO SNAPSHOT YET — PRESS FETCH RANGE</span>
+          </div>
+        )}
+      </div>
+
       <div className="card-foot">
         <span className={`card-last${runtime.lastResult?.status === "filled" && isRecent(runtime.lastResult.at, 10_000) ? " is-win" : ""}${runtime.lastResult?.status === "rejected" && isRecent(runtime.lastResult.at, 12_000) ? " is-error" : ""}`}>
           {lastText(config)}
@@ -479,7 +530,7 @@ function TargetCard({ config, onEdit, onDelete, onToggle, notify }) {
   );
 }
 
-function TargetsPanel({ configs, search, onSearch, onAdd, onEdit, onDelete, onToggle, notify }) {
+function TargetsPanel({ configs, search, onSearch, onAdd, onEdit, onDelete, onToggle, worker, notify }) {
   const query = search.trim().toLowerCase();
   const filtered = query
     ? configs.filter(
@@ -534,6 +585,7 @@ function TargetsPanel({ configs, search, onSearch, onAdd, onEdit, onDelete, onTo
                 onEdit={onEdit}
                 onDelete={onDelete}
                 onToggle={onToggle}
+                worker={worker}
                 notify={notify}
               />
             ))
@@ -1275,6 +1327,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
             onEdit={(config) => setModal({ type: "target", config })}
             onDelete={deleteTarget}
             onToggle={toggleTarget}
+            worker={worker}
             notify={notify}
           />
           <LootLog history={snapshot.history || []} onReset={resetStats} />

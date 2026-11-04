@@ -168,6 +168,7 @@ async function main() {
     session,
     gateway,
     engine,
+    api,
     itemInfo,
     keepalive,
     latency,

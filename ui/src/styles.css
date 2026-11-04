@@ -1824,6 +1824,51 @@ textarea.input {
   color: var(--lime);
 }
 
+.allowed-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 9px 6px;
+  border: 1px solid var(--line-soft);
+  background: rgba(4, 8, 16, 0.45);
+}
+
+.allowed-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.allowed-label {
+  font-family: var(--font-display);
+  font-size: 5.5px;
+  line-height: 1.6;
+  letter-spacing: 0.4px;
+  color: var(--muted-2);
+}
+
+.allowed-values {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 14px;
+  letter-spacing: 0.3px;
+  color: var(--muted-2);
+}
+
+.allowed-values b {
+  color: var(--cyan);
+  font-weight: 400;
+}
+
+.allowed-foot {
+  font-size: 12px;
+  line-height: 1.2;
+  letter-spacing: 0.3px;
+  color: var(--muted-2);
+}
+
 .card-tags {
   display: flex;
   flex-wrap: wrap;

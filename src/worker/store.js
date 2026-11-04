@@ -379,6 +379,16 @@ export class Store {
     this.save();
   }
 
+  setAllowedPrice(itemId, { min, max, at }) {
+    const key = String(itemId).toLowerCase();
+    const index = this.state.configs.findIndex((config) => config.itemId.toLowerCase() === key);
+    if (index < 0) return null;
+    const config = { ...this.state.configs[index], allowedPriceMin: min, allowedPriceMax: max, allowedPriceAt: at };
+    this.state.configs[index] = config;
+    this.save();
+    return config;
+  }
+
   patchSettings(settings) {
     this.state.settings = { ...this.state.settings, ...settings };
     this.save();

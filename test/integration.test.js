@@ -175,6 +175,32 @@ test("target CRUD validates and broadcasts snapshots", { timeout: TIMEOUT }, asy
   assert.equal(removedBody.configs.some((config) => config.itemId === itemId), false);
 });
 
+test("allowed-price fetch caches the mock range on the target", { timeout: TIMEOUT }, async () => {
+  const itemId = "6571aa39ca8bfef34adcd9e9";
+  const before = await fetch(`${baseUrl}/api/state`, { headers: authHeaders() });
+  assert.equal(before.status, 200);
+  const beforeBody = await before.json();
+  // Seeded mock target has targetPrice 0.1 → min 0.05, max 0.8 RLT.
+  assert.equal(beforeBody.configs.some((config) => config.itemId === itemId), true);
+
+  const fetched = await fetch(`${baseUrl}/api/configs/${itemId}/allowed-price`, {
+    method: "POST",
+    headers: authHeaders()
+  });
+  assert.equal(fetched.status, 200);
+  const fetchedBody = await fetched.json();
+  assert.equal(fetchedBody.ok, true);
+  assert.equal(fetchedBody.allowedPrice.min, 0.05);
+  assert.equal(fetchedBody.allowedPrice.max, 0.8);
+  assert.ok(Number.isFinite(fetchedBody.allowedPrice.at) && fetchedBody.allowedPrice.at > 0);
+
+  const missing = await fetch(`${baseUrl}/api/configs/000000000000000000000000/allowed-price`, {
+    method: "POST",
+    headers: authHeaders()
+  });
+  assert.equal(missing.status, 404);
+});
+
 test("settings, pause and history reset work", { timeout: TIMEOUT }, async () => {
   const settings = await fetch(`${baseUrl}/api/settings`, {
     method: "PATCH",

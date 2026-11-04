@@ -88,6 +88,40 @@ test("store persists session, targets and history", () => {
   }
 });
 
+test("store persists the allowed-price snapshot across reloads", () => {
+  const dir = tempDir();
+  try {
+    const store = new Store({ dataDir: dir, logger: null }).load();
+    store.upsertConfig({
+      itemId: "6571aa39ca8bfef34adcd9e9",
+      label: "NEON SHARD",
+      itemType: "miner",
+      targetPrice: 0.1,
+      desiredQty: 10,
+      highStockThreshold: 20,
+      minAcceptableQty: 1,
+      allowPartialOrder: true,
+      active: true
+    });
+    const saved = store.setAllowedPrice("6571AA39CA8BFEF34ADCD9E9", {
+      min: 7.35,
+      max: 118.125,
+      at: 1_700_000_000_456
+    });
+    assert.equal(saved.itemId, "6571aa39ca8bfef34adcd9e9");
+    store.flush();
+
+    const reloaded = new Store({ dataDir: dir, logger: null }).load();
+    assert.equal(reloaded.state.configs[0].allowedPriceMin, 7.35);
+    assert.equal(reloaded.state.configs[0].allowedPriceMax, 118.125);
+    assert.equal(reloaded.state.configs[0].allowedPriceAt, 1_700_000_000_456);
+
+    assert.equal(store.setAllowedPrice("deadbeefcafe000000000000", { min: 1, max: 2, at: 1 }), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("store clears session credentials on explicit flags", () => {
   const dir = tempDir();
   try {

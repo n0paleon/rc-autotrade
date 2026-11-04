@@ -444,6 +444,17 @@ export function useWorker({ notify }) {
     [request]
   );
 
+  const fetchAllowedPrice = useCallback(
+    async (itemId) => {
+      const result = await request(`/api/configs/${encodeURIComponent(itemId)}/allowed-price`, {
+        method: "POST"
+      });
+      if (result.configs) mergeConfigs(result.configs);
+      return result;
+    },
+    [mergeConfigs, request]
+  );
+
   const refreshLatency = useCallback(async () => {
     const result = await request("/api/latency/probe", { method: "POST" });
     if (result?.latency) {
@@ -492,6 +503,7 @@ export function useWorker({ notify }) {
     resetStats,
     control,
     previewItem,
+    fetchAllowedPrice,
     refreshLatency,
     fetchLatency,
     clearLogs,

@@ -91,6 +91,44 @@ test("settings stay inside safe bounds", () => {
   });
 });
 
+test("keeps a valid allowed-price snapshot and rounds to 6 decimals", () => {
+  const result = validateTarget({
+    ...SAMPLE,
+    allowedPriceMin: 7.3500001,
+    allowedPriceMax: 118.125,
+    allowedPriceAt: 1_700_000_000_123
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.value.allowedPriceMin, 7.35);
+  assert.equal(result.value.allowedPriceMax, 118.125);
+  assert.equal(result.value.allowedPriceAt, 1_700_000_000_123);
+});
+
+test("drops incomplete or inverted allowed-price snapshots without erroring", () => {
+  const partial = validateTarget({ ...SAMPLE, allowedPriceMin: 7.35 });
+  assert.equal(partial.ok, true);
+  assert.equal(partial.value.allowedPriceMin, undefined);
+  assert.equal(partial.value.allowedPriceAt, undefined);
+
+  const inverted = validateTarget({
+    ...SAMPLE,
+    allowedPriceMin: 200,
+    allowedPriceMax: 100,
+    allowedPriceAt: 1_700_000_000_000
+  });
+  assert.equal(inverted.ok, true);
+  assert.equal(inverted.value.allowedPriceMax, undefined);
+
+  const outOfRange = validateTarget({
+    ...SAMPLE,
+    allowedPriceMin: 0,
+    allowedPriceMax: 2_000_000,
+    allowedPriceAt: 1_700_000_000_000
+  });
+  assert.equal(outOfRange.ok, true);
+  assert.equal(outOfRange.value.allowedPriceMin, undefined);
+});
+
 test("session input strips a bearer prefix and ignores empty refresh", () => {
   const result = validateSessionInput({
     accessToken: "Bearer abcdefghijklmnop",

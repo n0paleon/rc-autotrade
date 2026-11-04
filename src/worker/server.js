@@ -124,6 +124,7 @@ export class ControlServer {
     session,
     gateway,
     engine,
+    api,
     itemInfo,
     keepalive = null,
     latency = null,
@@ -135,6 +136,7 @@ export class ControlServer {
     this.session = session;
     this.gateway = gateway;
     this.engine = engine;
+    this.api = api;
     this.itemInfo = itemInfo;
     this.keepalive = keepalive;
     this.latency = latency;
@@ -617,6 +619,56 @@ export class ControlServer {
 
     if (method === "GET" && path === "/api/configs") {
       json(res, 200, { ok: true, configs: this.configsView() });
+      return;
+    }
+
+    const allowedPriceMatch = /^\/api\/configs\/([^/]+)\/allowed-price$/.exec(path);
+    if (allowedPriceMatch && (method === "GET" || method === "POST")) {
+      const itemId = normalizeItemId(decodeURIComponent(allowedPriceMatch[1]));
+      if (!itemId) {
+        json(res, 422, { ok: false, error: "A valid itemId is required." });
+        return;
+      }
+      const existing = this.store.state.configs.find(
+        (config) => config.itemId.toLowerCase() === itemId.toLowerCase()
+      );
+      if (!existing) {
+        json(res, 404, { ok: false, error: "Target not found." });
+        return;
+      }
+      const cached = (config) =>
+        config.allowedPriceMin != null && config.allowedPriceMax != null && config.allowedPriceAt != null
+          ? { min: config.allowedPriceMin, max: config.allowedPriceMax, at: config.allowedPriceAt }
+          : null;
+
+      if (method === "GET") {
+        json(res, 200, { ok: true, itemId: existing.itemId, allowedPrice: cached(existing) });
+        return;
+      }
+
+      if (!this.api?.fetchItemOrders) {
+        json(res, 503, { ok: false, error: "Item-orders service is not available." });
+        return;
+      }
+      const result = await this.api.fetchItemOrders({
+        itemId: existing.itemId,
+        itemType: existing.itemType || "mutation_component"
+      });
+      if (!result.ok) {
+        json(res, 502, { ok: false, error: result.error || "Could not fetch allowed price range." });
+        return;
+      }
+      const saved = this.store.setAllowedPrice(existing.itemId, {
+        min: result.data.allowedPriceMin,
+        max: result.data.allowedPriceMax,
+        at: Date.now()
+      });
+      this.logger.info(
+        "allowed-price",
+        `${existing.itemId} range ${result.data.allowedPriceMin}..${result.data.allowedPriceMax} RLT`
+      );
+      this.broadcast("configs", this.configsView());
+      json(res, 200, { ok: true, itemId: existing.itemId, allowedPrice: cached(saved) });
       return;
     }
 

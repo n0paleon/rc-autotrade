@@ -121,6 +121,26 @@ export function validateTarget(input, opts = {}) {
     }
   }
 
+  // Allowed-price snapshot cache (from /api/marketplace/item-orders).
+  // Informational only — an invalid/missing value means "not cached yet",
+  // never a validation error, so old saves and plain edits keep working.
+  const cachedPrice = (key) => {
+    const value = toNumber(source[key]);
+    if (!Number.isFinite(value) || value <= 0 || value > LIMITS.targetPriceMax) return null;
+    return Math.round(value * 1e6) / 1e6;
+  };
+  const allowedPriceMin = cachedPrice("allowedPriceMin");
+  const allowedPriceMax = cachedPrice("allowedPriceMax");
+  const allowedPriceAt = (() => {
+    const value = toNumber(source.allowedPriceAt);
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : null;
+  })();
+  const hasAllowedPrice =
+    allowedPriceMin !== null &&
+    allowedPriceMax !== null &&
+    allowedPriceMin <= allowedPriceMax &&
+    allowedPriceAt !== null;
+
   if (Object.keys(errors).length > 0) {
     return { ok: false, value: null, errors };
   }
@@ -133,6 +153,7 @@ export function validateTarget(input, opts = {}) {
       label,
       itemType,
       ...(rarityColor ? { rarityColor } : {}),
+      ...(hasAllowedPrice ? { allowedPriceMin, allowedPriceMax, allowedPriceAt } : {}),
       targetPrice: Math.round(targetPrice * 1e6) / 1e6,
       desiredQty,
       highStockThreshold,

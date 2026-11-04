@@ -1,4 +1,5 @@
 import { httpFetch, USER_AGENT } from "./http.js";
+import { microToRlt } from "../shared/rules.js";
 
 function trimBody(text) {
   const clean = String(text ?? "").replace(/\s+/g, " ").trim();
@@ -206,6 +207,73 @@ export class RollercoinApi {
         ok: false,
         status: 0,
         error: error?.name === "AbortError" ? "item-info request timed out." : error?.message || String(error)
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async fetchItemOrders({ itemId, itemType = "mutation_component", currency = "RLT", retryOn401 = true }) {
+    const query = new URLSearchParams({ itemId, itemType, currency });
+    const url = `${this.baseUrl}/api/marketplace/item-orders?${query.toString()}`;
+    this.#touch();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8_000);
+    try {
+      const response = await this.#fetch(url, {
+        method: "GET",
+        headers: this.#headers(),
+        signal: controller.signal,
+        redirect: "follow",
+        ...(this.dispatcher ? { dispatcher: this.dispatcher } : {})
+      });
+      const { body, text } = await readJsonResponse(response);
+      if (response.status === 401 && retryOn401) {
+        const refreshed = await this.session.refresh("item-orders-401", { force: true });
+        if (refreshed) {
+          return this.fetchItemOrders({ itemId, itemType, currency, retryOn401: false });
+        }
+      }
+      if (!response.ok) {
+        return {
+          ok: false,
+          status: response.status,
+          error:
+            body?.message ||
+            body?.error ||
+            (text.trim().startsWith("<") ? "item-orders returned an HTML page" : trimBody(text)) ||
+            `HTTP ${response.status}`
+        };
+      }
+      if (!body?.success || !body?.data) {
+        return {
+          ok: false,
+          status: response.status,
+          error: body?.error || "item-orders response did not include data."
+        };
+      }
+      const rawMin = body.data.allowedPriceMin;
+      const rawMax = body.data.allowedPriceMax;
+      const min = microToRlt(rawMin);
+      const max = microToRlt(rawMax);
+      if (!Number.isFinite(min) || !Number.isFinite(max) || min <= 0 || max <= 0 || min > max) {
+        return {
+          ok: false,
+          status: response.status,
+          error: "item-orders response did not include a valid allowed price range."
+        };
+      }
+      const round6 = (value) => Math.round(value * 1e6) / 1e6;
+      return {
+        ok: true,
+        status: response.status,
+        data: { allowedPriceMin: round6(min), allowedPriceMax: round6(max) }
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        status: 0,
+        error: error?.name === "AbortError" ? "item-orders request timed out." : error?.message || String(error)
       };
     } finally {
       clearTimeout(timer);

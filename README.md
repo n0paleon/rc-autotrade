@@ -268,6 +268,33 @@ dicoba sebagai `mutation_component`.
 Endpoint ini juga tersedia lewat control plane: `GET /api/item-info?itemId=...&itemType=...`.
 Jika dipanggil untuk target yang sudah ada, endpoint sekaligus memperbaiki label target tersebut.
 
+### Allowed price range
+
+Setiap kartu target punya tombol **FETCH RANGE** yang memanggil:
+
+```http
+GET https://rollercoin.com/api/marketplace/item-orders?itemId=<id>&itemType=<tipe>&currency=RLT
+```
+
+`itemType` memakai tipe tersimpan pada target (`miner`, `rack`, `battery`,
+`mutation_component`, `utility_item`, dst.), bukan probing seperti item-info.
+Response upstream mengembalikan `allowedPriceMin` / `allowedPriceMax` dalam
+**micro-RLT** (integer); worker mengonversinya ke RLT (÷ 1.000.000) dan
+menyimpan snapshot sebagai `allowedPriceMin`, `allowedPriceMax`, dan
+`allowedPriceAt` (timestamp) pada target di `data/state.json`, lengkap dengan
+waktu pengambilan yang ditampilkan di kartu.
+
+Pengambilan bersifat **manual** — tidak ada refetch otomatis/polling, karena
+nilainya mengikuti pasar dan bisa berubah kapan saja. Tekan tombol lagi untuk
+memperbarui snapshot.
+
+Endpoint control plane-nya:
+
+```http
+POST /api/configs/:itemId/allowed-price   # ambil + simpan snapshot
+GET  /api/configs/:itemId/allowed-price    # baca snapshot tersimpan
+```
+
 ---
 
 ## Link sesi Rollercoin
@@ -413,6 +440,8 @@ Authorization: Bearer <access-key>
 | `GET` | `/api/configs` | Daftar target + runtime |
 | `PUT` | `/api/configs` | Ganti seluruh daftar (`[ ... ]` atau `{ "configs": [ ... ] }`) |
 | `POST` | `/api/configs` | Tambah satu target |
+| `GET` | `/api/configs/:itemId/allowed-price` | Baca snapshot allowed price range tersimpan |
+| `POST` | `/api/configs/:itemId/allowed-price` | Ambil + cache `allowedPriceMin/Max` dari marketplace (manual) |
 | `PATCH` | `/api/configs/:itemId` | Update parsial / arm-disarm |
 | `DELETE` | `/api/configs/:itemId` | Hapus target |
 | `PATCH` | `/api/settings` | `delayPerOrder`, `maxOrdersPerMinute`, `dryRun`, `paused`, `autoRefresh` |
