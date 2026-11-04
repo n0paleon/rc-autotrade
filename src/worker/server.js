@@ -118,13 +118,24 @@ function bearerToken(req) {
  * only thing standing between a local process and the trading engine.
  */
 export class ControlServer {
-  constructor({ config, store, session, gateway, engine, itemInfo, logger, startedAt = Date.now() }) {
+  constructor({
+    config,
+    store,
+    session,
+    gateway,
+    engine,
+    itemInfo,
+    keepalive = null,
+    logger,
+    startedAt = Date.now()
+  }) {
     this.config = config;
     this.store = store;
     this.session = session;
     this.gateway = gateway;
     this.engine = engine;
     this.itemInfo = itemInfo;
+    this.keepalive = keepalive;
     this.logger = logger;
     this.startedAt = startedAt;
     this.mock = Boolean(config.mock);
@@ -274,6 +285,7 @@ export class ControlServer {
       },
       gateway: this.gateway.stats(),
       session: this.session.status(),
+      ...(this.keepalive ? { keepalive: this.keepalive.stats() } : {}),
       settings: { ...this.store.state.settings },
       configs: this.configsView(),
       stats: { ...this.store.state.stats },
@@ -490,6 +502,7 @@ export class ControlServer {
       const before = this.session.getAccessToken();
       const status = this.session.set({ ...result.value, source: "ui" });
       const changed = before !== this.session.getAccessToken();
+      this.keepalive?.wake("session updated");
       json(res, 200, { ok: true, changed, session: status });
       return;
     }
@@ -595,6 +608,7 @@ export class ControlServer {
       }
       this.store.setConfigs(result.values);
       this.logger.info("config", `target list replaced (${result.values.length} item${result.values.length === 1 ? "" : "s"})`);
+      this.keepalive?.wake("target list replaced");
       this.broadcast("configs", this.configsView());
       json(res, 200, { ok: true, configs: this.configsView() });
       this.itemInfo
@@ -613,6 +627,7 @@ export class ControlServer {
       }
       const saved = this.store.upsertConfig(result.value);
       this.logger.info("config", `target added: ${saved.itemId}`);
+      this.keepalive?.wake("target added");
       if (this.itemInfo) {
         // Resolve the auto label before replying when possible. The timeout
         // keeps a slow item-info endpoint from blocking target creation.
@@ -656,6 +671,7 @@ export class ControlServer {
       }
       const saved = this.store.upsertConfig(result.value, { originalId: existing.itemId });
       this.logger.info("config", `target updated: ${saved.itemId}`);
+      this.keepalive?.wake("target updated");
       this.broadcast("configs", this.configsView());
       json(res, 200, { ok: true, configs: this.configsView() });
       this.itemInfo
@@ -675,6 +691,7 @@ export class ControlServer {
       if (typeof result.value.autoRefresh === "boolean" && result.value.autoRefresh) {
         this.session.tick();
       }
+      if (result.value.paused === false) this.keepalive?.wake("trading resumed");
       this.logger.info("config", "runtime settings updated");
       this.broadcast("settings", this.store.state.settings);
       json(res, 200, { ok: true, settings: this.store.state.settings });
@@ -686,6 +703,7 @@ export class ControlServer {
       if (body.action === "pause" || body.action === "resume") {
         this.store.patchSettings({ paused: body.action === "pause" });
         this.logger.info("control", body.action === "pause" ? "trading paused" : "trading resumed");
+        if (body.action === "resume") this.keepalive?.wake("trading resumed");
         this.broadcast("settings", this.store.state.settings);
         json(res, 200, { ok: true, settings: this.store.state.settings });
         return;
@@ -743,6 +761,7 @@ export class ControlServer {
     };
     if (incoming.refreshToken) patch.refreshToken = incoming.refreshToken;
     this.session.set(patch);
+    this.keepalive?.wake("bridge session");
     return { accepted: true };
   }
 

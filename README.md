@@ -358,8 +358,16 @@ salin header cookie dari request browser (minimal `cf_clearance`, sering juga `_
 | `RC_API_BASE` | `https://rollercoin.com` | Base URL API |
 | `RC_WS_URL` | `wss://nws.rollercoin.com/` | URL market socket |
 | `RC_COOKIE` | — | Cookie header awal (bisa juga dari UI) |
+| `RC_HTTP_KEEPALIVE_MS` | `60000` | Idle timeout socket keep-alive (1000–600000 ms) |
+| `RC_HTTP_CONNECTIONS` | `8` | Maksimum koneksi per origin (1–32) |
+| `RC_KEEPALIVE_MS` | `30000` | Interval warm probe; `0` = mati (5000–600000 ms) |
+| `RC_KEEPALIVE_URL` | `${RC_API_BASE}/api/events/config` | Endpoint probe publik |
 | `MOCK` | `0` | `1` = simulator, tidak ada order nyata |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+
+Semua request API memakai satu pool keep-alive. Warm probe hanya dikirim bila tidak ada request
+nyata dalam ~90% interval, memakai `GET` publik (bukan payload palsu), dan otomatis berhenti
+5 menit bila menerima `403`/`429`.
 
 `HOST=0.0.0.0` memungkinkan akses dari LAN. Jangan lakukan itu tanpa firewall/TLS, dan ingat
 control deck memegang kredensial Rollercoin.
@@ -714,7 +722,7 @@ Cakupan:
 - `engine.test.js` — order gagal tidak menambah book; fill sukses menguranginya.
 - `integration.test.js` — spawn worker mock, auth, CRUD, settings, CORS, session push, item-info, WS, fill.
 
-Total 45 test; integration test memakai port acak dan data directory sementara.
+Total 54 test; integration test memakai port acak dan data directory sementara.
 
 ---
 
@@ -743,7 +751,9 @@ Total 45 test; integration test memakai port acak dan data directory sementara.
 │       ├── config.js        # env loader
 │       ├── logger.js        # console + socket log buffer
 │       ├── store.js         # atomic JSON state, token hash
+│       ├── http.js          # shared keep-alive dispatcher + fetch
 │       ├── api.js           # Rollercoin HTTP client
+│       ├── keepalive.js     # warm probe with backoff/suspend
 │       ├── session.js       # token refresh scheduler
 │       ├── gateway.js       # real WSS client + reconnect
 │       ├── mock.js          # simulator upstream

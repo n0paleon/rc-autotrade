@@ -38,14 +38,36 @@ export function loadConfig({ cwd = process.cwd(), env = process.env } = {}) {
     throw new Error(`LOG_LEVEL must be debug, info, warn or error (got ${env.LOG_LEVEL}).`);
   }
 
+  const apiBase = (env.RC_API_BASE || "https://rollercoin.com").replace(/\/+$/, "");
+  const keepAliveUrlInput = (env.RC_KEEPALIVE_URL || "").trim();
+  let keepAliveUrl = `${apiBase}/api/events/config`;
+  if (keepAliveUrlInput) {
+    try {
+      keepAliveUrl = new URL(keepAliveUrlInput, `${apiBase}/`).toString();
+    } catch {
+      throw new Error(`RC_KEEPALIVE_URL must be a valid URL (got ${keepAliveUrlInput}).`);
+    }
+  }
+
+  // Every value below has a usable default so an empty/missing .env never
+  // disables keep-alive by accident. RC_KEEPALIVE_MS=0 is the explicit opt-out.
+  const httpKeepAliveMs = readInt(env.RC_HTTP_KEEPALIVE_MS, 60_000);
+  const httpConnections = readInt(env.RC_HTTP_CONNECTIONS, 8);
+  const keepAliveMs = readInt(env.RC_KEEPALIVE_MS, 30_000);
+
   return Object.freeze({
     host,
     port,
     workerToken,
     dataDir: resolve(cwd, env.DATA_DIR || "./data"),
-    apiBase: (env.RC_API_BASE || "https://rollercoin.com").replace(/\/+$/, ""),
+    apiBase,
     wsUrl: env.RC_WS_URL || "wss://nws.rollercoin.com/",
     cookie: (env.RC_COOKIE || "").trim(),
+    httpKeepAliveMs: Math.min(600_000, Math.max(1_000, httpKeepAliveMs)),
+    httpConnections: Math.min(32, Math.max(1, httpConnections)),
+    keepAliveMs:
+      keepAliveMs <= 0 ? 0 : Math.min(600_000, Math.max(5_000, keepAliveMs)),
+    keepAliveUrl,
     mock: readBool(env.MOCK),
     logLevel,
     cwd

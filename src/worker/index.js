@@ -2,6 +2,8 @@ import { loadConfig } from "./config.js";
 import { createLogger } from "./logger.js";
 import { Store } from "./store.js";
 import { RollercoinApi } from "./api.js";
+import { createHttpDispatcher } from "./http.js";
+import { KeepaliveService } from "./keepalive.js";
 import { SessionManager } from "./session.js";
 import { RollercoinGateway } from "./gateway.js";
 import { MockUpstream, createMockSession } from "./mock.js";
@@ -92,6 +94,8 @@ async function main() {
   let session;
   let api;
   let gateway;
+  let dispatcher = null;
+  let keepalive = null;
 
   if (config.mock) {
     const upstream = new MockUpstream({ store, logger });
@@ -99,14 +103,40 @@ async function main() {
     api = upstream;
     session = new SessionManager({ store, api, logger });
   } else {
+    if (config.keepAliveMs > 0 && config.keepAliveMs >= config.httpKeepAliveMs) {
+      logger.warn(
+        "http",
+        `RC_KEEPALIVE_MS (${config.keepAliveMs}) should be below RC_HTTP_KEEPALIVE_MS (${config.httpKeepAliveMs}); the pool will close idle sockets before the probe`
+      );
+    }
+    dispatcher = createHttpDispatcher({
+      keepAliveMs: config.httpKeepAliveMs,
+      connections: config.httpConnections
+    });
     session = new SessionManager({ store, api: null, logger });
-    api = new RollercoinApi({ baseUrl: config.apiBase, session, logger });
+    api = new RollercoinApi({
+      baseUrl: config.apiBase,
+      session,
+      logger,
+      dispatcher
+    });
     session.api = api;
     gateway = new RollercoinGateway({
       url: config.wsUrl,
       getToken: () => session.getAccessToken(),
       getCookie: () => session.getCookie(),
       logger
+    });
+    keepalive = new KeepaliveService({
+      url: config.keepAliveUrl,
+      intervalMs: config.keepAliveMs,
+      api,
+      logger,
+      dispatcher,
+      shouldProbe: () =>
+        Boolean(session.getAccessToken()) &&
+        !store.state.settings.paused &&
+        store.state.configs.some((target) => target.active)
     });
   }
 
@@ -134,6 +164,7 @@ async function main() {
     gateway,
     engine,
     itemInfo,
+    keepalive,
     logger,
     startedAt
   });
@@ -145,6 +176,7 @@ async function main() {
 
   session.on("updated", ({ changed, status, reason }) => {
     broadcast("session", status);
+    keepalive?.wake(`session ${reason}`);
     if (!changed || gateway.stopped) return;
 
     // A scheduled token refresh does not invalidate an already-open market
@@ -174,6 +206,7 @@ async function main() {
   engine.start();
   session.start();
   gateway.start();
+  keepalive?.start();
 
   // Resolve missing/stale labels in the background. Item-info is a public
   // marketplace endpoint, so this can run before the socket is online.
@@ -193,10 +226,12 @@ async function main() {
     closing = true;
     logger.info("worker", `${signal} received — shutting down`);
     try {
+      keepalive?.stop();
       gateway.stop();
       session.stop();
       engine.stop();
       await server.stop();
+      dispatcher?.destroy?.();
     } catch (error) {
       logger.error("worker", `shutdown error: ${error?.message || error}`);
     } finally {

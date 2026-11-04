@@ -1,5 +1,4 @@
-const USER_AGENT =
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+import { httpFetch, USER_AGENT } from "./http.js";
 
 function trimBody(text) {
   const clean = String(text ?? "").replace(/\s+/g, " ").trim();
@@ -22,11 +21,30 @@ async function readJsonResponse(response) {
  * only has to happen in one place.
  */
 export class RollercoinApi {
-  constructor({ baseUrl, session, logger, timeoutMs = 15_000 }) {
+  constructor({
+    baseUrl,
+    session,
+    logger,
+    timeoutMs = 15_000,
+    dispatcher = null,
+    fetchImpl = httpFetch
+  }) {
     this.baseUrl = baseUrl;
     this.session = session;
     this.logger = logger;
     this.timeoutMs = timeoutMs;
+    this.dispatcher = dispatcher;
+    this.fetchImpl = fetchImpl;
+    this.lastRequestAt = 0;
+  }
+
+  /** Timestamp of the most recent upstream call, used by the warm probe. */
+  getLastRequestAt() {
+    return this.lastRequestAt;
+  }
+
+  #touch() {
+    this.lastRequestAt = Date.now();
   }
 
   #headers({ json = true } = {}) {
@@ -47,15 +65,17 @@ export class RollercoinApi {
 
   async #request(path, { method = "POST", body, retryOn401 = true } = {}) {
     const url = `${this.baseUrl}${path}`;
+    this.#touch();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await fetch(url, {
+      const response = await this.fetchImpl(url, {
         method,
         headers: this.#headers(),
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,
-        redirect: "follow"
+        redirect: "follow",
+        ...(this.dispatcher ? { dispatcher: this.dispatcher } : {})
       });
       const { body: parsed, text } = await readJsonResponse(response);
 
@@ -133,14 +153,16 @@ export class RollercoinApi {
   async fetchItemInfo({ itemId, itemType = "mutation_component", currency = "RLT", retryOn401 = true }) {
     const query = new URLSearchParams({ itemId, itemType, currency });
     const url = `${this.baseUrl}/api/marketplace/item-info?${query.toString()}`;
+    this.#touch();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8_000);
     try {
-      const response = await fetch(url, {
+      const response = await this.fetchImpl(url, {
         method: "GET",
         headers: this.#headers(),
         signal: controller.signal,
-        redirect: "follow"
+        redirect: "follow",
+        ...(this.dispatcher ? { dispatcher: this.dispatcher } : {})
       });
       const { body, text } = await readJsonResponse(response);
       if (response.status === 401 && retryOn401) {
@@ -182,6 +204,7 @@ export class RollercoinApi {
   async refreshSession(refreshToken) {
     if (!refreshToken) return { ok: false, status: 0, error: "No refresh token available." };
     const url = `${this.baseUrl}/api/auth/refresh`;
+    this.#touch();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
@@ -189,11 +212,12 @@ export class RollercoinApi {
       // The access token is allowed to be expired here; the refresh token and
       // Cloudflare cookie are the credentials that matter.
       delete headers.authorization;
-      const response = await fetch(url, {
+      const response = await this.fetchImpl(url, {
         method: "POST",
         headers,
         body: JSON.stringify({ refresh_token: refreshToken }),
-        signal: controller.signal
+        signal: controller.signal,
+        ...(this.dispatcher ? { dispatcher: this.dispatcher } : {})
       });
       const { body, text } = await readJsonResponse(response);
       if (!response.ok) {
