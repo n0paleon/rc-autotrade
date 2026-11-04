@@ -29,3 +29,6 @@ legacy/
 # editor / OS
 .idea/
 .vscode/
+
+# others
+opencode.jsonc
