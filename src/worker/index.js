@@ -2,7 +2,6 @@ import { loadConfig } from "./config.js";
 import { createLogger } from "./logger.js";
 import { Store } from "./store.js";
 import { RollercoinApi } from "./api.js";
-import { createHttpDispatcher } from "./http.js";
 import { KeepaliveService } from "./keepalive.js";
 import { SessionManager } from "./session.js";
 import { RollercoinGateway } from "./gateway.js";
@@ -111,7 +110,6 @@ async function main() {
   let session;
   let api;
   let gateway;
-  let dispatcher = null;
   let keepalive = null;
   const latency = new LatencyTracker();
 
@@ -121,22 +119,11 @@ async function main() {
     api = upstream;
     session = new SessionManager({ store, api, logger });
   } else {
-    if (config.keepAliveMs > 0 && config.keepAliveMs >= config.httpKeepAliveMs) {
-      logger.warn(
-        "http",
-        `RC_KEEPALIVE_MS (${config.keepAliveMs}) should be below RC_HTTP_KEEPALIVE_MS (${config.httpKeepAliveMs}); the pool will close idle sockets before the probe`
-      );
-    }
-    dispatcher = createHttpDispatcher({
-      keepAliveMs: config.httpKeepAliveMs,
-      connections: config.httpConnections
-    });
     session = new SessionManager({ store, api: null, logger });
     api = new RollercoinApi({
       baseUrl: config.apiBase,
       session,
       logger,
-      dispatcher,
       latency
     });
     session.api = api;
@@ -152,7 +139,6 @@ async function main() {
       intervalMs: config.keepAliveMs,
       api,
       logger,
-      dispatcher,
       latency,
       shouldProbe: () =>
         Boolean(session.getAccessToken()) &&
@@ -264,7 +250,6 @@ async function main() {
       session.stop();
       engine.stop();
       await server.stop();
-      dispatcher?.destroy?.();
     } catch (error) {
       logger.error("worker", `shutdown error: ${error?.message || error}`);
     } finally {

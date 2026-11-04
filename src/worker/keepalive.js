@@ -13,10 +13,10 @@ function jittered(ms, random, ratio) {
 /**
  * Keeps the Rollercoin edge connection warm while the sniper is armed.
  *
- * The probe is a real, public GET (not a fabricated payload) and runs through
- * the same keep-alive dispatcher as purchases. It is skipped whenever a real
- * API request happened recently, backs off on failure, and pauses itself on
- * 403/429 so it can never turn into a request loop against Cloudflare.
+ * The probe is a real, public GET (not a fabricated payload) and uses the same
+ * Bun-native fetch pool as purchases. It is skipped whenever a real API request
+ * happened recently, backs off on failure, and pauses itself on 403/429 so it
+ * can never turn into a request loop against Cloudflare.
  */
 export class KeepaliveService extends EventEmitter {
   constructor({
@@ -24,7 +24,6 @@ export class KeepaliveService extends EventEmitter {
     intervalMs = 30_000,
     api = null,
     logger = null,
-    dispatcher = null,
     fetchImpl = httpFetch,
     shouldProbe = () => true,
     now = () => Date.now(),
@@ -41,7 +40,6 @@ export class KeepaliveService extends EventEmitter {
     this.enabled = Boolean(this.url) && this.intervalMs > 0;
     this.api = api;
     this.logger = logger;
-    this.dispatcher = dispatcher;
     this.fetchImpl = fetchImpl;
     this.latency = latency;
     this.shouldProbe = shouldProbe;
@@ -212,13 +210,12 @@ export class KeepaliveService extends EventEmitter {
           "accept-language": "en-US,en;q=0.9"
         },
         signal: controller.signal,
-        redirect: "follow",
-        ...(this.dispatcher ? { dispatcher: this.dispatcher } : {})
+        redirect: "follow"
       });
       this.lastStatus = response.status;
 
       if (response.ok) {
-        // Drain the body so undici returns the socket to the keep-alive pool.
+        // Drain the body so Bun can reuse the connection from its pool.
         await response.arrayBuffer();
         const rttMs = Math.max(0, this.now() - startedAt);
         this.lastSuccessAt = this.now();

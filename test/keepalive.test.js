@@ -1,9 +1,9 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { loadConfig } from "../src/worker/config.js";
 import { RollercoinApi } from "../src/worker/api.js";
-import { createHttpDispatcher, httpFetch } from "../src/worker/http.js";
+import { USER_AGENT, httpFetch } from "../src/worker/http.js";
 import { KeepaliveService } from "../src/worker/keepalive.js";
 
 function jsonResponse(payload, status = 200) {
@@ -25,7 +25,7 @@ function waitFor(predicate, timeoutMs = 1_000) {
   });
 }
 
-test("createHttpDispatcher reuses one socket across sequential requests", async () => {
+test("Bun fetch reuses one socket across sequential requests", async () => {
   let connections = 0;
   const server = createServer((req, res) => res.end("ok"));
   server.on("connection", () => {
@@ -34,16 +34,14 @@ test("createHttpDispatcher reuses one socket across sequential requests", async 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 
   const url = `http://127.0.0.1:${server.address().port}/`;
-  const dispatcher = createHttpDispatcher({ keepAliveMs: 60_000, connections: 2 });
   try {
     for (let i = 0; i < 3; i += 1) {
-      const response = await httpFetch(url, { dispatcher });
+      const response = await httpFetch(url);
       await response.arrayBuffer();
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
-    assert.equal(connections, 1);
+    assert.equal(connections, 1, "Bun's fetch pool should reuse the connection");
   } finally {
-    await dispatcher.close();
     await new Promise((resolve) => server.close(resolve));
   }
 });
@@ -51,8 +49,6 @@ test("createHttpDispatcher reuses one socket across sequential requests", async 
 test("config keep-alive defaults survive a missing or empty env", () => {
   const missing = loadConfig({ cwd: "/nonexistent-turu-rc", env: {} });
   assert.equal(missing.apiBase, "https://rollercoin.com");
-  assert.equal(missing.httpKeepAliveMs, 60_000);
-  assert.equal(missing.httpConnections, 8);
   assert.equal(missing.keepAliveMs, 30_000);
   assert.equal(missing.keepAliveUrl, "https://rollercoin.com/api/events/config");
 
@@ -60,14 +56,10 @@ test("config keep-alive defaults survive a missing or empty env", () => {
     cwd: "/nonexistent-turu-rc",
     env: {
       RC_API_BASE: "",
-      RC_HTTP_KEEPALIVE_MS: "",
-      RC_HTTP_CONNECTIONS: "",
       RC_KEEPALIVE_MS: "",
       RC_KEEPALIVE_URL: ""
     }
   });
-  assert.equal(empty.httpKeepAliveMs, 60_000);
-  assert.equal(empty.httpConnections, 8);
   assert.equal(empty.keepAliveMs, 30_000);
   assert.equal(empty.keepAliveUrl, "https://rollercoin.com/api/events/config");
 });
@@ -77,14 +69,10 @@ test("config keep-alive values are clamped and RC_KEEPALIVE_MS=0 disables probin
     cwd: "/nonexistent-turu-rc",
     env: {
       RC_API_BASE: "https://example.test/",
-      RC_HTTP_KEEPALIVE_MS: "1",
-      RC_HTTP_CONNECTIONS: "999",
       RC_KEEPALIVE_MS: "1000",
       RC_KEEPALIVE_URL: "/api/events/config"
     }
   });
-  assert.equal(clamped.httpKeepAliveMs, 1_000);
-  assert.equal(clamped.httpConnections, 32);
   assert.equal(clamped.keepAliveMs, 5_000);
   assert.equal(clamped.keepAliveUrl, "https://example.test/api/events/config");
 
@@ -100,8 +88,7 @@ test("config keep-alive values are clamped and RC_KEEPALIVE_MS=0 disables probin
   );
 });
 
-test("RollercoinApi sends every upstream call through the shared dispatcher", async () => {
-  const dispatcher = { name: "test-pool" };
+test("RollercoinApi sends every upstream call through the injected fetch", async () => {
   const seen = [];
   const session = {
     getAccessToken: () => "access-token",
@@ -112,7 +99,6 @@ test("RollercoinApi sends every upstream call through the shared dispatcher", as
     baseUrl: "https://rollercoin.test",
     session,
     logger: null,
-    dispatcher,
     fetchImpl: async (url, init) => {
       seen.push({ url, init });
       if (url.includes("/purchase-item")) {
@@ -142,18 +128,17 @@ test("RollercoinApi sends every upstream call through the shared dispatcher", as
 
   assert.equal(seen.length, 3);
   for (const call of seen) {
-    assert.equal(call.init.dispatcher, dispatcher);
+    assert.equal(call.init.headers["user-agent"], USER_AGENT);
+    assert.equal(call.init.dispatcher, undefined, "no undici dispatcher on Bun");
   }
   assert.ok(api.getLastRequestAt() > 0);
 });
 
 test("KeepaliveService probes with GET, drains the body, and reports warm stats", async () => {
   const calls = [];
-  const dispatcher = { name: "test-pool" };
   const service = new KeepaliveService({
     url: "https://rollercoin.com/api/events/config",
     intervalMs: 30_000,
-    dispatcher,
     fetchImpl: async (url, init) => {
       calls.push({ url, init });
       return jsonResponse({ ok: true });
@@ -167,7 +152,6 @@ test("KeepaliveService probes with GET, drains the body, and reports warm stats"
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "https://rollercoin.com/api/events/config");
   assert.equal(calls[0].init.method, "GET");
-  assert.equal(calls[0].init.dispatcher, dispatcher);
   assert.equal(calls[0].init.headers.origin, "https://rollercoin.com");
 
   const stats = service.stats();

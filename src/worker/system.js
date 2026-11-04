@@ -603,6 +603,10 @@ export class SystemMonitor {
       intervalMs: this.intervalMs,
       process: {
         pid: process.pid,
+        runtime:
+          typeof Bun !== "undefined" && Bun.version
+            ? `bun ${Bun.version}`
+            : `node ${process.version}`,
         node: process.version,
         platform: process.platform,
         arch: process.arch,

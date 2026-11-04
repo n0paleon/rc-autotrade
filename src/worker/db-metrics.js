@@ -416,6 +416,7 @@ export class DbMetrics {
 
   #sqliteInfo() {
     return {
+      driver: this.db?.driver ?? null,
       version: this.sqliteVersion,
       journalMode: this.#pragma("journal_mode"),
       synchronous: this.#pragma("synchronous"),

@@ -1902,7 +1902,7 @@ function SystemPanel({ snapshot, worker }) {
             <Icon name="i-clock" className="h-3 w-3" /> Uptime {formatUptime(proc.uptimeMs)}
           </span>
           <span className="font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
-            PID {proc.pid} · {proc.node}
+            PID {proc.pid} · {proc.runtime || proc.node}
           </span>
         </div>
 
@@ -2003,7 +2003,8 @@ function SystemPanel({ snapshot, worker }) {
         <div className="border-2 border-line bg-night-950/60 p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="label flex items-center gap-1.5">
-              <Icon name="i-download" className="h-3 w-3" /> SQLite · {dbSqlite.journalMode || "—"}
+              <Icon name="i-download" className="h-3 w-3" /> SQLite · {dbSqlite.driver || "—"} ·{" "}
+              {dbSqlite.journalMode || "—"}
             </span>
             <span
               className={`font-mono text-[12px] uppercase tracking-[0.08em] ${

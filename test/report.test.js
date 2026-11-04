@@ -1,9 +1,9 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import { openSqlite } from "../src/worker/db.js";
 import { MAX_HISTORY } from "../src/shared/constants.js";
 import { Store } from "../src/worker/store.js";
 
@@ -139,7 +139,7 @@ test("legacy loot log backfills the report on first load", () => {
     assert.equal(report.totals.fills, 1);
     assert.equal(report.totals.failed, 1);
 
-    const db = new Database(join(dir, "rollercoin.db"), { readonly: true });
+    const db = openSqlite(join(dir, "rollercoin.db"), { readonly: true });
     const persisted = db.prepare("SELECT COUNT(*) AS n FROM report_products").get();
     db.close();
     assert.equal(persisted.n, 2, "backfill must be written to SQLite");

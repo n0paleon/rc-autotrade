@@ -373,6 +373,26 @@ export class ControlServer {
   }
 
   #handleSocket(ws, req) {
+    // Bun's node:http upgrade socket drops direct writes, so a bad key cannot
+    // be answered with an HTTP 403. Accept the handshake and close it with a
+    // WebSocket code instead; nothing is sent before this check.
+    const auth = req.rcAuth || { authorized: false, token: "" };
+    if (!auth.authorized) {
+      const limited = this.#authFailure(req);
+      this.logger?.warn(
+        "auth",
+        `control socket rejected (${auth.token ? "invalid key" : "missing key"})${limited ? " — too many attempts" : ""}`
+      );
+      try {
+        // 4001 tells the deck to stop reconnecting; 4003 stays reserved for a
+        // key rotation, where the client should reconnect with the new key.
+        ws.close(4001, limited ? "too many bad access keys" : auth.token ? "invalid access key" : "missing access key");
+      } catch {
+        /* socket may already be gone */
+      }
+      return;
+    }
+
     ws.isAlive = true;
     ws.sessionEpoch = this.store.state.workerTokenHash;
     ws.remote = req.socket.remoteAddress;
@@ -419,7 +439,8 @@ export class ControlServer {
     }
 
     if (url.pathname !== "/ws") {
-      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      // No HTTP reply is possible on Bun's upgrade socket; a plain close is
+      // enough for a client that dialed the wrong path.
       socket.destroy();
       return;
     }
@@ -431,13 +452,10 @@ export class ControlServer {
     const offered = protocols.filter((value) => value === "rcw.v1");
     const protocolToken = protocols.find((value) => value !== "rcw.v1") || "";
     const token = protocolToken || url.searchParams.get("token") || "";
-
-    if (offered.length === 0 || !this.store.verifyWorkerToken(token)) {
-      const status = token ? "403 Forbidden" : "401 Unauthorized";
-      socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
-      socket.destroy();
-      return;
-    }
+    req.rcAuth = {
+      token,
+      authorized: offered.length > 0 && this.store.verifyWorkerToken(token)
+    };
 
     this.wss.handleUpgrade(req, socket, head, (ws) => {
       this.wss.emit("connection", ws, req);
