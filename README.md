@@ -13,6 +13,26 @@ untuk login, mengatur target, memantau market, dan melihat loot.
 
 ---
 
+## Daftar isi
+
+- [Fitur](#fitur)
+- [Arsitektur](#arsitektur)
+- [Quick start](#quick-start)
+- [Jalankan dengan PM2](#jalankan-dengan-pm2)
+- [Access key](#access-key)
+- [Target configuration](#target-configuration)
+- [Mekanisme parameter target](#mekanisme-parameter-target-deep-dive)
+- [Link sesi Rollercoin](#link-sesi-rollercoin)
+- [Environment variables](#environment-variables)
+- [Worker API](#worker-api)
+- [HTTPS dan mixed content](#https-dan-mixed-content)
+- [Caddy tutorial](#caddy-tutorial-debianubuntu-vps)
+- [Data dan keamanan](#data-dan-keamanan)
+- [Mock mode](#mock-mode)
+- [Testing](#testing)
+- [Struktur proyek](#struktur-proyek)
+- [Troubleshooting](#troubleshooting)
+
 ## Fitur
 
 - **Worker headless** — koneksi WebSocket ke `nws.rollercoin.com`, mendengarkan semua frame,
@@ -240,19 +260,24 @@ Contoh dari brief, bisa langsung dipakai di UI atau `PUT /api/configs`:
 | `label` | otomatis | maks 48 karakter | Diisi worker dari item-info; UI tidak meminta input manual |
 | `itemType` | tidak | default `mutation_component` | Dipakai untuk item-info dan purchase; worker auto-mencoba `mutation_component`, `miner`, `rack`, `battery`, dan mengoreksi dari frame market |
 | `rarityColor` | otomatis | 6 digit hex | Warna aksen card, diisi dari `rarityGroup.baseHexColor` bila ada |
-| `targetPrice` | ya | > 0, maks 6 desimal | Harga maksimum per unit (RLT) |
-| `desiredQty` | ya | integer 1–10.000 | Jumlah normal per order |
-| `highStockThreshold` | ya | integer >= `desiredQty` | Jika book >= nilai ini, qty order menjadi 2× `desiredQty` |
-| `minAcceptableQty` | ya | integer 1..`desiredQty` | Minimum untuk partial order |
-| `allowPartialOrder` | tidak | boolean, default `true` | Ambil stok seadanya di atas minimum |
+| `targetPrice` | ya | > 0, ≤ 1.000.000, maks 6 desimal | Harga maksimum **per unit** (RLT) |
+| `desiredQty` | ya | integer 1–10.000 | Qty normal **per order** |
+| `highStockThreshold` | ya | integer `desiredQty`–1.000.000 | Book ≥ nilai ini → qty order diminta 2× `desiredQty` |
+| `minAcceptableQty` | ya | integer 1..`desiredQty` | Batas bawah partial order |
+| `allowPartialOrder` | tidak | boolean, default `true` | Izinkan beli seadanya saat stok < `desiredQty` |
+| `maxSpendPerFill` | — | turunan UI, read-only | `targetPrice × desiredQty × 2`, plafon teoretis satu fill |
 | `active` | tidak | boolean, default `true` | Arm/disarm target |
+
+Arti detail keempat angka utama, urutan gerbang keputusan, contoh angka, dan kombinasi yang sering
+salah dipahami ada di [Mekanisme parameter target](#mekanisme-parameter-target-deep-dive).
 
 Perilaku pembelian:
 
 - Hanya **listing termurah** yang dievaluasi (sama seperti `trade.js` asli), currency `RLT`.
-- Jika stok termurah >= `desiredQty`, beli `desiredQty`; jika stok juga >= `highStockThreshold`,
-  qty digandakan (tetap dibatasi stok tersedia).
-- Jika stok < `desiredQty` tetapi >= `minAcceptableQty` dan partial diizinkan, beli seadanya.
+  Listing diurutkan naik berdasarkan harga, lalu qty terbesar lebih dulu pada harga yang sama.
+- Jika harga listing termurah di atas `targetPrice`, frame dilewati walau stok melimpah.
+- Jika stok cukup, order berisi `desiredQty` (atau 2× saat high-stock aktif); jika stok kurang,
+  order hanya terjadi ketika `allowPartialOrder` aktif dan stok >= `minAcceptableQty`.
 - Target price dan book diperbarui dari setiap frame market; UI menandai card `HOT` saat harga
   berada di bawah target dan book memenuhi minimum.
 - **BOOK** adalah quantity pada listing termurah dari frame market terakhir. Fill sukses
@@ -278,8 +303,9 @@ Perilaku pembelian:
   loot log berputar melewati `MAX_HISTORY = 200` dan setelah worker restart. Kolomnya: fills,
   failed, qty, spend, avg buy, profit, margin (`profit / spend`), success rate, dan last activity.
   `DELETE /api/history` mereset report bersama stats; menghapus satu target tidak menghapus
-  riwayat produknya. Saat upgrade dari state lama tanpa `report`, worker membangun ulang laporan
-  sekali dari loot log yang masih tersimpan.
+  riwayat produknya. Produk yang disimpan dibatasi `MAX_REPORT_PRODUCTS = 500`; saat daftar penuh,
+  produk dengan profit terendah dibuang lebih dulu. Saat upgrade dari state lama tanpa `report`,
+  worker membangun ulang laporan sekali dari loot log yang masih tersimpan.
 
 Label otomatis diambil dari:
 
@@ -298,6 +324,239 @@ dicoba sebagai `mutation_component`.
 
 Endpoint ini juga tersedia lewat control plane: `GET /api/item-info?itemId=...&itemType=...`.
 Jika dipanggil untuk target yang sudah ada, endpoint sekaligus memperbaiki label target tersebut.
+
+---
+
+## Mekanisme parameter target (deep dive)
+
+Form target hanya meminta empat angka, tetapi keputusan beli diambil oleh satu fungsi murni —
+`planOrder()` di `src/shared/rules.js` — yang hanya melihat **harga listing termurah**, **stok
+listing termurah**, dan config. Tidak ada order book agregat, tidak ada averaging, dan tidak ada
+pembatalan order. Bagian ini menjelaskan urutan gerbangnya, arti tiap field, dan kombinasi yang
+sering membuat order "tidak jalan".
+
+### Peta label UI ke field
+
+| Label di form target | Field | Inti |
+| --- | --- | --- |
+| **TARGET PRICE (RLT)** — *Never pay more than this per item.* | `targetPrice` | Plafon harga **per unit** |
+| **DESIRED QTY** | `desiredQty` | Qty dasar **per order** |
+| **HIGH STOCK THRESHOLD** — *At or above this stock, quantity doubles.* | `highStockThreshold` | Pemicu qty 2× |
+| **MIN ACCEPTABLE QTY** — *Partial fills below this are skipped.* | `minAcceptableQty` | Ambang bawah partial |
+| **MAX SPEND PER FILL** — *Target price × doubled quantity ceiling.* | turunan (read-only) | Plafon biaya satu fill |
+| **ALLOW PARTIAL ORDER** — *Buy whatever is available above the minimum.* | `allowPartialOrder` | Sakelar partial |
+| **ARM TARGET** — *Start hunting as soon as it is saved.* | `active` | Arm/disarm target |
+
+### Satu frame = satu keputusan
+
+`engine.js` memanggil `planOrder()` untuk setiap frame market yang cocok. Rantai keputusannya:
+
+```text
+frame market (item cocok, currency RLT)
+        │
+        ▼
+listing termurah → unitPrice, available
+        │
+        ├─ paused ───────────────────────────────────────► skip   paused
+        ├─ target inactive ──────────────────────────────► skip   inactive
+        ├─ harga tidak valid (NaN / ≤ 0) ────────────────► skip   invalid-price
+        ├─ available < 1 ────────────────────────────────► skip   no-stock
+        ├─ unitPrice > targetPrice (+1e-9) ──────────────► skip   price-above-target
+        ▼
+   available >= desiredQty ?
+        │
+        ├─ ya ─ available >= highStockThreshold ? ──► qty = 2 × desiredQty (doubled)
+        │         └─ tidak ─────────────────────────► qty = desiredQty
+        │
+        └─ tidak ─ allowPartialOrder && available >= minAcceptableQty ?
+                    ├─ ya ──────────────────────────► qty = available
+                    └─ tidak ───────────────────────► skip   stock-below-minimum
+        ▼
+qty = clamp(floor(qty), 1 .. min(available, 10 000))
+notional = unitPrice × qty
+```
+
+Setelah `planOrder()` memutuskan `buy`, masih ada gerbang runtime di `engine.js` yang bisa menahan
+order: `paused`, order lain yang belum selesai (`inflight`), backoff setelah rejection
+(5s → 10s → 20s → 40s, maksimal 60s), cooldown `delayPerOrder`, batas `maxOrdersPerMinute`, dan
+ketersediaan access token (kecuali `dryRun`). Gerbang-gerbang ini **tidak** mengubah qty.
+
+### `targetPrice` — gerbang harga, per unit
+
+| Aspek | Perilaku |
+| --- | --- |
+| Satuan | RLT per **satu item**, bukan total order |
+| Batas | > 0, maks 1.000.000 RLT, maks 6 desimal |
+| Dibandingkan dengan | `unitPrice` listing termurah (harga micro-RLT ÷ 1.000.000) |
+| Lolos bila | `unitPrice <= targetPrice + 1e-9` (epsilon float, jadi harga yang persis sama tetap dibeli) |
+| Ditolak bila | `unitPrice > targetPrice` → `price-above-target`, frame dilewati |
+
+- Anda **tidak** menawar. Kalau listing termurah di bawah target, engine tetap membayar harga
+  listing tersebut (bukan `targetPrice`), sehingga biaya nyata ≤ plafon.
+- `targetPrice` bukan budget dan bukan batas total. Total satu order = `unitPrice × qty`, dan bisa
+  sampai 2× `desiredQty` item saat high-stock aktif — lihat `maxSpendPerFill` di bawah.
+- Band harga dari Rollercoin (`allowedPriceMin` / `allowedPriceMax`) hanya **informasi**. Engine
+  menyimpannya untuk ditampilkan di card, tetapi tidak pernah dipakai sebagai syarat beli.
+- Menurunkan `targetPrice` membuat order lebih jarang tetapi profit per item lebih besar; menaikkan
+  mendekati harga pasar membuat order lebih sering dengan margin lebih tipis. Profit yang dicatat
+  adalah `(targetPrice − hargaBeli) × qty`, jadi target yang terlalu tinggi juga menggelembungkan
+  angka profit.
+
+### `desiredQty` — qty dasar per order
+
+| Aspek | Perilaku |
+| --- | --- |
+| Tipe | integer 1–10.000 |
+| Dipakai saat | `available >= desiredQty`; menjadi dasar doubling |
+| Batas nyata | `min(desiredQty, available, 10.000)` saat doubling tidak aktif |
+| Bukan | target harian, total pembelian, atau plafon saldo |
+
+- Ini angka **per order**, bukan "beli 50 lalu berhenti". Setiap frame market berikutnya yang lolos
+  bisa memicu order baru; yang membatasi adalah cooldown, `inflight`, dan rate limit.
+- Kalau `available < desiredQty`, `desiredQty` tidak dipakai untuk memotong qty; cabang partial
+  mengambil `available` apa adanya (bila diizinkan).
+- Nilai `desiredQty` besar tidak memaksa satu order raksasa: dengan `desiredQty = 5.000` dan book
+  60, qty tetap 60 saat partial aktif — atau tidak ada order sama sekali saat partial dimatikan.
+
+### `highStockThreshold` — pemicu qty 2×
+
+| Aspek | Perilaku |
+| --- | --- |
+| Tipe | integer, `>= desiredQty`, maks 1.000.000 |
+| Kondisi aktif | `available >= highStockThreshold` |
+| Efek | qty **diminta** menjadi 2× `desiredQty` (bukan 2× threshold) |
+| Batas | tetap `min(2 × desiredQty, available, 10.000)` |
+
+Contoh dengan `desiredQty = 50`, `highStockThreshold = 100`:
+
+| `available` | qty | `doubled` | Catatan |
+| --- | --- | --- | --- |
+| 49 | 49 | tidak | partial order |
+| 50 | 50 | tidak | pas desiredQty |
+| 99 | 50 | tidak | stok belum menyentuh threshold |
+| 100 | 100 | ya | 2× desiredQty, masih tertutup stok |
+| 150 | 100 | ya | plafon 2× desiredQty |
+
+Dengan `highStockThreshold = 60` dan `available = 70`, engine meminta 100 tetapi memotongnya menjadi
+70 — doubling tetap "sebanyak stok yang ada", bukan paksa 2×.
+
+Hal yang sering keliru:
+
+- Doubling **tidak** berarti qty = 2× `available`; ia hanya meminta 2× `desiredQty`.
+- `highStockThreshold == desiredQty` membuat fitur menyala setiap kali stok cukup, sehingga qty
+  dasar `desiredQty` praktis tidak pernah dipakai (selalu 2× atau dipotong stok).
+- Threshold yang jauh di atas book normal (misal 10.000 untuk item sepi) membuat fitur ini tidak
+  pernah aktif — tidak ada efek samping lain.
+- Threshold dihitung dari stok listing termurah pada frame itu, bukan akumulasi beberapa listing.
+- Saat fill sukses, book runtime dikurangi qty fill; frame market berikutnya bisa mengembalikan book
+  ke angka asli bila memang ada stok baru. Jadi doubling bisa menyala-mati antar frame.
+- Qty hasil doubling tetap dibatasi `10.000`, jadi `desiredQty` di atas 5.000 tidak akan pernah
+  menghasilkan 2× penuh.
+
+### `minAcceptableQty` + `allowPartialOrder` — kapan boleh beli seadanya
+
+Keduanya hanya bekerja sebagai pasangan. `allowPartialOrder` adalah sakelar, `minAcceptableQty`
+adalah ambang batas bawahnya.
+
+| Stok tersedia (`available`) | `allowPartialOrder = true` | `allowPartialOrder = false` |
+| --- | --- | --- |
+| `>= highStockThreshold` | 2× `desiredQty` (dipotong stok) | sama |
+| `>= desiredQty`, `< threshold` | `desiredQty` | sama |
+| `>= minAcceptableQty`, `< desiredQty` | `available` (partial fill) | **skip** `stock-below-minimum` |
+| `< minAcceptableQty` | **skip** `stock-below-minimum` | **skip** `stock-below-minimum` |
+
+- `minAcceptableQty` hanya dievaluasi di cabang stok kurang dari `desiredQty`. Ia tidak membatasi
+  qty saat stok cukup, dan tidak mempengaruhi doubling.
+- Saat partial aktif, qty = seluruh `available` (bukan `minAcceptableQty`). `minAcceptableQty = 5`
+  dengan stok 40 dan `desiredQty = 50` menghasilkan order 40, bukan 5.
+- `allowPartialOrder = false` membuat `minAcceptableQty` tidak relevan sama sekali: stok di bawah
+  `desiredQty` selalu dilewati.
+- `minAcceptableQty = desiredQty` adalah cara lain mematikan partial tanpa mengubah switch: partial
+  tidak akan pernah memenuhi syarat karena `available < desiredQty` berarti `available < min`.
+- Partial fill lebih mahal per usaha: satu order menghabiskan satu slot cooldown dan satu slot rate
+  limit, berapa pun qty-nya. Menurunkan `minAcceptableQty` menambah jumlah order kecil.
+
+> Catatan `HOT`: card menandai `HOT` saat target aktif, harga ≤ `targetPrice`, dan
+> `lastStock >= minAcceptableQty`. Penanda ini sengaja longgar sebagai petunjuk "harga masuk".
+> Keputusan final tetap `planOrder()`; dengan `allowPartialOrder = false` sebuah card bisa tampak
+> `HOT` padahal engine melewatinya karena stok < `desiredQty`. Event `market` di WebSocket memakai
+> definisi yang lebih ketat: `hot = plan.action === "buy"`.
+
+### `maxSpendPerFill` — plafon teoretis, bukan field
+
+Nilai abu-abu di form target **tidak dikirim** ke worker dan tidak disimpan di `state.json`. UI
+menghitungnya sebagai `targetPrice × desiredQty × 2` supaya Anda bisa melihat skenario terburuk
+satu fill: harga pas di target **dan** high-stock menyala.
+
+```text
+maxSpendPerFill = targetPrice × desiredQty × 2
+biaya sebenarnya = unitPrice × qty  ≤  maxSpendPerFill
+```
+
+- Kalau ingin aman terhadap saldo, pastikan saldo RLT ≥ total `maxSpendPerFill` dari semua target
+  yang armed, karena beberapa target bisa menembak hampir bersamaan.
+- Worker tidak mengecek saldo sebelum order. Bila saldo kurang, purchase bisa ditolak marketplace;
+  target lalu masuk backoff dan tercatat sebagai failure.
+- Plafon ini hanya bergantung pada `targetPrice` dan `desiredQty` (faktor 2 selalu dihitung),
+  sehingga menurunkan `highStockThreshold` tidak menurunkan plafon.
+
+### Contoh lengkap (config di screenshot)
+
+`targetPrice = 0.012`, `desiredQty = 50`, `highStockThreshold = 100`, `minAcceptableQty = 5`,
+`allowPartialOrder = true`, sehingga `maxSpendPerFill = 1.200000 RLT`:
+
+| Frame market | Keputusan | Alasan |
+| --- | --- | --- |
+| harga 0.0115, stok 60 | buy 50 | stok ≥ 50, < 100 |
+| harga 0.0115, stok 120 | buy 100 | stok ≥ 100 → doubled, total ≤ 1.2 RLT |
+| harga 0.0115, stok 40 | buy 40 | partial (40 ≥ 5) |
+| harga 0.0115, stok 4 | skip | `stock-below-minimum` |
+| harga 0.0125, stok 500 | skip | `price-above-target` |
+| harga 0.0120, stok 100 | buy 100 | harga tepat di target tetap lolos (epsilon) |
+| sama, `allowPartialOrder = false`, stok 40 | skip | partial dimatikan |
+
+### Resep tuning
+
+| Tujuan | `desiredQty` | `highStockThreshold` | `minAcceptableQty` | Partial |
+| --- | --- | --- | --- | --- |
+| Sniper konservatif, order kecil | 10 | 20 | 1 | on |
+| Borong saat book tebal | 50 | 100 | 5 | on |
+| Hanya mau lot penuh | 50 | 100 | 50 | off |
+| Hindari pecahan receh | 20 | 40 | 10 | on |
+| Uji strategi tanpa risiko | apa saja | apa saja | apa saja | apa saja + `dryRun` |
+
+Aturan praktis:
+
+- `minAcceptableQty = 1` memaksimalkan jumlah fill, tetapi banyak order 1-item yang menghabiskan
+  cooldown.
+- `minAcceptableQty` mendekati `desiredQty` memberi fill lebih jarang dengan qty lebih padat.
+- `highStockThreshold = 2 × desiredQty` adalah nilai paling intuitif: doubling hanya aktif saat book
+  benar-benar dua kali lipat kebutuhan normal.
+- Selalu cek `maxSpendPerFill` terhadap saldo sebelum meng-arm banyak target sekaligus.
+
+### Reason code yang muncul di log
+
+| Reason | Arti | Perbaikan |
+| --- | --- | --- |
+| `paused` | PAUSE global aktif | Resume dari header |
+| `inactive` | Target di-disarm | Arm target |
+| `invalid-price` | Harga frame tidak valid / ≤ 0 | Tunggu frame berikutnya |
+| `no-stock` | Book kosong | Tunggu restock |
+| `price-above-target` | Harga termurah > `targetPrice` | Naikkan target atau tunggu harga turun |
+| `stock-below-minimum` | Stok < `desiredQty` dan syarat partial tidak terpenuhi | Turunkan `minAcceptableQty`, aktifkan partial, atau turunkan `desiredQty` |
+
+`planOrder()` sendiri tidak mengembalikan alasan untuk gerbang runtime (`inflight`, cooldown,
+rate limit, backoff, no-token); kondisi itu terlihat di log `scan`/`order` dan di state card.
+
+### Di mana di kode
+
+| Bagian | Lokasi |
+| --- | --- |
+| Keputusan beli murni | `planOrder()` di `src/shared/rules.js` |
+| Validasi & normalisasi field | `validateTarget()` di `src/shared/validation.js` |
+| Gerbang runtime + eksekusi | `#handleMarket()` / `#submit()` di `src/worker/engine.js` |
+| Preview `maxSpendPerFill` | `TargetModal` di `ui/src/components/Modals.jsx` |
+| Penanda `HOT` di card | `runtimeHot()` di `ui/src/lib/format.js` |
 
 ---
 
@@ -483,7 +742,7 @@ Error validasi memakai status `422` dan `fields`, misalnya:
 
 ---
 
-## HTTPS & mixed content
+## HTTPS dan mixed content
 
 Jika control deck dibuka lewat `http://<IP-publik>:8787`, bridge yang berjalan di halaman
 `https://rollercoin.com` akan diblokir browser:
@@ -725,7 +984,7 @@ pm2 restart rc-autotrade --update-env
 
 ---
 
-## Data & keamanan
+## Data dan keamanan
 
 - `data/state.json` berisi token sesi Rollercoin (plaintext), target, settings, dan statistik.
   **Tidak** lagi menyimpan loot log.
@@ -779,9 +1038,14 @@ Cakupan:
 - `bridge.test.js` — transport `GM_xmlhttpRequest` + sinkronisasi token dua arah.
 - `item-info.test.js` — auto label, fallback tanpa `rarityGroup`, deteksi tipe (rack), cache, kegagalan API.
 - `engine.test.js` — order gagal tidak menambah book; fill sukses menguranginya.
+- `keepalive.test.js` — warm probe, idle timeout, dan suspend saat `403`/`429`.
+- `latency.test.js` — rolling sample per channel, percentile, dan jitter.
+- `report.test.js` — agregat profit per produk bertahan setelah loot log berputar.
+- `format.test.js` — formatter UI (label itemType, URL marketplace).
+- `session.test.js` — jadwal refresh token dan fallback token opaque.
 - `integration.test.js` — spawn worker mock, auth, CRUD, settings, CORS, session push, item-info, WS, fill.
 
-Total 54 test; integration test memakai port acak dan data directory sementara.
+Total 78 test; integration test memakai port acak dan data directory sementara.
 
 ---
 
@@ -847,7 +1111,7 @@ Total 54 test; integration test memakai port acak dan data directory sementara.
 | Bridge `CORS` / `Failed to fetch` | Console mode memakai `fetch` halaman dan bisa diblokir CSP/Private Network Access. Pakai **USERSCRIPT · AUTO** (memakai `GM_xmlhttpRequest`). Pastikan URL bridge `http://127.0.0.1:<port>`, worker hidup, dan userscript di-generate ulang. Error `401` sekarang juga mengirim header CORS, jadi restart worker agar pesan aslinya terlihat. |
 | `EADDRINUSE` | Port dipakai. `PORT=8788 npm start` atau hentikan proses lain. |
 | Key hilang | `npm run key:reset`, lalu restart worker dan login dengan key baru. |
-| Harga terlihat, order tidak jalan | Target terlalu rendah, stok di bawah minimum, pause/dry-run aktif, cooldown, atau batas order/menit. Cek feed + card state. |
+| Harga terlihat, order tidak jalan | Target terlalu rendah, stok di bawah minimum, pause/dry-run aktif, cooldown, atau batas order/menit. Cocokkan dengan [reason code](#reason-code-yang-muncul-di-log) di log `scan` dan cek state card. |
 | Label tetap `ITEM xxxx` / `Item not found` | Item ID tidak ditemukan untuk tipe yang dicoba, atau `item-info` gagal (sesi/Cloudflare/jaringan). Buka edit target dan klik **RETRY**; worker akan mencoba `mutation_component`, `miner`, `rack`, `battery`. `rarityGroup` yang tidak ada akan fallback ke nama item. |
 | Chart masih kosong | Mode live mulai tanpa history; tunggu beberapa menit. Worker restart menghapus history in-memory. Mock mode mengisi 24 jam awal agar semua timeframe terisi. |
 | BOOK di ticker tidak turun setelah fill | Fill sukses menurunkan book segera; frame market berikutnya bisa mengembalikannya jika memang ada stok baru. Order gagal tidak pernah menambah book. Meter BOOK di card sudah diganti success rate. |
