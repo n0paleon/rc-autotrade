@@ -6,6 +6,12 @@
 
 @import "tailwindcss";
 
+/* ── typefaces ─────────────────────────────────────────────────────
+   Three voices, three jobs:
+   Arcana        display only — wordmark and hero profit figure.
+   Chakra Petch  UI and body — headings, labels, controls, prose.
+   JetBrains Mono data — prices, logs, tables, IDs, timestamps.
+   ───────────────────────────────────────────────────────────────── */
 @font-face {
   font-family: "Arcana";
   src: url("/fonts/Arcana.ttf") format("truetype");
@@ -14,12 +20,62 @@
   font-display: swap;
 }
 
+@font-face {
+  font-family: "Chakra Petch";
+  src: url("/fonts/ChakraPetch-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Chakra Petch";
+  src: url("/fonts/ChakraPetch-Medium.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Chakra Petch";
+  src: url("/fonts/ChakraPetch-SemiBold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Chakra Petch";
+  src: url("/fonts/ChakraPetch-Bold.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("/fonts/JetBrainsMono.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+}
+
 @theme {
-  /* One family everywhere: Arcana (all-caps display serif). */
-  --font-display: "Arcana", sans-serif;
-  --font-sans: "Arcana", sans-serif;
-  --font-mono: "Arcana", sans-serif;
-  --font-term: "Arcana", sans-serif;
+  --font-display: "Arcana", "Chakra Petch", sans-serif;
+  --font-sans: "Chakra Petch", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --font-term: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* motion budget: stepped, not smoothed */
+  --motion-tap: 90ms;
+  --motion-ui: 140ms;
+  --motion-state: 180ms;
+  --motion-panel: 220ms;
+  --motion-exit: 140ms;
+  --ease-pixel: steps(2, end);
+  --ease-pixel-3: steps(3, end);
+  --ease-pixel-4: steps(4, end);
+  --ease-pixel-8: steps(8, end);
 
   /* deep cave indigo */
   --color-night-950: #080617;
@@ -62,20 +118,36 @@
   }
 
   body {
-    @apply bg-night-950 font-sans text-[14px] leading-relaxed text-ink antialiased;
+    @apply bg-night-950 font-sans text-[14px] text-ink antialiased;
     font-optical-sizing: auto;
-    letter-spacing: 0.05em;
+    line-height: 1.55;
+    letter-spacing: 0;
   }
 
   h1,
   h2,
   h3,
   h4 {
-    @apply font-sans font-bold tracking-[0.06em] text-ink;
+    @apply font-sans font-semibold text-ink;
+    line-height: 1.2;
+    letter-spacing: 0;
+    text-wrap: balance;
   }
 
-  code {
+  p {
+    text-wrap: pretty;
+  }
+
+  code,
+  kbd,
+  samp,
+  pre {
     @apply font-mono;
+    font-variant-ligatures: none;
+  }
+
+  ::placeholder {
+    opacity: 1;
   }
 
   ::selection {
@@ -93,6 +165,7 @@
     outline: 2px solid var(--color-gold);
     outline-offset: 2px;
     box-shadow: 0 0 0 4px #080617;
+    animation: focus-in var(--motion-ui) var(--ease-pixel);
   }
 
   button,
@@ -179,8 +252,9 @@
   }
 
   .panel-title {
-    @apply flex min-w-0 items-center gap-2 text-[13px] font-bold uppercase tracking-[0.06em] text-ink;
-    font-family: var(--font-sans);
+    @apply flex min-w-0 items-center gap-2 font-sans text-[15px] font-bold uppercase tracking-[0.08em] text-ink;
+    line-height: 1.2;
+    text-wrap: balance;
   }
 
   .panel-body {
@@ -188,27 +262,45 @@
   }
 
   .label {
-    @apply font-mono text-[10px] font-medium uppercase tracking-[0.06em] text-faint;
+    @apply font-sans text-[12px] font-semibold uppercase tracking-[0.12em] text-faint;
+    line-height: 1.25;
   }
 
   /* ── controls ─────────────────────────────────────────────────── */
   .btn {
-    @apply inline-flex h-9 shrink-0 select-none items-center justify-center gap-1.5 px-3 text-[12px] font-bold uppercase text-ink-dim max-sm:h-10;
+    @apply inline-flex h-9 shrink-0 select-none items-center justify-center gap-1.5 px-3 font-sans text-[12px] font-semibold uppercase text-ink-dim max-sm:h-10;
     position: relative;
     border: 2px solid #05030f;
     border-radius: 0;
     background: linear-gradient(180deg, #34246f 0%, #241757 100%);
-    font-family: var(--font-sans);
-    letter-spacing: 0.06em;
+    line-height: 1;
+    letter-spacing: 0.08em;
     box-shadow:
       inset 2px 2px 0 rgb(255 255 255 / 0.16),
       inset -2px -2px 0 rgb(0 0 0 / 0.38),
       3px 3px 0 #05030f;
     transition:
-      transform 90ms steps(2, end),
-      box-shadow 90ms steps(2, end),
-      background-color 120ms linear,
-      border-color 120ms linear;
+      transform var(--motion-tap) var(--ease-pixel),
+      box-shadow var(--motion-tap) var(--ease-pixel),
+      background-color var(--motion-ui) linear,
+      border-color var(--motion-ui) linear;
+  }
+
+  .btn[data-busy="true"] {
+    cursor: progress;
+  }
+
+  .btn[data-busy="true"]::after {
+    content: "";
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    width: 5px;
+    height: 5px;
+    margin-top: -2.5px;
+    background: currentColor;
+    box-shadow: 0 0 6px currentColor;
+    animation: busy-pixel 720ms var(--ease-pixel) infinite;
   }
 
   .btn:hover {
@@ -299,7 +391,7 @@
   }
 
   .btn-sm {
-    @apply h-8 gap-1 px-2.5 text-[10.5px] max-sm:h-10;
+    @apply h-8 gap-1 px-2.5 text-[12px] max-sm:h-10;
   }
 
   .btn-lg {
@@ -315,15 +407,20 @@
     border: 2px solid transparent;
     border-radius: 0;
     transition:
-      color 120ms linear,
-      background-color 120ms linear,
-      border-color 120ms linear;
+      color var(--motion-ui) linear,
+      background-color var(--motion-ui) linear,
+      border-color var(--motion-ui) linear,
+      transform var(--motion-tap) var(--ease-pixel);
   }
 
   .icon-btn:hover {
     border-color: var(--color-line);
     background: var(--color-night-850);
     color: var(--color-ink);
+  }
+
+  .icon-btn:active {
+    transform: translateY(1px);
   }
 
   .icon-btn-danger:hover {
@@ -333,19 +430,19 @@
   }
 
   .input {
-    @apply w-full resize-none px-3 py-2 text-[14px] text-ink max-sm:text-base;
+    @apply w-full resize-none px-3 py-2 font-sans text-[14px] font-normal text-ink max-sm:text-base;
     min-height: 38px;
+    line-height: 1.4;
+    letter-spacing: 0;
     border: 2px solid #05030f;
     border-radius: 0;
     background: #0a0720;
-    font-family: var(--font-sans);
-    font-weight: 500;
     box-shadow:
       inset 2px 2px 0 rgb(0 0 0 / 0.55),
       0 0 0 2px var(--color-line);
     transition:
-      box-shadow 120ms linear,
-      background-color 120ms linear;
+      box-shadow var(--motion-ui) linear,
+      background-color var(--motion-ui) linear;
   }
 
   .input::placeholder {
@@ -372,7 +469,7 @@
   }
 
   .input-sm {
-    @apply h-8 py-0 text-[12px] max-sm:h-10 max-sm:text-base;
+    @apply h-8 py-0 text-[13px] max-sm:h-10 max-sm:text-base;
     min-height: 0;
   }
 
@@ -381,15 +478,20 @@
   }
 
   .field > span {
-    @apply font-mono text-[10px] font-bold uppercase tracking-[0.06em] text-muted;
+    @apply font-sans text-[12px] font-semibold uppercase tracking-[0.12em] text-muted;
+    line-height: 1.25;
   }
 
   .field > small {
-    @apply text-[12px] leading-snug text-faint;
+    @apply font-sans text-[13px] leading-relaxed text-faint;
   }
 
   .field-error {
-    @apply font-mono text-[10px] uppercase tracking-wide text-danger;
+    @apply inline-block font-sans text-[12px] font-semibold leading-snug text-danger;
+  }
+
+  [role="alert"] {
+    animation: alert-nudge var(--motion-state) var(--ease-pixel);
   }
 
   .input-with-action {
@@ -405,7 +507,7 @@
   }
 
   .output-box {
-    @apply flex h-10 items-center px-3 font-mono text-[13px] text-gold;
+    @apply flex h-10 items-center px-3 font-mono text-[13px] tabular-nums text-gold;
     border: 2px solid #05030f;
     background: #0a0720;
     box-shadow: 0 0 0 2px var(--color-line);
@@ -413,7 +515,7 @@
 
   /* ── status language ──────────────────────────────────────────── */
   .chip {
-    @apply inline-flex h-6 items-center gap-1.5 px-2 font-mono text-[9.5px] font-bold uppercase tracking-[0.06em] text-muted;
+    @apply inline-flex h-6 items-center gap-1.5 px-2 font-mono text-[12px] font-semibold uppercase tracking-[0.08em] text-muted;
     border: 2px solid #05030f;
     border-radius: 0;
     background: var(--color-night-850);
@@ -474,9 +576,17 @@
   }
 
   .state-chip {
-    @apply inline-flex h-6 items-center px-2 font-mono text-[9.5px] font-bold uppercase tracking-[0.06em];
+    @apply inline-flex h-6 items-center px-2 font-mono text-[12px] font-semibold uppercase tracking-[0.08em];
     border: 2px solid #05030f;
     box-shadow: 2px 2px 0 #05030f;
+    transition:
+      background-color var(--motion-ui) linear,
+      color var(--motion-ui) linear,
+      border-color var(--motion-ui) linear;
+  }
+
+  .state-chip-pulse {
+    animation: chip-pop var(--motion-state) var(--ease-pixel-3);
   }
 
   .state-chip[data-state="idle"] {
@@ -510,7 +620,7 @@
   }
 
   .status-pill {
-    @apply inline-flex items-center px-2 py-0.5 font-mono text-[9.5px] font-bold uppercase tracking-[0.06em] text-signal;
+    @apply inline-flex items-center px-2 py-0.5 font-mono text-[12px] font-semibold uppercase tracking-[0.08em] text-signal;
     border: 2px solid #05030f;
     background: color-mix(in srgb, var(--color-signal) 20%, var(--color-night-900));
     box-shadow: 2px 2px 0 #05030f;
@@ -522,7 +632,7 @@
   }
 
   .type-badge {
-    @apply inline-flex items-center px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.06em];
+    @apply inline-flex items-center px-1.5 py-0.5 font-mono text-[12px] uppercase tracking-[0.08em];
     border: 1px solid color-mix(in srgb, var(--type-color, var(--color-muted)) 80%, #05030f);
     background: color-mix(in srgb, var(--type-color, var(--color-muted)) 16%, transparent);
     color: var(--type-color, var(--color-muted));
@@ -558,7 +668,7 @@
   }
 
   .tag {
-    @apply inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.06em] text-faint;
+    @apply inline-flex items-center gap-1 px-1.5 py-0.5 font-mono text-[12px] uppercase tracking-[0.08em] text-faint;
     border: 1px solid var(--color-line);
     background: rgb(8 6 23 / 0.7);
   }
@@ -576,12 +686,13 @@
   }
 
   .meter > i {
-    @apply block h-full bg-muted;
+    @apply block h-full w-full bg-muted;
     background-image: repeating-linear-gradient(90deg, transparent 0 6px, rgb(5 3 15 / 0.55) 6px 8px);
     box-shadow:
       inset 0 2px 0 rgb(255 255 255 / 0.35),
       inset 0 -2px 0 rgb(0 0 0 / 0.35);
-    transition: width 420ms steps(8, end);
+    clip-path: inset(0 calc(100% - var(--meter-value, 0%)) 0 0);
+    transition: clip-path 420ms var(--ease-pixel-8);
   }
 
   .meter-thin {
@@ -593,8 +704,8 @@
     border: 2px solid var(--color-line);
     background: rgb(8 6 23 / 0.55);
     transition:
-      border-color 120ms linear,
-      background-color 120ms linear;
+      border-color var(--motion-ui) linear,
+      background-color var(--motion-ui) linear;
   }
 
   .toggle-row:hover {
@@ -603,11 +714,11 @@
   }
 
   .toggle-row > span:first-child {
-    @apply text-[13px] font-medium text-ink-dim;
+    @apply text-[14px] font-medium text-ink-dim;
   }
 
   .toggle-row small {
-    @apply mt-0.5 block text-[12px] leading-snug text-faint;
+    @apply mt-0.5 block text-[13px] leading-snug text-faint;
   }
 
   .switch {
@@ -622,7 +733,7 @@
     @apply absolute left-0.5 top-0.5 h-3 w-3;
     background: var(--color-faint);
     box-shadow: inset 1px 1px 0 rgb(255 255 255 / 0.3);
-    transition: transform 120ms steps(3, end);
+    transition: transform var(--motion-ui) var(--ease-pixel-3);
   }
 
   input:checked + .switch {
@@ -658,11 +769,11 @@
   }
 
   .kv dt {
-    @apply shrink-0 font-mono text-[10px] uppercase tracking-[0.06em] text-faint;
+    @apply shrink-0 font-sans text-[12px] font-semibold uppercase tracking-[0.1em] text-faint;
   }
 
   .kv dd {
-    @apply truncate font-mono text-[11.5px] text-ink-dim;
+    @apply truncate font-mono text-[13px] tabular-nums text-ink-dim;
   }
 
   .auto-label {
@@ -693,12 +804,16 @@
   /* ── live feed ────────────────────────────────────────────────── */
   .log-line {
     @apply grid items-baseline gap-2 border-b px-3 py-1;
-    grid-template-columns: auto 4.75rem minmax(0, 1fr);
+    grid-template-columns: auto 5rem minmax(0, 1fr);
     border-color: rgb(52 38 115 / 0.45);
     font-family: var(--font-term);
     font-size: 13px;
-    line-height: 1.4;
-    animation: log-in 140ms steps(2, end);
+    line-height: 1.55;
+    letter-spacing: 0;
+  }
+
+  .log-line-new {
+    animation: log-in var(--motion-ui) var(--ease-pixel);
   }
 
   .log-time {
@@ -706,7 +821,7 @@
   }
 
   .log-scope {
-    @apply truncate text-[10px] uppercase tracking-[0.06em] text-muted;
+    @apply truncate text-[12px] uppercase tracking-[0.08em] text-muted;
     font-family: var(--font-mono);
   }
 
@@ -755,6 +870,11 @@
     padding-bottom: max(1rem, env(safe-area-inset-bottom));
   }
 
+  .modal-body p,
+  .steps {
+    max-width: 65ch;
+  }
+
   @media (min-width: 640px) {
     .modal-body {
       padding-bottom: max(1.25rem, env(safe-area-inset-bottom));
@@ -769,7 +889,12 @@
     box-shadow:
       5px 5px 0 #05030f,
       inset 0 0 0 1px rgb(255 255 255 / 0.06);
-    animation: toast-in 180ms steps(3, end);
+    animation: toast-in var(--motion-state) var(--ease-pixel-3);
+  }
+
+  .toast.is-leaving {
+    pointer-events: none;
+    animation: toast-out 130ms var(--ease-pixel) both;
   }
 
   .toast.success {
@@ -789,7 +914,7 @@
   }
 
   .chart-tip {
-    @apply flex items-center gap-3 px-2 py-1 font-mono text-[9.5px] text-muted;
+    @apply flex items-center gap-3 px-2 py-1 font-mono text-[12px] tabular-nums text-muted;
     border: 2px solid #05030f;
     background: var(--color-night-850);
     box-shadow: 3px 3px 0 #05030f;
@@ -800,7 +925,7 @@
   }
 
   .code-block {
-    @apply max-h-64 overflow-auto p-3 font-mono text-[10px] leading-relaxed text-ink-dim;
+    @apply max-h-64 overflow-auto p-3 font-mono text-[12px] leading-relaxed text-ink-dim;
     border: 2px solid var(--color-line);
     background: #08051c;
     box-shadow: inset 2px 2px 0 rgb(0 0 0 / 0.55);
@@ -813,11 +938,11 @@
   }
 
   .key-box code {
-    @apply min-w-0 truncate font-mono text-[12px] text-gold;
+    @apply min-w-0 truncate font-mono text-[13px] text-gold;
   }
 
   .steps {
-    @apply space-y-1.5 pl-5 text-[13px] leading-relaxed text-muted;
+    @apply space-y-1.5 pl-5 text-[14px] leading-relaxed text-muted;
   }
 
   .steps li {
@@ -855,13 +980,18 @@
   }
 
   .pixel-tab {
-    @apply h-10 px-2 py-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.06em] text-muted max-sm:h-11;
+    @apply h-10 px-2 py-1.5 font-sans text-[12px] font-bold uppercase tracking-[0.08em] text-muted max-sm:h-11;
     border: 2px solid transparent;
     background: transparent;
     transition:
-      background-color 100ms linear,
-      color 100ms linear,
-      border-color 100ms linear;
+      background-color var(--motion-ui) linear,
+      color var(--motion-ui) linear,
+      border-color var(--motion-ui) linear,
+      transform var(--motion-tap) var(--ease-pixel);
+  }
+
+  .pixel-tab:active {
+    transform: translateY(1px);
   }
 
   .pixel-tab:hover {
@@ -940,9 +1070,9 @@
       0 0 0 2px #05030f,
       4px 4px 0 #05030f;
     transition:
-      transform 110ms steps(2, end),
-      box-shadow 110ms steps(2, end),
-      border-color 110ms linear;
+      transform var(--motion-ui) var(--ease-pixel),
+      box-shadow var(--motion-ui) var(--ease-pixel),
+      border-color var(--motion-ui) linear;
   }
 
   .target-card:hover {
@@ -970,9 +1100,11 @@
   }
 
   .product-title {
-    font-weight: 500;
-    letter-spacing: 0.075em;
-    word-spacing: 0.08em;
+    font-family: var(--font-sans);
+    font-weight: 600;
+    line-height: 1.3;
+    letter-spacing: 0;
+    text-wrap: balance;
   }
 
   .target-card .item-avatar {
@@ -988,13 +1120,18 @@
   }
 
   .type-filter {
-    @apply inline-flex h-8 items-center gap-1.5 px-2 font-mono text-[9.5px] uppercase tracking-[0.06em] text-muted;
+    @apply inline-flex h-8 items-center gap-1.5 px-2 font-sans text-[12px] font-medium uppercase tracking-[0.08em] text-muted;
     border: 2px solid var(--color-line);
     background: rgb(8 6 23 / 0.6);
     transition:
-      border-color 100ms linear,
-      background-color 100ms linear,
-      color 100ms linear;
+      border-color var(--motion-ui) linear,
+      background-color var(--motion-ui) linear,
+      color var(--motion-ui) linear,
+      transform var(--motion-tap) var(--ease-pixel);
+  }
+
+  .type-filter:active {
+    transform: translateY(1px);
   }
 
   .type-filter:hover {
@@ -1017,11 +1154,30 @@
     animation: coin-float 4.5s steps(6, end) infinite;
   }
 
+  .brand-wordmark {
+    font-family: var(--font-display);
+    font-weight: 400;
+    font-synthesis: none;
+    line-height: 1;
+    letter-spacing: 0.04em;
+  }
+
+  .stat-hero {
+    font-family: var(--font-display);
+    font-weight: 400;
+    font-synthesis: none;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    letter-spacing: 0.01em;
+  }
+
   .boot-title {
     font-family: var(--font-display);
-    font-weight: 500;
+    font-weight: 400;
+    font-synthesis: none;
     line-height: 0.95;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.02em;
+    text-wrap: balance;
     text-shadow:
       2px 2px 0 #ff6bcb,
       4px 4px 0 #05030f;
@@ -1055,20 +1211,81 @@
     animation: marquee linear infinite;
   }
 
+  .ticker-track:hover .ticker-content,
+  .ticker-track[data-paused="true"] .ticker-content {
+    animation-play-state: paused;
+  }
+
+  .ticker-pause {
+    position: relative;
+  }
+
+  .ticker-pause::before {
+    content: "";
+    position: absolute;
+    inset: -2px;
+  }
+
   .hot-edge {
     animation: hot-edge 1.4s steps(2, end) infinite;
   }
 
+  .deck-enter {
+    animation: deck-enter var(--motion-panel) var(--ease-pixel-3) both;
+  }
+
+  .deck-enter-1 {
+    animation-delay: 30ms;
+  }
+
+  .deck-enter-2 {
+    animation-delay: 60ms;
+  }
+
+  .deck-enter-3 {
+    animation-delay: 90ms;
+  }
+
+  .tab-panel {
+    animation: tab-in 160ms var(--ease-pixel-3) both;
+  }
+
+  .loot-entry {
+    --loot-tint: var(--color-signal);
+    animation: loot-in 520ms var(--ease-pixel-8) both;
+  }
+
+  .loot-entry[data-status="failed"] {
+    --loot-tint: var(--color-danger);
+  }
+
+  .modal-backdrop {
+    animation: modal-fade 180ms linear both;
+  }
+
+  .modal-backdrop.is-closing {
+    animation: modal-fade-out 120ms linear both;
+  }
+
   .modal-panel {
-    animation: modal-in 160ms steps(3, end);
+    animation: modal-in var(--motion-panel) var(--ease-pixel-3) both;
+  }
+
+  .modal-panel.is-closing {
+    animation: modal-out 130ms var(--ease-pixel) both;
+  }
+
+  .modal-panel.is-closing,
+  .modal-backdrop.is-closing {
+    pointer-events: none;
   }
 
   .boot-intro {
-    animation: boot-rise 420ms steps(4, end) both;
+    animation: boot-rise 420ms var(--ease-pixel-4) both;
   }
 
   .boot-intro-delay {
-    animation: boot-rise 420ms steps(4, end) 120ms both;
+    animation: boot-rise 420ms var(--ease-pixel-4) 120ms both;
   }
 }
 
@@ -1126,24 +1343,72 @@
 }
 
 @keyframes modal-in {
-  from {
+  0% {
     opacity: 0;
-    transform: translateY(12px);
+    transform: translateY(14px) scale(0.97);
   }
-  to {
+  60% {
+    opacity: 0.92;
+    transform: translateY(-2px) scale(1.006);
+  }
+  100% {
     opacity: 1;
     transform: none;
   }
 }
 
-@keyframes toast-in {
+@keyframes modal-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+}
+
+@keyframes modal-fade {
   from {
     opacity: 0;
-    transform: translateX(18px);
   }
   to {
     opacity: 1;
+  }
+}
+
+@keyframes modal-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes toast-in {
+  0% {
+    opacity: 0;
+    transform: translateX(16px) translateY(4px) scale(0.98);
+  }
+  60% {
+    opacity: 0.9;
+    transform: translateX(-2px) translateY(0) scale(1.006);
+  }
+  100% {
+    opacity: 1;
     transform: none;
+  }
+}
+
+@keyframes toast-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateX(12px) translateY(2px) scale(0.985);
   }
 }
 
@@ -1179,6 +1444,97 @@
   }
 }
 
+@keyframes deck-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes tab-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes focus-in {
+  from {
+    outline-offset: 0;
+  }
+  to {
+    outline-offset: 2px;
+  }
+}
+
+@keyframes alert-nudge {
+  0% {
+    opacity: 0;
+    transform: translateX(-3px);
+  }
+  50% {
+    opacity: 1;
+    transform: translateX(2px);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes busy-pixel {
+  0%,
+  49% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.75);
+  }
+}
+
+@keyframes chip-pop {
+  0% {
+    transform: scale(1.08);
+  }
+  60% {
+    transform: scale(0.99);
+  }
+  100% {
+    transform: none;
+  }
+}
+
+@keyframes loot-in {
+  0% {
+    background-color: color-mix(in srgb, var(--loot-tint, var(--color-signal)) 26%, transparent);
+    box-shadow: inset 4px 0 0 var(--loot-tint, var(--color-signal));
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: inset 0 0 0 transparent;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -1187,5 +1543,79 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+
+  .ticker-track {
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .ticker-content,
+  .ticker-pause,
+  .led-pulse,
+  .sparkle,
+  .coin-float,
+  .hot-edge,
+  .auto-label[data-state="loading"] strong,
+  .state-chip-pulse,
+  .loot-entry {
+    animation: none !important;
+  }
+
+  .ticker-pause {
+    display: none;
+  }
+
+  .deck-enter,
+  .deck-enter-1,
+  .deck-enter-2,
+  .deck-enter-3,
+  .tab-panel,
+  .boot-intro,
+  .boot-intro-delay {
+    animation: fade-in 120ms linear both !important;
+    animation-delay: 0ms !important;
+  }
+
+  .modal-panel {
+    animation: modal-fade 120ms linear both !important;
+  }
+
+  .modal-panel.is-closing {
+    animation: modal-fade-out 100ms linear both !important;
+  }
+
+  .modal-backdrop {
+    animation: modal-fade 120ms linear both !important;
+  }
+
+  .modal-backdrop.is-closing {
+    animation: modal-fade-out 100ms linear both !important;
+  }
+
+  .toast {
+    animation: fade-in 120ms linear both !important;
+  }
+
+  .toast.is-leaving {
+    animation: modal-fade-out 100ms linear both !important;
+  }
+
+  .btn[data-busy="true"]::after {
+    animation: none !important;
+    opacity: 1;
+    transform: none;
+  }
+
+  .meter > i {
+    transition: none !important;
+  }
+
+  .btn:hover,
+  .target-card:hover,
+  .icon-btn:hover,
+  .type-filter:hover,
+  .pixel-tab:hover {
+    transform: none !important;
   }
 }

@@ -139,8 +139,8 @@ export function stateLabel(state) {
       filled: "FILLED",
       error: "ERROR",
       hot: "HOT",
-      idle: "HUNTING"
-    }[state] || "HUNTING"
+      idle: "HUNT"
+    }[state] || "HUNT"
   );
 }
 
