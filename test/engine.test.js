@@ -41,6 +41,9 @@ function createHarness() {
       this.state.history.unshift(entry);
       if (this.state.history.length > 200) this.state.history.length = 200;
     },
+    hasOrder(id) {
+      return this.state.history.some((entry) => entry.id === id);
+    },
     reportView() {
       return { since: 0, totals: {}, items: [] };
     }

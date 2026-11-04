@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { MAX_HISTORY } from "../src/shared/constants.js";
 import { Store } from "../src/worker/store.js";
 
@@ -138,12 +139,16 @@ test("legacy loot log backfills the report on first load", () => {
     assert.equal(report.totals.fills, 1);
     assert.equal(report.totals.failed, 1);
 
-    const persisted = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
-    assert.equal(Object.keys(persisted.report.items).length, 2, "backfill must be written to state.json");
+    const db = new Database(join(dir, "rollercoin.db"), { readonly: true });
+    const persisted = db.prepare("SELECT COUNT(*) AS n FROM report_products").get();
+    db.close();
+    assert.equal(persisted.n, 2, "backfill must be written to SQLite");
 
     const reloaded = new Store({ dataDir: dir, logger: null }).load();
     assert.equal(reloaded.reportView().totals.fills, 1, "backfilled report is persisted exactly once");
     assert.equal(reloaded.reportView().totals.failed, 1);
+    store.close();
+    reloaded.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

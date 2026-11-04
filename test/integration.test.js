@@ -146,6 +146,28 @@ test("mock engine fills a seeded target", { timeout: TIMEOUT }, async () => {
   assert.ok(reportBody.report.items.length > 0);
   assert.ok(reportBody.report.totals.fills > 0);
   assert.ok(reportBody.report.items.some((item) => item.fills > 0 && item.avgBuy > 0));
+
+  const historyResponse = await fetch(`${baseUrl}/api/history?limit=5`, { headers: authHeaders() });
+  assert.equal(historyResponse.status, 200);
+  const historyBody = await historyResponse.json();
+  assert.equal(historyBody.ok, true);
+  assert.ok(historyBody.total >= 1, "the permanent log counts stored orders");
+  assert.ok(historyBody.entries.length > 0, "the first page has entries");
+  assert.ok(historyBody.entries.length <= 5, "the page honours the limit");
+  assert.ok(historyBody.total >= snapshot.historyTotal);
+
+  const label = historyBody.entries[0].label;
+  const searchResponse = await fetch(
+    `${baseUrl}/api/history?q=${encodeURIComponent(label.toLowerCase())}`,
+    { headers: authHeaders() }
+  );
+  assert.equal(searchResponse.status, 200);
+  const searchBody = await searchResponse.json();
+  assert.ok(searchBody.total >= 1, "searching a stored product finds it");
+  assert.ok(
+    searchBody.entries.every((entry) => String(entry.label).toLowerCase().includes(label.toLowerCase())),
+    "search only returns matching products"
+  );
 });
 
 test("target CRUD validates and broadcasts snapshots", { timeout: TIMEOUT }, async () => {
@@ -357,6 +379,57 @@ test("WebSocket accepts the subprotocol key and answers ping", { timeout: TIMEOU
     setTimeout(() => resolveStatus(0), 2500);
   });
   assert.equal(status, 403);
+});
+
+test("system monitor exposes live worker and host metrics", { timeout: TIMEOUT }, async () => {
+  // CPU percent needs two samples, and the monitor samples every 2s, so give
+  // it a window before asking for the current view.
+  await new Promise((resolveSleep) => setTimeout(resolveSleep, 2500));
+
+  const response = await fetch(`${baseUrl}/api/system`, { headers: authHeaders() });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.ok, true);
+
+  const system = body.system;
+  assert.ok(system, "system payload must be present");
+  assert.ok(system.sampledAt > 0);
+  assert.ok(system.intervalMs >= 500);
+  assert.equal(system.process.pid > 0, true);
+  assert.ok(system.process.uptimeMs > 0);
+  assert.ok(system.memory.rss > 0, "the worker must report RSS");
+  assert.ok(system.memory.heapLimit > 0, "the worker must report the V8 heap ceiling");
+  assert.ok(system.memory.heapPercent > 0 && system.memory.heapPercent <= 100);
+  assert.ok(system.system.total > 0, "host memory must be reported");
+  assert.ok(system.system.available >= 0);
+  assert.ok(Array.isArray(system.history) && system.history.length >= 1);
+  assert.ok(["ok", "warn", "critical"].includes(system.health.level));
+  assert.deepEqual(Object.keys(system.eventLoop).sort(), ["lag", "utilization"]);
+
+  assert.ok(system.gc, "GC view must be present");
+  assert.equal(system.gc.supported, true);
+  assert.equal(system.gc.observed, true, "the GC PerformanceObserver must be attached");
+  assert.ok(Array.isArray(system.gc.recent));
+  assert.ok(system.gc.totals.count >= 0);
+  assert.equal(typeof system.gc.window.pausedMs, "number");
+  assert.equal(typeof system.gc.window.maxMs, "number");
+  assert.equal(system.gc.thresholds.warnMs > 0, true);
+  assert.ok("gc" in system.history[0], "history must carry the per-sample GC pause");
+
+  assert.ok(system.db, "DB view must be present");
+  assert.equal(system.db.instrumented, true);
+  assert.equal(system.db.sqlite.journalMode, "wal");
+  assert.ok(system.db.storage.pageSize > 0);
+  assert.ok(system.db.storage.dataBytes > 0);
+  assert.ok(system.db.files.db > 0, "the SQLite file must be measured");
+  assert.equal(system.db.queries.statements >= 0, true);
+  assert.equal(typeof system.db.window.p95Ms, "number");
+  assert.ok(Array.isArray(system.db.recentSlow));
+  assert.ok(Array.isArray(system.db.history));
+
+  const state = await (await fetch(`${baseUrl}/api/state`, { headers: authHeaders() })).json();
+  assert.ok(state.system, "snapshot must embed the system view");
+  assert.ok(state.system.memory.rss > 0);
 });
 
 test("key rotation is refused when WORKER_TOKEN pins the key", { timeout: TIMEOUT }, async () => {

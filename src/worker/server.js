@@ -3,7 +3,13 @@ import { readFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
-import { APP_NAME, APP_VERSION, LIMITS } from "../shared/constants.js";
+import {
+  APP_NAME,
+  APP_VERSION,
+  LIMITS,
+  LOOT_LOG_MAX_PAGE_SIZE,
+  LOOT_LOG_PAGE_SIZE
+} from "../shared/constants.js";
 import {
   normalizeItemId,
   validateSessionInput,
@@ -57,6 +63,13 @@ function json(res, status, payload, headers = {}) {
     ...headers
   });
   res.end(body);
+}
+
+/** Reads a non-negative integer query parameter, clamped to `max`. */
+function intParam(params, name, fallback, max = Number.MAX_SAFE_INTEGER) {
+  const value = Number(params.get(name));
+  if (!Number.isFinite(value) || value < 0) return fallback;
+  return Math.min(Math.floor(value), max);
 }
 
 function corsHeaders() {
@@ -127,6 +140,7 @@ export class ControlServer {
     itemInfo,
     keepalive = null,
     latency = null,
+    system = null,
     logger,
     startedAt = Date.now()
   }) {
@@ -138,9 +152,11 @@ export class ControlServer {
     this.itemInfo = itemInfo;
     this.keepalive = keepalive;
     this.latency = latency;
+    this.system = system;
     this.logger = logger;
     this.startedAt = startedAt;
     this.mock = Boolean(config.mock);
+    this.systemHealthLevel = null;
 
     this.server = createServer((req, res) => {
       this.#handleHttp(req, res).catch((error) => {
@@ -216,17 +232,38 @@ export class ControlServer {
     this.keepaliveTimer.unref?.();
 
     this.statsTimer = setInterval(() => {
-      if (this.clients.size > 0) {
-        this.broadcast("gateway", this.gateway.stats());
-        // Keep the latency panel live: samples are recorded passively by the
-        // worker (API calls, warm probe, ws handshake/ping), so pushing the
-        // latest view here lets the deck update without a manual probe.
-        const latency = this.latencyView();
-        if (latency) this.broadcast("latency", latency);
+      // Health sampling and transition logging happen even with no clients
+      // connected, so a struggling worker still leaves a trace in the log.
+      if (this.system) {
+        const view = this.system.snapshot();
+        this.#trackSystemHealth(view);
+        if (this.clients.size > 0) this.broadcast("system", view);
       }
+      if (this.clients.size === 0) return;
+
+      this.broadcast("gateway", this.gateway.stats());
+      // Keep the latency panel live: samples are recorded passively by the
+      // worker (API calls, warm probe, ws handshake/ping), so pushing the
+      // latest view here lets the deck update without a manual probe.
+      const latency = this.latencyView();
+      if (latency) this.broadcast("latency", latency);
     }, 5000);
     this.statsTimer.unref?.();
     return this;
+  }
+
+  #trackSystemHealth(view) {
+    const level = view?.health?.level || "ok";
+    if (level === this.systemHealthLevel) return;
+    const previous = this.systemHealthLevel;
+    this.systemHealthLevel = level;
+    if (level === "critical") {
+      this.logger.warn("system", `worker health critical — ${(view.health.reasons || []).join(", ") || "unknown"}`);
+    } else if (level === "warn") {
+      this.logger.warn("system", `worker health degraded — ${(view.health.reasons || []).join(", ") || "unknown"}`);
+    } else if (previous === "warn" || previous === "critical") {
+      this.logger.info("system", "worker health recovered");
+    }
   }
 
   async stop() {
@@ -295,12 +332,16 @@ export class ControlServer {
       gateway: this.gateway.stats(),
       session: this.session.status(),
       latency: this.latency ? this.latency.snapshot() : null,
+      system: this.systemView(),
       ...(this.keepalive ? { keepalive: this.keepalive.stats() } : {}),
       settings: { ...this.store.state.settings },
       configs: this.configsView(),
       stats: { ...this.store.state.stats },
       report: this.store.reportView(),
-      history: this.store.state.history.slice(0, 60),
+      // Newest page only: the full loot log lives in SQLite and is fetched
+      // page-by-page through GET /api/history so the deck stays light.
+      history: this.store.state.history.slice(0, LOOT_LOG_PAGE_SIZE),
+      historyTotal: this.store.historyCount(),
       pending: this.engine.pendingSnapshot(),
       workerTokenPreview: this.store.state.workerTokenPreview,
       accessKeyPinned: Boolean(this.config.workerToken),
@@ -316,6 +357,10 @@ export class ControlServer {
 
   latencyView() {
     return this.latency ? this.latency.snapshot() : null;
+  }
+
+  systemView() {
+    return this.system ? this.system.snapshot() : null;
   }
 
   #send(ws, type, data) {
@@ -490,6 +535,19 @@ export class ControlServer {
         return;
       }
       await this.#serveStatic(path, req, res);
+      return;
+    }
+
+    if (method === "GET" && path === "/api/history") {
+      const page = this.store.historyPage({
+        q: url.searchParams.get("q") || "",
+        status: url.searchParams.get("status") || "",
+        limit: intParam(url.searchParams, "limit", LOOT_LOG_PAGE_SIZE, LOOT_LOG_MAX_PAGE_SIZE),
+        offset: intParam(url.searchParams, "offset", 0),
+        beforeAt: intParam(url.searchParams, "beforeAt", 0),
+        beforeId: url.searchParams.get("beforeId") || ""
+      });
+      json(res, 200, { ok: true, ...page });
       return;
     }
 
@@ -751,6 +809,15 @@ export class ControlServer {
 
     if (method === "GET" && path === "/api/latency") {
       json(res, 200, { ok: true, latency: this.latencyView() });
+      return;
+    }
+
+    if (method === "GET" && path === "/api/system") {
+      if (!this.system) {
+        json(res, 503, { ok: false, error: "System monitoring is not available." });
+        return;
+      }
+      json(res, 200, { ok: true, system: this.systemView() });
       return;
     }
 

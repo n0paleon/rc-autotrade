@@ -52,21 +52,48 @@ untuk login, mengatur target, memantau market, dan melihat loot.
   hasil build `dist/` sehingga tetap same-origin dan tanpa CDN runtime.
 - **Session manager** — menyimpan access/refresh token, memperbarui token sebelum kedaluwarsa,
   mencoba ulang sekali saat request kena `401`, dan bisa diganti atau **dihapus langsung dari UI**
-  (termasuk cookie Cloudflare) tanpa menyentuh `data/state.json` secara manual.
+  (termasuk cookie Cloudflare) tanpa menyentuh database `data/rollercoin.db` secara manual.
 - **Token bridge** — opsional: console snippet sekali pakai atau **userscript Tampermonkey** yang
   dipasang sekali dan otomatis menyinkronkan token setiap 30 detik, bahkan saat tab background.
 - **Safety rails** — cooldown antar order, batas order per menit, backoff saat purchase ditolak,
   dry-run, partial-order minimum, validasi ketat, dan konfirmasi untuk aksi destruktif. Tombol
   **PAUSE / START** tunggal di header menghentikan atau menjalankan kembali seluruh proses buying;
   market feed tetap hidup agar harga langsung segar saat di-resume.
-- **Loot log + profit report** — setiap fill/failure dicatat, lalu diagregasi permanen per produk
-  (fills, qty, spend, avg buy, profit, margin, success rate, last activity). Profit all-time juga
-  tampil langsung di tiap product card. Panel **PROFIT BY PRODUCT** bisa diekspor ke CSV; angkanya
-  tetap utuh walau loot log sudah berputar melewati `MAX_HISTORY` atau worker restart.
+- **Loot log + profit report** — setiap fill/failure dicatat **permanen** di SQLite; panel loot log
+  default menampilkan 50 transaksi terbaru, bisa ditambah lewat **Load older**, dan punya pencarian
+  server-side berdasarkan nama produk sehingga halaman tetap ringan walau log sudah ribuan baris.
+  Log yang sama diagregasi per produk (fills, qty, spend, avg buy, profit, margin, success rate,
+  last activity). Profit all-time juga tampil langsung di tiap product card. Panel
+  **PROFIT BY PRODUCT** bisa diekspor ke CSV; angkanya tetap utuh setelah worker restart.
 - **Live data plane** — HUD, target cards + chart, market wire, terminal event, loot log, profit
   report, health token, runtime config, sound effect, dan tampilan mobile.
+- **Worker health monitor** — tab **SYSTEM** menampilkan CPU worker dan host, heap V8 + batasnya,
+  RSS, RAM sistem (MemAvailable, bukan MemFree), swap, load average, latency event loop
+  (p50/p95/p99), active handles, plus sparkline historis. Status `HEALTHY / DEGRADED / CRITICAL`
+  dihitung dari tekanan heap, RAM, dan event loop, dan setiap transisi ikut tercatat di log.
+- **GC event detection** — `PerformanceObserver` menangkap setiap garbage collection V8 (minor/
+  major, durasi pause, timestamp asli). Panel menampilkan agregat 60 detik, tipe GC terakhir, dan
+  sparkline pause per sampel, sehingga lonjakan ping bisa dicocokkan dengan major GC penyebabnya.
+- **DB performance metrics** — setiap statement SQLite di-timing (read/write, avg/p95/max, error,
+  slow query), plus ukuran file DB/WAL/-shm, page/freelist, mode jurnal, cache, dan transaksi.
+  Sparkline query rate membantu melihat lonjakan I/O yang menahan event loop.
 - **Mock mode** — simulator market bawaan untuk mencoba seluruh alur tanpa akun Rollercoin.
 - **Test suite** — unit test untuk rules/validation/event/store + integration test end-to-end.
+
+### Loot log
+
+Setiap fill dan failure ditulis ke tabel `orders` di `data/rollercoin.db` dan **tidak pernah
+dipangkas** — jumlah transaksi tidak dibatasi. Agar halaman tetap ringan, browser hanya menerima
+halaman pertama (default **50** baris, `LOOT_LOG_PAGE_SIZE`) lewat snapshot; baris yang lebih lama
+diambil on-demand dari `GET /api/history` memakai cursor `beforeAt` + `beforeId` (bukan offset),
+jadi entri baru yang masuk saat paging tidak menggeser window.
+
+Panel loot log punya kotak **Search product**: pencarian dijalankan di server (SQLite `LIKE`,
+case-insensitive, wildcard `%`/`_` di-escape) sehingga mencakup seluruh log permanen, bukan hanya
+50 baris yang terlihat. Tombol **Load older** menambah 50 baris per klik dan badge menampilkan
+`shown / total`. `MAX_HISTORY = 200` sekarang hanya ukuran window in-memory untuk push live ke
+browser; engine memakai `store.hasOrder()` (query SQLite) untuk cek duplikat, jadi fill lama tidak
+tercatat dua kali walau sudah keluar dari window.
 
 ### Profit by product
 
@@ -221,8 +248,8 @@ Catatan:
 - Gunakan **satu instance** (`fork`), jangan `-i max`/cluster. Worker memegang satu koneksi
   WebSocket dan state order; beberapa instance bisa saling menimpa state dan mengirim order ganda.
 - `.env` dibaca oleh worker dari `cwd` (`ecosystem.config.cjs` mengarah ke root project).
-- Data target/session dan agregat profit per produk tetap di `data/state.json`; loot log ada di
-  `data/loot-log.json`. PM2 restart tidak menghapus keduanya.
+- Data target/session, loot log, agregat profit, dan cache harga pasar ada di database SQLite
+  `data/rollercoin.db` (mode WAL). PM2 restart tidak menghapusnya.
 - Log default ada di `~/.pm2/logs/`. Jangan commit log karena bisa memuat access key saat boot pertama.
 - `pm2 startup` membutuhkan sudo. Jika tidak tersedia, jalankan PM2 dari systemd user service.
 
@@ -301,14 +328,14 @@ Perilaku pembelian:
   mode live mulai kosong dan terisi seiring waktu. History runtime hilang saat worker restart.
 - **Profit** di dashboard = `(targetPrice - hargaBeli) × qty`, yaitu selisih terhadap harga target,
   bukan hasil penjualan kembali.
-- **PROFIT BY PRODUCT** mengagregasi semua fill dan failure per `itemId` ke `state.json`
+- **PROFIT BY PRODUCT** mengagregasi semua fill dan failure per `itemId` ke tabel `report_products` di `data/rollercoin.db`
   (`report.items`). Karena counter disimpan terpisah dari loot log, laporan tetap akurat setelah
-  loot log berputar melewati `MAX_HISTORY = 200` dan setelah worker restart. Kolomnya: fills,
-  failed, qty, spend, avg buy, profit, margin (`profit / spend`), success rate, dan last activity.
-  `DELETE /api/history` mereset report bersama stats; menghapus satu target tidak menghapus
-  riwayat produknya. Produk yang disimpan dibatasi `MAX_REPORT_PRODUCTS = 500`; saat daftar penuh,
-  produk dengan profit terendah dibuang lebih dulu. Saat upgrade dari state lama tanpa `report`,
-  worker membangun ulang laporan sekali dari loot log yang masih tersimpan.
+  worker restart dan setelah sebagian besar log berada di luar window in-memory `MAX_HISTORY = 200`.
+  Kolomnya: fills, failed, qty, spend, avg buy, profit, margin (`profit / spend`), success rate,
+  dan last activity. `DELETE /api/history` mereset report bersama stats; menghapus satu target tidak
+  menghapus riwayat produknya. Produk yang disimpan dibatasi `MAX_REPORT_PRODUCTS = 500`; saat daftar
+  penuh, produk dengan profit terendah dibuang lebih dulu. Saat upgrade dari state lama tanpa
+  `report`, worker membangun ulang laporan sekali dari seluruh loot log yang tersimpan.
 
 Label otomatis diambil dari:
 
@@ -487,7 +514,7 @@ adalah ambang batas bawahnya.
 
 ### `maxSpendPerFill` — plafon teoretis, bukan field
 
-Nilai abu-abu di form target **tidak dikirim** ke worker dan tidak disimpan di `state.json`. UI
+Nilai abu-abu di form target **tidak dikirim** ke worker dan tidak disimpan ke database. UI
 menghitungnya sebagai `targetPrice × desiredQty × 2` supaya Anda bisa melihat skenario terburuk
 satu fill: harga pas di target **dan** high-stock menyala.
 
@@ -573,7 +600,7 @@ rate limit, backoff, no-token); kondisi itu terlihat di log `scan`/`order` dan d
 4. Buka tab **LINK → PASTE TOKEN** di control deck.
 5. Isi cookie Cloudflare hanya jika API purchase ditolak (lihat troubleshooting).
 
-Worker menyimpan access + refresh token di `data/state.json` (mode `0600`) dan otomatis
+Worker menyimpan access + refresh token di `data/rollercoin.db` (mode `0600`) dan otomatis
 memperbarui access token **2 menit sebelum** JWT kedaluwarsa. Token Rollercoin umumnya berumur
 600 detik, jadi refresh terjadi sekitar tiap 8 menit — bukan tiap 30 detik. Untuk token opaque,
 fallback-nya tiap 25 menit. Refresh terjadwal **tidak** menutup/membuka ulang market socket;
@@ -650,7 +677,7 @@ salin header cookie dari request browser (minimal `cf_clearance`, sering juga `_
 | `HOST` | `127.0.0.1` | Bind address control plane |
 | `PORT` | `8787` | Port control plane (`0` = pilih acak) |
 | `WORKER_TOKEN` | — | Pin access key (>= 16 karakter) |
-| `DATA_DIR` | `./data` | Lokasi `state.json` dan `loot-log.json` |
+| `DATA_DIR` | `./data` | Lokasi database `rollercoin.db` (+ `-wal`/`-shm`) |
 | `RC_API_BASE` | `https://rollercoin.com` | Base URL API |
 | `RC_WS_URL` | `wss://nws.rollercoin.com/` | URL market socket |
 | `RC_COOKIE` | — | Cookie header awal (bisa juga dari UI) |
@@ -658,6 +685,7 @@ salin header cookie dari request browser (minimal `cf_clearance`, sering juga `_
 | `RC_HTTP_CONNECTIONS` | `8` | Maksimum koneksi per origin (1–32) |
 | `RC_KEEPALIVE_MS` | `30000` | Interval warm probe; `0` = mati (5000–600000 ms) |
 | `RC_KEEPALIVE_URL` | `${RC_API_BASE}/api/events/config` | Endpoint probe publik |
+| `SYSTEM_SAMPLE_MS` | `2000` | Interval sampling health worker (500–60000 ms) |
 | `MOCK` | `0` | `1` = simulator, tidak ada order nyata |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 
@@ -688,6 +716,84 @@ bersama statistik lainnya.
 `HOST=0.0.0.0` memungkinkan akses dari LAN. Jangan lakukan itu tanpa firewall/TLS, dan ingat
 control deck memegang kredensial Rollercoin.
 
+### Health worker & host
+
+Worker men-sample dirinya sendiri tiap `SYSTEM_SAMPLE_MS` (default 2 detik) tanpa dependency
+tambahan, lalu menyimpan maksimal 120 titik historis di memori (tidak pernah ditulis ke SQLite).
+Tab **SYSTEM** menampilkan:
+
+| Metrik | Sumber / arti |
+| --- | --- |
+| `Worker CPU` | `process.cpuUsage()` delta ÷ wall time — persen dari satu core |
+| `Host CPU` | Delta `os.cpus()` — persen dari seluruh core |
+| `Heap` | `heapUsed / heap_size_limit` dari V8 |
+| `RSS` | Resident set size proses worker |
+| `External` | Buffer/native memory di luar heap V8 |
+| `System RAM` | `MemTotal − MemAvailable` (bukan `MemFree`, agar page cache tidak dihitung) |
+| `Load 1m` | `os.loadavg()[0]`, dinormalisasi per core untuk indikator warna |
+| `Loop p95` | Histogram `monitorEventLoopDelay` — indikator event loop tersendat |
+| `GCs` | Jumlah event GC V8 dalam 60 detik terakhir (minor + major) |
+| `GC paused` | Total durasi pause GC dalam 60 detik terakhir |
+| `GC max` | Pause GC terpanjang dalam 60 detik — biasanya mark-sweep (major) |
+| `Last GC` | Event GC terakhir: tipe, durasi, dan umurnya |
+| `DB` / `WAL` | Ukuran file `rollercoin.db`, `-wal`, dan `-shm` di disk |
+| `Q/S` | Statement SQLite per detik sejak sampel terakhir |
+| `DB p95` | Persentil 95 durasi statement dalam 60 detik (lihat bagian performa database) |
+| `Handles` | `process.getActiveResourcesInfo().length` |
+
+Status health: `HEALTHY` → `DEGRADED` pada heap ≥ 80%, RAM ≥ 88%, event-loop p95 ≥ 100 ms, GC pause
+≥ 120 ms dalam 15 detik terakhir, DB p95 ≥ 25 ms, WAL ≥ 64 MB, ada error SQLite, atau CPU worker
+≥ 95%; `CRITICAL` pada heap ≥ 92%, RAM ≥ 96%, p95 ≥ 250 ms, GC pause ≥ 300 ms, DB p95 ≥ 100 ms,
+atau WAL ≥ 256 MB. Transisi ke `DEGRADED`/`CRITICAL` (dan pemulihannya) ditulis ke log scope
+`system`, jadi tetap terlihat walau tidak ada browser yang terbuka. Panel live lewat broadcast
+`system` tiap 5 detik dan juga mem-poll `GET /api/system` tiap 10 detik sebagai fallback.
+
+### Deteksi GC event
+
+Kalau ping control link atau market feed tiba-tiba melonjak, penyebab paling sering adalah **major
+GC** (mark-sweep) yang menghentikan event loop. Worker memasang
+`PerformanceObserver({ entryTypes: ["gc"] })` sejak boot dan mencatat **setiap** event ke ring
+buffer 200 entri:
+
+| Field | Arti |
+| --- | --- |
+| `kind` | `minor` (scavenge), `major` (mark-sweep), `incremental`, `weakcb` |
+| `duration` | Lama pause GC (ms) — inilah yang membekukan timer/socket |
+| `at` | Waktu mulai GC (dari `entry.startTime` + time origin), bukan saat entry diterima |
+| `flags` | Flag V8 (`4` = forced, mis. `--expose-gc`) |
+
+Panel menampilkan GC dalam tiga lapisan: agregat 60 detik (jumlah/paused/max), badge tipe dan 3 event
+terakhir, serta sparkline **GC PAUSE WINDOW** di samping CPU/RSS. Sparkline dibuat dari `history[]`
+per sampel (`gc` = total pause pada interval itu, `gcCount` = jumlah event), sehingga lonjakan bisa
+dibandingkan langsung dengan spike di tab **LATENCY** (WS ping) atau ping control link di header.
+Ambang warning/critical juga ikut dikirim di payload (`gc.thresholds`) supaya UI dan health tidak
+memakai angka yang berbeda. GC tracking memakai `perf_hooks` bawaan Node; tidak ada dependency baru
+dan tidak ada overhead berarti.
+
+### Performa database (SQLite)
+
+Semua statement yang melewati `Store` diukur. `DbMetrics` membungkus `db.prepare()` dan
+`db.transaction()` **sebelum** prepared statement hot-path dibuat, lalu mencatat durasi setiap
+`run` / `get` / `all` dengan `performance.now()`. Yang dikumpulkan:
+
+| Blok | Isi |
+| --- | --- |
+| `files` | Ukuran `rollercoin.db`, `-wal`, `-shm`, dan totalnya |
+| `storage` | `page_size`, `page_count`, `freelist_count`, payload bytes, free bytes, utilisasi halaman |
+| `sqlite` | `sqlite_version`, `journal_mode`, `synchronous`, `cache_size`, `wal_autocheckpoint`, `busy_timeout` |
+| `queries` | Total statement, read/write/pragma/schema, error, `SQLITE_BUSY`, avg/max/last ms, rate per detik |
+| `window` | Agregat 60 detik terakhir: count per jenis, avg/max/p95 ms, error, slow |
+| `transactions` | Jumlah commit/rollback, total dan max wall time |
+| `recentSlow` | 10 statement terakhir di atas ambang lambat, berisi SQL snippet (bukan value) |
+| `history` | Titik per sampel: `qps`, `avgMs`, `p95Ms`, `dbBytes`, `walBytes` |
+
+Ambang: statement ≥ 20 ms masuk daftar **slow**; health naik ke `DEGRADED` saat DB p95 ≥ 25 ms,
+ada error/busy di window, atau WAL ≥ 64 MB; `CRITICAL` saat p95 ≥ 100 ms atau WAL ≥ 256 MB. Panel
+**SYSTEM** menampilkan blok SQLite (DB/WAL, Q/S, p95, avg, max, TX, ERR), dua slow query terbaru,
+dan sparkline **SQL WINDOW**. Instrumentasi hanya menyimpan teks SQL, tidak pernah nilai parameter;
+overhead-nya satu `performance.now()` per statement, dan `db.pragma()` untuk sampling tidak ikut
+dihitung sebagai query aplikasi.
+
 ---
 
 ## Worker API
@@ -701,8 +807,9 @@ Authorization: Bearer <access-key>
 | Method | Path | Fungsi |
 | --- | --- | --- |
 | `GET` | `/api/health` | Health publik (tanpa auth) |
-| `GET` | `/api/state` | Snapshot lengkap: config, runtime, stats, report, session, history |
+| `GET` | `/api/state` | Snapshot lengkap: config, runtime, stats, report, session, 50 loot terbaru (`history` + `historyTotal`) |
 | `GET` | `/api/report` | Agregat profit per produk all-time (`totals` + `items`) |
+| `GET` | `/api/history?q=&status=&limit=&offset=&beforeAt=&beforeId=` | Halaman loot log permanen: `q` cari nama produk/item id, `status` = `filled`/`failed`, limit max 200, cursor `beforeAt`+`beforeId` untuk halaman lama |
 | `GET` | `/api/item-info?itemId=&itemType=` | Resolve label/rarity/itemType dari marketplace |
 | `GET` | `/api/configs` | Daftar target + runtime |
 | `PUT` | `/api/configs` | Ganti seluruh daftar (`[ ... ]` atau `{ "configs": [ ... ] }`) |
@@ -718,6 +825,7 @@ Authorization: Bearer <access-key>
 | `POST` | `/api/auth/rotate` | Rotasi access key (409 bila dipin env) |
 | `GET` | `/api/latency` | Statistik latency worker → upstream per channel (HTTP, warm probe, WS handshake, WS ping) |
 | `POST` | `/api/latency/probe` | Jalankan warm probe sekarang dan balas sampel baru |
+| `GET` | `/api/system` | Snapshot health worker/host: CPU, memory, event loop, load, history |
 | `DELETE` | `/api/history` | Reset profit, counter, loot log, dan sampel latency |
 
 Error validasi memakai status `422` dan `fields`, misalnya:
@@ -738,7 +846,7 @@ Error validasi memakai status `422` dan `fields`, misalnya:
 - Auth: subprotocol `rcw.v1, <access-key>` (fallback query `?token=...`)
 - Client boleh mengirim `{ "type": "ping", "t": 123 }`; server membalas `{ "type": "pong", ... }`.
 - Event server: `hello`, `snapshot`, `log`, `market`, `order`, `history`, `stats`, `report`,
-  `session`, `gateway`, `settings`, `configs`, `latency`, `history-cleared`.
+  `session`, `gateway`, `settings`, `configs`, `latency`, `system`, `history-cleared`.
 - `order.phase`: `submitted`, `accepted`, `filled`, `failed`, `dry`.
 - `market` membawa `price`, `stock`, `targetPrice`, `hot`, `at`, serta `allowedPriceMin`,
   `allowedPriceMax`, `allowedAt` (cache band harga terakhir per target).
@@ -989,14 +1097,27 @@ pm2 restart rc-autotrade --update-env
 
 ## Data dan keamanan
 
-- `data/state.json` berisi token sesi Rollercoin (plaintext), target, settings, dan statistik.
-  **Tidak** lagi menyimpan loot log.
-- `data/loot-log.json` berisi history fill/failure (maks 200 entri) dan ditulis terpisah dengan
-  atomic write. Tiap entri punya field `message`: `"-"` untuk fill, dan alasan error untuk failure.
-  Kedua file dibuat `0600`, direktori `0700`.
-- Saat pertama start setelah update, history lama di `state.json` otomatis dimigrasikan ke
-  `loot-log.json`, lalu `state.json` ditulis ulang tanpa field `history`. Jangan commit atau backup
-  isi `data/` ke tempat publik.
+- `data/rollercoin.db` adalah database SQLite (mode WAL) berisi token sesi Rollercoin (plaintext),
+  target, settings, statistik, loot log, agregat profit per produk, dan cache harga pasar. File
+  dibuat `0600`, direktori `0700`; `rollercoin.db-wal`/`-shm` ikut di-`chmod 0600` saat dibuka.
+- Order fill/failure disimpan permanen di tabel `orders` tanpa batas jumlah. UI menampilkan 50
+  terbaru by default (bisa **Load older** + dicari), sedangkan engine mengecek duplikat langsung
+  ke tabel lewat `store.hasOrder()` agar fill lama tidak terhitung dua kali. Window in-memory
+  `MAX_HISTORY = 200` hanya dipakai untuk push live; agregat profit ada di `report_products`.
+  Tiap entri punya field `message`: `"-"` untuk fill, dan alasan error untuk failure.
+  Karena log tidak pernah dipangkas, ukuran database tumbuh seiring transaksi — reset lifetime stats
+  (`DELETE /api/history`) atau backup rutin bila perlu.
+- Cache pasar (`market_snapshot` + `price_points`) membuat deck langsung terisi setelah restart.
+  Data ini hanya untuk tampilan: order tetap hanya direncanakan dari frame socket live, dan badge
+  `cached` menandai harga yang belum diperbarui frame baru.
+- Titik harga 1 menit disimpan 14 hari lalu dipangkas otomatis (saat boot dan tiap 6 jam). Ubah
+  `PRICE_RETENTION_DAYS` di `src/shared/constants.js` kalau butuh histori lebih panjang.
+- Database lama dari versi JSON dimigrasikan otomatis saat boot pertama: `state.json` dan
+  `loot-log.json` diimpor lalu di-rename menjadi `*.migrated-<timestamp>` (tidak dihapus).
+  Jangan commit atau backup isi `data/` ke tempat publik.
+- Backup: `sqlite3 data/rollercoin.db ".backup 'backup.db'"` saat worker berjalan, atau copy
+  `rollercoin.db` setelah worker berhenti. Jangan menaruh `DATA_DIR` di NFS/folder sync (Dropbox,
+  OneDrive) karena WAL butuh locking lokal.
 - Access key worker **tidak** disimpan plaintext; hanya hash SHA-256 + preview.
 - Token Rollercoin tidak pernah dikirim ke UI dalam bentuk penuh; UI hanya menampilkan preview.
   Pengecualian: `/api/session/push` membalas token penuh ke snippet bridge yang sudah terautentikasi.
@@ -1038,18 +1159,22 @@ Cakupan:
 - `validation.test.js` — schema target, URL, duplikat, settings, session.
 - `rules.test.js` — price/qty/high-stock/partial, rate limiter, konversi micro-RLT.
 - `events.test.js` — normalisasi frame market, fill, dan frame lain.
-- `store.test.js` — key generation/rotation, persistensi, sanitasi state, JWT exp.
+- `store.test.js` — key generation/rotation, persistensi SQLite, migrasi JSON, market cache, JWT exp,
+  loot log permanen (paging cursor + search nama produk).
+- `engine-cache.test.js` — snapshot hasil hydrate hanya untuk tampilan dan tidak memicu order.
 - `bridge.test.js` — transport `GM_xmlhttpRequest` + sinkronisasi token dua arah.
 - `item-info.test.js` — auto label, fallback tanpa `rarityGroup`, deteksi tipe (rack), cache, kegagalan API.
 - `engine.test.js` — order gagal tidak menambah book; fill sukses menguranginya.
 - `keepalive.test.js` — warm probe, idle timeout, dan suspend saat `403`/`429`.
 - `latency.test.js` — rolling sample per channel, percentile, dan jitter.
-- `report.test.js` — agregat profit per produk bertahan setelah loot log berputar.
-- `format.test.js` — formatter UI (label itemType, URL marketplace).
+- `system.test.js` — delta CPU/event loop, batas history, GC, DB view, dan klasifikasi health worker.
+- `db-metrics.test.js` — instrumentasi statement/transaksi, window 60 detik, slow query, ukuran file.
+- `report.test.js` — agregat profit per produk melewati batas window in-memory loot log.
+- `format.test.js` — formatter UI (label itemType, URL marketplace, byte/percent/ms presisi).
 - `session.test.js` — jadwal refresh token dan fallback token opaque.
 - `integration.test.js` — spawn worker mock, auth, CRUD, settings, CORS, session push, item-info, WS, fill.
 
-Total 78 test; integration test memakai port acak dan data directory sementara.
+Total 108 test; integration test memakai port acak dan data directory sementara.
 
 ---
 
@@ -1087,6 +1212,8 @@ Total 78 test; integration test memakai port acak dan data directory sementara.
 │       ├── engine.js        # matching + order execution + 24h minute history
 │       ├── item-info.js     # auto label/rarity resolver
 │       ├── events.js        # upstream frame normalizer
+│       ├── system.js        # CPU/heap/event-loop/GC/host health sampler
+│       ├── db-metrics.js    # SQLite statement timing, file/WAL and slow-query probe
 │       ├── server.js        # control plane HTTP/WS + static UI
 │       └── reset-token.js
 ├── test/
@@ -1127,6 +1254,8 @@ Total 78 test; integration test memakai port acak dan data directory sementara.
 - Tidak ada pembatalan order.
 - Format upstream tidak resmi dan bisa berubah tanpa pemberitahuan.
 - Profit adalah diskon terhadap target, bukan realized P&L.
+- Loot log tidak dipangkas otomatis; database tumbuh seiring jumlah transaksi. Halaman tetap ringan
+  karena browser hanya memuat 50 baris per halaman, tetapi backup/reset berkala tetap disarankan.
 - Pending order disimpan di memori; restart worker tidak membatalkan order yang sudah terlanjur
   dikirim, tetapi konfirmasi tetap dicatat lewat `marketplace_orders_filled`.
 - Refresh token rotation mengikuti response Rollercoin; bila endpoint berubah, gunakan paste manual.

@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { ORDER_STATUS } from "../shared/constants.js";
+import {
+  MARKET_SNAPSHOT_THROTTLE_MS,
+  ORDER_STATUS,
+  PRICE_HISTORY_LIMIT,
+  PRICE_POINT_WRITE_INTERVAL_MS
+} from "../shared/constants.js";
 import { normalizeUpstreamEvent } from "./events.js";
 import { planOrder, roundPrice } from "../shared/rules.js";
 
@@ -55,6 +60,83 @@ export class Engine {
   stop() {
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
     this.cleanupTimer = null;
+    this.flushMarketCache();
+  }
+
+  /**
+   * Rebuilds the display cache from SQLite after a restart.
+   *
+   * This is presentation-only: `planOrder` still runs exclusively inside
+   * `#handleMarket` on a live socket frame, so a snapshot from three hours ago
+   * can light up the deck but can never trigger a purchase.
+   */
+  hydrateMarket() {
+    if (typeof this.store.loadMarketSnapshots !== "function") return 0;
+    const snapshots = this.store.loadMarketSnapshots();
+    let restored = 0;
+
+    for (const [itemId, snapshot] of Object.entries(snapshots)) {
+      if (snapshot?.seenAt == null) continue;
+      const config = this.#configFor(itemId);
+      if (!config) continue;
+
+      const runtime = this.#runtime(itemId);
+      if (Number.isFinite(snapshot.lastPrice)) runtime.lastPrice = snapshot.lastPrice;
+      if (Number.isFinite(snapshot.lastStock)) runtime.lastStock = snapshot.lastStock;
+      if (Number.isFinite(snapshot.allowedPriceMin)) runtime.allowedPriceMin = snapshot.allowedPriceMin;
+      if (Number.isFinite(snapshot.allowedPriceMax)) runtime.allowedPriceMax = snapshot.allowedPriceMax;
+      runtime.allowedAt = snapshot.allowedAt ?? null;
+      runtime.itemType = snapshot.itemType || runtime.itemType || config.itemType || null;
+      runtime.seenAt = snapshot.seenAt;
+      runtime.hydratedAt = Date.now();
+      runtime.stale = true;
+      // Keep any synthetic points (mock mode) while preferring persisted ones.
+      const stored = this.store.loadPriceHistory(itemId, { limit: PRICE_HISTORY_LIMIT });
+      if (stored.length > 0) {
+        const merged = new Map((runtime.history ?? []).map((point) => [point.t, point]));
+        for (const point of stored) merged.set(point.t, point);
+        runtime.history = [...merged.values()]
+          .sort((a, b) => a.t - b.t)
+          .slice(-PRICE_HISTORY_LIMIT);
+      }
+      restored += 1;
+    }
+
+    if (restored > 0) {
+      this.logger.info(
+        "engine",
+        `restored ${restored} cached market snapshots from sqlite — waiting for live frames`
+      );
+    }
+    return restored;
+  }
+
+  /** Writes every known snapshot once, used on graceful shutdown. */
+  flushMarketCache() {
+    if (typeof this.store.saveMarketSnapshots !== "function") return;
+    const rows = [];
+    for (const [itemId, runtime] of this.runtime) {
+      const seenAt = runtime.seenAt ?? runtime.lastSeenAt;
+      if (seenAt == null) continue;
+      // A target removed from the deck must not resurrect a snapshot row (FK).
+      if (!this.#configFor(itemId)) continue;
+      rows.push({
+        itemId,
+        lastPrice: runtime.lastPrice,
+        lastStock: runtime.lastStock,
+        allowedPriceMin: runtime.allowedPriceMin,
+        allowedPriceMax: runtime.allowedPriceMax,
+        allowedAt: runtime.allowedAt,
+        itemType: runtime.itemType,
+        seenAt
+      });
+    }
+    if (rows.length === 0) return;
+    try {
+      this.store.saveMarketSnapshots(rows);
+    } catch (error) {
+      this.logger.warn("engine", `could not persist market cache: ${error?.message || error}`);
+    }
   }
 
   resetCounters() {
@@ -111,7 +193,15 @@ export class Engine {
         blockedUntil: 0,
         lastResult: null,
         itemType: null,
-        history: []
+        history: [],
+        // Market cache bookkeeping (see hydrateMarket/#persistMarket).
+        seenAt: null,
+        stale: false,
+        hydratedAt: null,
+        persistedAt: 0,
+        pointWriteAt: 0,
+        lastPointBucket: null,
+        persistErrorAt: 0
       };
       if (this.mock) state.history = this.#seedMockHistory(key);
       this.runtime.set(key, state);
@@ -133,6 +223,46 @@ export class Engine {
     }
     points.push({ t: bucket, p: roundPrice(target * (0.97 + Math.random() * 0.06)) });
     return points;
+  }
+
+  /**
+   * Throttled write of the display cache. Frames can arrive many times per
+   * second, so the snapshot is refreshed at most once per window (plus
+   * immediately when the marketplace band changes), and the current minute's
+   * price point at most every PRICE_POINT_WRITE_INTERVAL_MS. A failed write
+   * must never break the frame loop.
+   */
+  #persistMarket(config, runtime, event, price, bucket, now) {
+    try {
+      const bandChanged = event.allowedPriceMin != null || event.allowedPriceMax != null;
+      if (bandChanged || now - runtime.persistedAt >= MARKET_SNAPSHOT_THROTTLE_MS) {
+        this.store.saveMarketSnapshot?.({
+          itemId: config.itemId,
+          lastPrice: runtime.lastPrice,
+          lastStock: runtime.lastStock,
+          allowedPriceMin: runtime.allowedPriceMin,
+          allowedPriceMax: runtime.allowedPriceMax,
+          allowedAt: runtime.allowedAt,
+          itemType: runtime.itemType,
+          seenAt: runtime.seenAt ?? now
+        });
+        runtime.persistedAt = now;
+      }
+
+      if (
+        runtime.lastPointBucket !== bucket ||
+        now - runtime.pointWriteAt >= PRICE_POINT_WRITE_INTERVAL_MS
+      ) {
+        this.store.recordPricePoint?.(config.itemId, bucket, price);
+        runtime.lastPointBucket = bucket;
+        runtime.pointWriteAt = now;
+      }
+    } catch (error) {
+      if (now - runtime.persistErrorAt > 60_000) {
+        runtime.persistErrorAt = now;
+        this.logger.warn("engine", `market cache write failed: ${error?.message || error}`);
+      }
+    }
   }
 
   handleFrame(frame) {
@@ -176,6 +306,8 @@ export class Engine {
     runtime.lastPrice = best.unitPrice;
     runtime.lastStock = best.quantity;
     runtime.lastSeenAt = now;
+    runtime.seenAt = now;
+    runtime.stale = false;
     runtime.itemType = event.itemType || runtime.itemType || config.itemType || null;
 
     // Cache the marketplace price band per target: frames that omit it must not
@@ -194,6 +326,8 @@ export class Engine {
       // Keep one point per minute; update it with the latest price in that minute.
       lastPoint.p = best.unitPrice;
     }
+
+    this.#persistMarket(config, runtime, event, best.unitPrice, bucket, now);
 
     const settings = this.store.state.settings;
     const plan = planOrder({
@@ -354,7 +488,9 @@ export class Engine {
     const targetPrice = pendingMeta?.targetPrice ?? config?.targetPrice ?? null;
 
     // A duplicate confirmation must not double-count stats or the loot log.
-    if (fill.orderId && this.store.state.history.some((entry) => entry.id === fill.orderId)) {
+    // The permanent SQLite log is authoritative: the in-memory window only
+    // holds the newest MAX_HISTORY entries.
+    if (fill.orderId && this.store.hasOrder(fill.orderId)) {
       this.logger.debug("fill", `ignoring duplicate confirmation ${fill.orderId}`);
       return;
     }

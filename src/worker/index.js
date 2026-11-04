@@ -11,6 +11,8 @@ import { Engine } from "./engine.js";
 import { ItemInfoService } from "./item-info.js";
 import { ControlServer } from "./server.js";
 import { LatencyTracker } from "./latency.js";
+import { SystemMonitor } from "./system.js";
+import { DbMetrics } from "./db-metrics.js";
 import { APP_NAME, APP_VERSION } from "../shared/constants.js";
 
 const MOCK_TARGETS = [
@@ -71,11 +73,25 @@ function printBanner({ config, serverUrl, tokenInfo, mock }) {
 }
 
 async function main() {
+  // Every runtime file (SQLite db, -wal, -shm, backups) holds credentials or
+  // order data; create them 0600 by default instead of relying on chmod alone.
+  process.umask(0o077);
+
   const config = loadConfig();
   const logger = createLogger({ level: config.logLevel });
   const startedAt = Date.now();
 
-  const store = new Store({ dataDir: config.dataDir, logger }).load();
+  const store = new Store({ dataDir: config.dataDir, logger });
+  // The DB probe must be attached before Store.load() prepares its statements,
+  // otherwise the hot queries would bypass the timing wrappers.
+  const dbMetrics = new DbMetrics({
+    files: {
+      db: store.dbFile,
+      wal: `${store.dbFile}-wal`,
+      shm: `${store.dbFile}-shm`
+    }
+  });
+  store.load({ dbMetrics });
   const tokenInfo = store.ensureWorkerToken(config.workerToken);
   if (tokenInfo.source === "generated") {
     store.flush();
@@ -147,6 +163,11 @@ async function main() {
 
   const itemInfo = new ItemInfoService({ store, api, logger });
 
+  // Worker/host health sampler (CPU, memory, event loop, load, GC, DB).
+  // Runs even without connected clients so health transitions still reach the log.
+  const system = new SystemMonitor({ intervalMs: config.systemSampleMs, db: dbMetrics });
+  system.start();
+
   let broadcast = () => {};
   const engine = new Engine({
     store,
@@ -162,6 +183,10 @@ async function main() {
     }
   });
 
+  // Show the last known prices immediately after a restart instead of an empty
+  // deck. Live frames overwrite these as soon as they arrive.
+  engine.hydrateMarket();
+
   const server = new ControlServer({
     config,
     store,
@@ -171,6 +196,7 @@ async function main() {
     itemInfo,
     keepalive,
     latency,
+    system,
     logger,
     startedAt
   });
@@ -232,6 +258,7 @@ async function main() {
     closing = true;
     logger.info("worker", `${signal} received — shutting down`);
     try {
+      system.stop();
       keepalive?.stop();
       gateway.stop();
       session.stop();
@@ -241,7 +268,7 @@ async function main() {
     } catch (error) {
       logger.error("worker", `shutdown error: ${error?.message || error}`);
     } finally {
-      store.flush();
+      store.close();
       setTimeout(() => process.exit(0), 50).unref?.();
     }
   }
@@ -251,7 +278,7 @@ async function main() {
 
   process.on("uncaughtException", (error) => {
     logger.error("worker", `uncaught exception: ${error?.stack || error}`);
-    store.flush();
+    store.close();
     process.exit(1);
   });
 

@@ -35,8 +35,13 @@ import {
   trimPrice,
   drawPixelAvatar,
   formatMs,
+  formatPreciseMs,
+  formatBytes,
+  formatPercent,
   latencyClass,
-  sparkBars
+  sparkBars,
+  thresholdClass,
+  utilizationClass
 } from "./lib/format.js";
 import { sound } from "./lib/sound.js";
 
@@ -602,6 +607,14 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
               {Number.isFinite(runtime.lastPrice) ? fixedPrice(runtime.lastPrice) : "—"}
             </strong>
             <span className="font-mono text-[12px] text-faint">RLT</span>
+            {runtime.stale && Number.isFinite(runtime.seenAt) ? (
+              <span
+                className="ml-auto font-mono text-[10px] uppercase tracking-[0.08em] text-faint"
+                title={`Cached snapshot from ${relTime(runtime.seenAt)} — waiting for a live market frame`}
+              >
+                cached
+              </span>
+            ) : null}
           </div>
         </div>
         <div className="bg-gold/5 px-2.5 py-2 sm:px-3">
@@ -1050,28 +1063,200 @@ function ReportPanel({ report, notify }) {
   );
 }
 
-function LootLog({ history, onReset }) {
+const LOOT_PAGE_SIZE = 50;
+const LOOT_MAX_ROWS = 500;
+const LOOT_SEARCH_DEBOUNCE_MS = 250;
+
+function LootLog({ history, historyTotal, onReset, request }) {
+  const [draft, setDraft] = useState("");
+  const [query, setQuery] = useState("");
+  const [entries, setEntries] = useState([]);
+  const [total, setTotal] = useState(Number(historyTotal) || 0);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const idsRef = useRef(new Set());
+
+  // Typing updates the box immediately; the server query is debounced so a
+  // search over the permanent log is not re-run on every keystroke.
+  useEffect(() => {
+    const timer = setTimeout(() => setQuery(draft.trim()), LOOT_SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [draft]);
+
+  // Leaving search mode always falls back to the newest live page.
+  useEffect(() => {
+    if (query) return;
+    const seed = (Array.isArray(history) ? history : []).filter(Boolean);
+    idsRef.current = new Set(seed.map((entry) => entry.id));
+    setEntries(seed);
+    setError("");
+    setLoading(false);
+    setHasMore(true);
+  }, [query]);
+
+  // Keep the counter in sync with the worker (new fills bump it; a reset
+  // drops it to zero and clears whatever was loaded, search included).
+  useEffect(() => {
+    const nextTotal = Number(historyTotal);
+    if (!Number.isFinite(nextTotal)) return;
+    if (query) {
+      if (nextTotal !== 0) return;
+      idsRef.current = new Set();
+      setEntries([]);
+      setTotal(0);
+      setHasMore(false);
+      setError("");
+      return;
+    }
+    setTotal(nextTotal);
+    if (nextTotal === 0 && idsRef.current.size > 0) {
+      idsRef.current = new Set();
+      setEntries([]);
+      setHasMore(false);
+      setError("");
+      return;
+    }
+    setHasMore(idsRef.current.size < nextTotal);
+  }, [historyTotal, query]);
+
+  // Live socket entries are prepended so the newest loot stays on screen even
+  // while older pages are loaded below it.
+  useEffect(() => {
+    if (query) return;
+    const list = Array.isArray(history) ? history : [];
+    if (list.length === 0) return;
+    const fresh = list.filter((entry) => entry && !idsRef.current.has(entry.id));
+    if (fresh.length === 0) return;
+    for (const entry of fresh) idsRef.current.add(entry.id);
+    setEntries((previous) => [...fresh, ...previous].slice(0, LOOT_MAX_ROWS));
+  }, [history, query]);
+
+  // Server-side search over the whole permanent log (product name / item id).
+  useEffect(() => {
+    if (!query) return;
+    let cancelled = false;
+    idsRef.current = new Set();
+    setEntries([]);
+    setTotal(0);
+    setHasMore(false);
+    setError("");
+    setLoading(true);
+    const params = new URLSearchParams({ q: query, limit: String(LOOT_PAGE_SIZE) });
+    request(`/api/history?${params.toString()}`)
+      .then((data) => {
+        if (cancelled) return;
+        const list = (Array.isArray(data.entries) ? data.entries : []).filter(Boolean);
+        for (const entry of list) idsRef.current.add(entry.id);
+        setEntries(list.slice(0, LOOT_MAX_ROWS));
+        setTotal(Number(data.total) || 0);
+        setHasMore(Boolean(data.hasMore));
+      })
+      .catch((failure) => {
+        if (!cancelled) setError(failure?.message || "Search failed.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [query, request]);
+
+  const loadOlder = useCallback(async () => {
+    if (loading || !hasMore) return;
+    const oldest = entries[entries.length - 1];
+    const params = new URLSearchParams({ limit: String(LOOT_PAGE_SIZE) });
+    if (query) params.set("q", query);
+    if (oldest) {
+      params.set("beforeAt", String(oldest.at));
+      params.set("beforeId", String(oldest.id));
+    }
+    setLoading(true);
+    setError("");
+    try {
+      const data = await request(`/api/history?${params.toString()}`);
+      const list = (Array.isArray(data.entries) ? data.entries : []).filter(
+        (entry) => entry && !idsRef.current.has(entry.id)
+      );
+      for (const entry of list) idsRef.current.add(entry.id);
+      // Older pages are user-requested, so let them accumulate instead of
+      // trimming rows the user just asked for.
+      setEntries((previous) => [...previous, ...list]);
+      setTotal(Number(data.total) || 0);
+      setHasMore(Boolean(data.hasMore));
+    } catch (failure) {
+      setError(failure?.message || "Could not load older loot.");
+    } finally {
+      setLoading(false);
+    }
+  }, [entries, hasMore, loading, query, request]);
+
+  const resetLog = async () => {
+    const didReset = await onReset();
+    if (didReset === false) return;
+    setDraft("");
+    setQuery("");
+    idsRef.current = new Set();
+    setEntries([]);
+    setTotal(0);
+    setHasMore(false);
+    setError("");
+  };
+
+  const shown = entries.length;
+  const trimmed = shown < total;
+  const emptyTitle = error ? "Loot log unavailable" : query ? "No matching loot" : "No loot yet";
+  const emptyHint = error
+    ? error
+    : query
+      ? `Nothing in the permanent log matches “${query}”.`
+      : "Confirmed fills will drop here with profit and latency.";
+
   return (
     <section className="panel flex h-[380px] min-w-0 flex-col max-xl:order-3 xl:col-start-1 xl:row-start-2" data-accent="gold">
-      <div className="panel-head shrink-0">
+      <div className="panel-head shrink-0 flex-wrap gap-y-2">
         <h2 className="panel-title">
           <Icon name="i-coin" className="h-4 w-4 text-gold" /> Loot log
-          <span className="border-2 border-[#05030f] bg-gold px-1.5 py-0.5 font-mono text-[12px] font-bold text-[#1a1000]">{history.length}</span>
+          <span
+            className="border-2 border-[#05030f] bg-gold px-1.5 py-0.5 font-mono text-[12px] font-bold text-[#1a1000]"
+            title={trimmed ? `${formatInt(shown)} of ${formatInt(total)} stored entries shown` : `${formatInt(total)} stored entries`}
+          >
+            {formatInt(shown)}{trimmed ? ` / ${formatInt(total)}` : ""}
+          </span>
         </h2>
-        <button className="btn btn-ghost btn-sm" type="button" onClick={onReset}>
-          <Icon name="i-trash" className="h-3 w-3" /> Reset
-        </button>
+        <div className="ml-auto flex w-full items-center gap-2 sm:w-auto">
+          <div className="relative min-w-0 flex-1 sm:w-56 sm:flex-none">
+            <Icon name="i-search" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
+            <input
+              className="input input-sm pl-8"
+              type="search"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") setDraft("");
+              }}
+              placeholder="Search product"
+              aria-label="Search loot log by product name"
+            />
+          </div>
+          <button className="btn btn-ghost btn-sm" type="button" onClick={resetLog}>
+            <Icon name="i-trash" className="h-3 w-3" /> Reset
+          </button>
+        </div>
       </div>
-      {history.length === 0 ? (
+      {entries.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
           <Icon name="i-coin" className="h-6 w-6 text-faint" />
-          <p className="font-mono text-[13px] uppercase tracking-[0.14em] text-ink-dim">No loot yet</p>
-          <p className="text-[13px] text-faint">Confirmed fills will drop here with profit and latency.</p>
+          <p className="font-mono text-[13px] uppercase tracking-[0.14em] text-ink-dim">
+            {loading ? "Searching…" : emptyTitle}
+          </p>
+          <p className="text-[13px] text-faint">{loading ? "Reading the permanent loot log." : emptyHint}</p>
         </div>
       ) : (
         <>
           <ul className="min-h-0 flex-1 divide-y divide-line/40 overflow-y-auto overscroll-contain md:hidden">
-            {history.slice(0, 60).map((entry) => (
+            {entries.map((entry) => (
               <li
                 className={`flex items-start justify-between gap-3 px-4 py-2.5${isRecent(entry.at, 6000) ? " loot-entry" : ""}`}
                 key={entry.id || `${entry.orderId}-${entry.at}`}
@@ -1116,7 +1301,7 @@ function LootLog({ history, onReset }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-line/40">
-                {history.slice(0, 60).map((entry) => (
+                {entries.map((entry) => (
                   <tr
                     className={`transition-colors hover:bg-night-850/60${isRecent(entry.at, 6000) ? " loot-entry" : ""}`}
                     key={entry.id || `${entry.orderId}-${entry.at}`}
@@ -1150,6 +1335,34 @@ function LootLog({ history, onReset }) {
           </div>
         </>
       )}
+      <div className="flex shrink-0 items-center justify-between gap-2 border-t-2 border-line px-3 py-2">
+        <span className="min-w-0 truncate font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+          {query
+            ? `${formatInt(shown)} match${shown === 1 ? "" : "es"}`
+            : trimmed
+              ? `Showing ${formatInt(shown)} of ${formatInt(total)}`
+              : `${formatInt(total)} stored`}
+        </span>
+        <div className="flex shrink-0 items-center gap-2">
+          {error ? (
+            <span className="max-w-[220px] truncate text-[12px] text-danger" title={error}>
+              {error}
+            </span>
+          ) : null}
+          {hasMore ? (
+            <button
+              className="btn btn-ghost btn-sm"
+              type="button"
+              onClick={loadOlder}
+              disabled={loading}
+              data-busy={loading ? "true" : undefined}
+              aria-busy={loading}
+            >
+              {loading ? "Loading…" : "Load older"}
+            </button>
+          ) : null}
+        </div>
+      </div>
     </section>
   );
 }
@@ -1544,6 +1757,343 @@ function ConfigPanel({ snapshot, worker, notify }) {
   );
 }
 
+/**
+ * Worker health panel. The worker samples itself every few seconds and pushes
+ * a `system` event, so this panel is almost entirely a render of
+ * `snapshot.system`; a slow poll is only a safety net.
+ */
+function SystemMeter({ label, value, detail, tone }) {
+  const number = Number(value);
+  const width = Number.isFinite(number) ? Math.max(0, Math.min(100, number)) : 0;
+  const fill =
+    tone === "text-danger" ? "bg-danger" : tone === "text-warn" ? "bg-warn" : "bg-signal";
+  return (
+    <div className="border-2 border-line bg-night-950/60 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="label">{label}</span>
+        <b className={`font-mono text-[14px] font-semibold tabular-nums ${tone || "text-ink-dim"}`}>
+          {formatPercent(value, 1)}
+        </b>
+      </div>
+      <div className="meter meter-thin mt-2">
+        <i className={fill} style={{ "--meter-value": `${width}%` }} />
+      </div>
+      <span className="mt-1.5 block font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+        {detail}
+      </span>
+    </div>
+  );
+}
+
+function StatTile({ label, value, tone, meta }) {
+  return (
+    <span className="flex min-w-0 flex-col gap-0.5 border border-line/70 bg-night-900/60 px-1.5 py-1 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+      <span className="truncate leading-tight">{label}</span>
+      <b className={`whitespace-nowrap text-[12px] font-semibold leading-tight tracking-normal tabular-nums ${tone || "text-ink-dim"}`}>
+        {value}
+      </b>
+      {meta ? <span className="whitespace-nowrap text-[11px] leading-tight tracking-[0.04em]">{meta}</span> : null}
+    </span>
+  );
+}
+
+function HistoryStrip({ label, bars, format, tone }) {
+  return (
+    <div className="@container border-2 border-line bg-night-950/60 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="label min-w-0 whitespace-nowrap">{label}</span>
+        <span className="hidden shrink-0 whitespace-nowrap font-mono text-[12px] uppercase tracking-[0.08em] text-faint @[20rem]:inline">
+          {bars.length} samples
+        </span>
+      </div>
+      <div className="mt-2 flex h-10 items-end gap-[2px]" aria-hidden="true">
+        {bars.length === 0 ? (
+          <span className="font-mono text-[12px] uppercase tracking-wide text-faint">Collecting…</span>
+        ) : (
+          bars.map((bar, index) => (
+            <i
+              key={index}
+              className={`max-w-[10px] min-w-[2px] flex-1 bg-current ${tone ? tone(bar.value) : "text-signal"}`}
+              style={{ height: `${bar.height}%` }}
+              title={format(bar.value)}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SystemPanel({ snapshot, worker }) {
+  const system = snapshot.system || null;
+  const health = system?.health || { level: "ok", reasons: [] };
+  const proc = system?.process || {};
+  const cpu = system?.cpu || {};
+  const memory = system?.memory || {};
+  const host = system?.system || {};
+  const loop = system?.eventLoop || {};
+  const lag = loop.lag || {};
+  const history = system?.history || [];
+  const gc = system?.gc || null;
+  const gcWindow = gc?.window || {};
+  const gcTotals = gc?.totals || {};
+  const gcWarn = Number(gc?.thresholds?.warnMs) || 120;
+  const gcCritical = Number(gc?.thresholds?.criticalMs) || 300;
+  const db = system?.db || null;
+  const dbFiles = db?.files || {};
+  const dbStorage = db?.storage || {};
+  const dbSqlite = db?.sqlite || {};
+  const dbQueries = db?.queries || {};
+  const dbWindow = db?.window || {};
+  const dbTransactions = db?.transactions || {};
+  const dbWarn = Number(db?.thresholds?.p95WarnMs) || 25;
+  const dbCritical = Number(db?.thresholds?.p95CriticalMs) || 100;
+
+  // Safety net: the worker pushes `system` alongside gateway/latency every 5s.
+  // Quietly poll as well so the panel survives a missed push after a reconnect.
+  // Depend on the stable callback, not the whole worker object: the deck
+  // re-renders every second and would otherwise restart this timer forever.
+  const fetchSystem = worker?.fetchSystem;
+  useEffect(() => {
+    if (typeof fetchSystem !== "function") return undefined;
+    const timer = setInterval(() => {
+      fetchSystem().catch(() => {
+        /* a reconnect or the push stream will refresh it */
+      });
+    }, 10_000);
+    return () => clearInterval(timer);
+  }, [fetchSystem]);
+
+  if (!system) {
+    return (
+      <section className="panel" data-accent="lime">
+        <div className="panel-head">
+          <h2 className="panel-title"><Icon name="i-bolt" className="h-4 w-4 text-signal" /> Worker health</h2>
+        </div>
+        <div className="panel-body">
+          <p className="text-[13px] leading-relaxed text-faint">
+            Waiting for the first metrics sample. The worker samples CPU, memory and event-loop
+            health every few seconds; make sure it is running the latest build.
+          </p>
+        </div>
+      </section>
+    );
+  }
+
+  const healthLabel = health.level === "critical" ? "CRITICAL" : health.level === "warn" ? "DEGRADED" : "HEALTHY";
+  const healthChip =
+    health.level === "critical" ? "chip-offline" : health.level === "warn" ? "chip-warn" : "chip-online";
+  const heapTone = utilizationClass(memory.heapPercent, 80, 92);
+  const hostTone = utilizationClass(host.usedPercent, 88, 96);
+  const cpuTone = thresholdClass(cpu.processPercent, 80, 100);
+  const loadPerCore = Number.isFinite(Number(cpu.load1)) && cpu.cores ? cpu.load1 / cpu.cores : null;
+
+  return (
+    <section className="panel @container" data-accent="lime">
+      <div className="panel-head">
+        <h2 className="panel-title"><Icon name="i-bolt" className="h-4 w-4 text-signal" /> Worker health</h2>
+        <span className={`chip ${healthChip}`} title={health.reasons?.join(" · ") || "All health checks passed"}>
+          <span className="led led-pulse" />{healthLabel}
+        </span>
+      </div>
+      <div className="panel-body">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="label flex items-center gap-1.5">
+            <Icon name="i-clock" className="h-3 w-3" /> Uptime {formatUptime(proc.uptimeMs)}
+          </span>
+          <span className="font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+            PID {proc.pid} · {proc.node}
+          </span>
+        </div>
+
+        {health.level !== "ok" ? (
+          <p className="border-2 border-line bg-night-950/60 px-3 py-2 font-mono text-[12px] uppercase tracking-[0.08em] text-warn">
+            {health.reasons?.length ? health.reasons.join(" · ") : "Health check degraded"}
+          </p>
+        ) : null}
+
+        <div className="grid grid-cols-1 gap-2 @2xl:grid-cols-3">
+          <SystemMeter
+            label="Worker CPU"
+            value={cpu.processPercent}
+            detail={`${formatInt(cpu.cores)} cores · host ${formatPercent(cpu.hostPercent, 1)}`}
+            tone={cpuTone}
+          />
+          <SystemMeter
+            label="Heap"
+            value={memory.heapPercent}
+            detail={`${formatBytes(memory.heapUsed)} / ${formatBytes(memory.heapLimit)}`}
+            tone={heapTone}
+          />
+          <SystemMeter
+            label="System RAM"
+            value={host.usedPercent}
+            detail={`${formatBytes(host.used)} / ${formatBytes(host.total)}`}
+            tone={hostTone}
+          />
+        </div>
+
+        <div className="grid grid-cols-3 gap-1.5 @xl:grid-cols-6">
+          {[
+            ["RSS", formatBytes(memory.rss), "text-ink-dim"],
+            ["External", formatBytes(memory.external), "text-ink-dim"],
+            ["Free RAM", formatBytes(host.available), thresholdClass(host.usedPercent, 88, 96)],
+            ["Load 1m", Number.isFinite(Number(cpu.load1)) ? Number(cpu.load1).toFixed(2) : "—", thresholdClass(loadPerCore ? loadPerCore * 100 : null, 70, 95)],
+            ["Loop p95", formatMs(lag.p95), thresholdClass(lag.p95, 100, 250)],
+            ["Handles", proc.activeHandles == null ? "—" : formatInt(proc.activeHandles), "text-ink-dim"]
+          ].map(([label, value, tone]) => (
+            <StatTile key={label} label={label} value={value} tone={tone} />
+          ))}
+        </div>
+
+        <div className="border-2 border-line bg-night-950/60 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="label flex items-center gap-1.5">
+              <Icon name="i-bolt" className="h-3 w-3" /> Garbage collector · last 60s
+            </span>
+            <span
+              className={`font-mono text-[12px] uppercase tracking-[0.08em] ${
+                gc?.observed ? "text-signal" : gc?.supported === false ? "text-warn" : "text-faint"
+              }`}
+              title="V8 GC events captured through perf_hooks PerformanceObserver"
+            >
+              {gc?.observed ? "observing" : gc?.supported === false ? "unsupported" : "starting"}
+            </span>
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-1.5 @xs:grid-cols-4">
+            {[
+              ["GCs", formatInt(gcWindow.count || 0), "text-ink-dim"],
+              ["Paused", formatMs(gcWindow.pausedMs || 0), "text-ink-dim"],
+              ["Max", formatMs(gcWindow.maxMs || 0), thresholdClass(gcWindow.maxMs, gcWarn, gcCritical)],
+              [
+                "Last",
+                gcTotals.last ? formatMs(gcTotals.last.duration) : "—",
+                thresholdClass(gcTotals.last?.duration, gcWarn, gcCritical),
+                gcTotals.last ? relTime(gcTotals.last.at) : null
+              ]
+            ].map(([label, value, tone, meta]) => (
+              <StatTile key={label} label={label} value={value} tone={tone} meta={meta} />
+            ))}
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-1">
+            <span className="whitespace-nowrap border border-line/70 bg-night-900/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+              {formatInt(gcWindow.minor || 0)} minor
+            </span>
+            <span
+              className={`whitespace-nowrap border border-line/70 bg-night-900/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] ${
+                gcWindow.major > 0 ? "text-warn" : "text-faint"
+              }`}
+            >
+              {formatInt(gcWindow.major || 0)} major
+            </span>
+            {(gc?.recent || []).slice(0, 3).map((event, index) => (
+              <span
+                key={`${event.at}-${index}`}
+                className={`whitespace-nowrap border border-line/70 bg-night-900/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] ${
+                  event.kind === "major" ? "text-warn" : "text-faint"
+                }`}
+                title={`${event.kind} GC · ${event.duration}ms · ${formatTime(event.at)}`}
+              >
+                {event.kind} {formatMs(event.duration)}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div className="border-2 border-line bg-night-950/60 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="label flex items-center gap-1.5">
+              <Icon name="i-download" className="h-3 w-3" /> SQLite · {dbSqlite.journalMode || "—"}
+            </span>
+            <span
+              className={`font-mono text-[12px] uppercase tracking-[0.08em] ${
+                db?.instrumented ? "text-signal" : "text-faint"
+              }`}
+              title="Statements are timed through wrapped prepare/transaction calls"
+            >
+              {db?.instrumented ? "instrumented" : "not instrumented"}
+            </span>
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-1.5 @xs:grid-cols-4">
+            {[
+              ["DB", formatBytes(dbFiles.db), "text-ink-dim"],
+              ["WAL", formatBytes(dbFiles.wal), thresholdClass(dbFiles.wal, db?.thresholds?.walWarnBytes, db?.thresholds?.walCriticalBytes)],
+              ["Q/S", Number(dbQueries.rate).toFixed(1), "text-violet"],
+              ["P95", formatPreciseMs(dbWindow.p95Ms), thresholdClass(dbWindow.p95Ms, dbWarn, dbCritical)],
+              ["AVG", formatPreciseMs(dbWindow.avgMs), "text-ink-dim"],
+              ["MAX", formatPreciseMs(dbWindow.maxMs), thresholdClass(dbWindow.maxMs, dbWarn * 4, dbCritical)],
+              ["TX", formatInt(dbTransactions.count || 0), "text-ink-dim"],
+              [
+                "ERR",
+                formatInt((dbWindow.errors || 0) + (dbWindow.busy || 0)),
+                dbWindow.errors + dbWindow.busy > 0 ? "text-danger" : "text-ink-dim"
+              ]
+            ].map(([label, value, tone]) => (
+              <StatTile key={label} label={label} value={value} tone={tone} />
+            ))}
+          </div>
+          {db?.recentSlow?.length ? (
+            <div className="mt-2 space-y-1">
+              {db.recentSlow.slice(0, 2).map((item, index) => (
+                <div
+                  key={`${item.at}-${index}`}
+                  className="flex items-baseline gap-2 font-mono text-[11px] uppercase tracking-[0.06em]"
+                >
+                  <b className="shrink-0 text-warn">{formatPreciseMs(item.ms)}</b>
+                  <code className="truncate text-faint" title={item.sql}>
+                    {item.sql}
+                  </code>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <span className="mt-1.5 block font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+              {formatInt(dbWindow.count || 0)} statements · no slow queries in the last 60s
+            </span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 gap-2 @xs:grid-cols-2">
+          <HistoryStrip
+            label="CPU"
+            bars={sparkBars(history.map((point) => point.cpu ?? 0))}
+            format={(value) => formatPercent(value, 1)}
+            tone={(value) => thresholdClass(value, 80, 100)}
+          />
+          <HistoryStrip
+            label="RSS"
+            bars={sparkBars(history.map((point) => point.rss ?? 0))}
+            format={(value) => formatBytes(value * 1024 * 1024)}
+            tone={() => "text-info"}
+          />
+          <HistoryStrip
+            label="GC pause"
+            bars={sparkBars(history.map((point) => point.gc ?? 0))}
+            format={(value) => formatMs(value)}
+            tone={(value) => thresholdClass(value, gcWarn, gcCritical)}
+          />
+          <HistoryStrip
+            label="SQL"
+            bars={sparkBars((db?.history || []).map((point) => point.qps ?? 0))}
+            format={(value) => `${Number(value).toFixed(1)}/s`}
+            tone={() => "text-violet"}
+          />
+        </div>
+
+        <p className="text-[13px] leading-relaxed text-faint">
+          Sampled every {formatInt(Math.round((system.intervalMs || 2000) / 1000)) || 1}s, pushed every
+          5s. CPU is the worker process as a percentage of one core; system RAM uses MemAvailable on
+          Linux. Warnings trigger at 80% heap, 88% RAM, 100ms event-loop p95, a GC pause above{" "}
+          {formatInt(gcWarn)}ms in the last 15s, a DB p95 above {formatInt(dbWarn)}ms, or a WAL above{" "}
+          {formatBytes(db?.thresholds?.walWarnBytes || 64 * 1024 * 1024)}. GC pauses come straight from
+          V8 perf entries, so a spike in the ping panel can be matched to the major GC that caused it.
+          Query timings include only the SQL text, never bound values.
+        </p>
+      </div>
+    </section>
+  );
+}
+
 function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, baseUrl }) {
   const settings = snapshot.settings || {};
   const [delay, setDelay] = useState(String(settings.delayPerOrder ?? 200));
@@ -1651,7 +2201,8 @@ function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSes
     { id: "feed", label: "FEED" },
     { id: "link", label: "LINK" },
     { id: "config", label: "CONFIG" },
-    { id: "latency", label: "LATENCY" }
+    { id: "latency", label: "LATENCY" },
+    { id: "system", label: "SYSTEM" }
   ];
   return (
     <aside className="flex min-w-0 flex-col gap-3 max-xl:order-2 xl:sticky xl:top-24 xl:col-start-2 xl:row-start-1 xl:row-span-2 xl:max-h-[calc(100dvh-6rem)] xl:self-start xl:overflow-y-auto">
@@ -1700,6 +2251,7 @@ function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSes
             notify={notify}
           />
         ) : null}
+        {tab === "system" ? <SystemPanel snapshot={snapshot} worker={worker} /> : null}
       </div>
     </aside>
   );
@@ -1838,12 +2390,14 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       confirmLabel: "RESET STATS",
       danger: true
     });
-    if (!confirmed) return;
+    if (!confirmed) return false;
     try {
       await worker.resetStats();
       notify("warn", "STATS RESET", "Starting a fresh scoreboard.");
+      return true;
     } catch (error) {
       notify("error", "RESET FAILED", error.message);
+      return false;
     }
   };
 
@@ -1930,7 +2484,12 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           onToggle={toggleTarget}
           notify={notify}
         />
-        <LootLog history={snapshot.history || []} onReset={resetStats} />
+        <LootLog
+          history={snapshot.history || []}
+          historyTotal={snapshot.historyTotal}
+          onReset={resetStats}
+          request={worker.request}
+        />
         <ReportPanel report={snapshot.report} notify={notify} />
       </main>
       <div className="pixel-stripe mt-8" aria-hidden="true" />

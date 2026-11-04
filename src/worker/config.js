@@ -55,6 +55,11 @@ export function loadConfig({ cwd = process.cwd(), env = process.env } = {}) {
   const httpConnections = readInt(env.RC_HTTP_CONNECTIONS, 8);
   const keepAliveMs = readInt(env.RC_KEEPALIVE_MS, 30_000);
 
+  // Worker health sampler. Missing/non-numeric values fall back to 2s;
+  // explicit values are clamped to 500ms..60s so the deck can never be
+  // starved or spammed.
+  const systemSampleMs = readInt(env.SYSTEM_SAMPLE_MS, 2_000);
+
   return Object.freeze({
     host,
     port,
@@ -68,6 +73,7 @@ export function loadConfig({ cwd = process.cwd(), env = process.env } = {}) {
     keepAliveMs:
       keepAliveMs <= 0 ? 0 : Math.min(600_000, Math.max(5_000, keepAliveMs)),
     keepAliveUrl,
+    systemSampleMs: Math.min(60_000, Math.max(500, systemSampleMs)),
     mock: readBool(env.MOCK),
     logLevel,
     cwd

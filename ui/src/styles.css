@@ -969,7 +969,8 @@
 
   .tab-rail {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    /* FEED / LINK / CONFIG / LATENCY / SYSTEM — one column per tab. */
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 2px;
     padding: 4px;
     border: 2px solid #05030f;
@@ -1007,6 +1008,14 @@
     box-shadow:
       inset 2px 2px 0 rgb(255 255 255 / 0.45),
       2px 2px 0 #05030f;
+  }
+
+  @media (max-width: 359px) {
+    .pixel-tab {
+      padding-inline: 2px;
+      font-size: 10px;
+      letter-spacing: 0.01em;
+    }
   }
 
   .stat-tile {

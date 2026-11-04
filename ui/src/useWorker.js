@@ -6,6 +6,13 @@ import { sound } from "./lib/sound.js";
 const URL_KEY = "turuc.url";
 const TOKEN_KEY = "turuc.key";
 
+/**
+ * Newest loot entries kept in browser state for the live panel. The full log
+ * lives in SQLite and is paged through /api/history, so this window only has
+ * to bridge what arrives over the socket.
+ */
+const LOOT_LIVE_WINDOW = 80;
+
 function messageForError(error) {
   if (error?.status === 401) return "ACCESS DENIED — this key was rejected. Check the worker terminal.";
   if (error?.status === 403) return "ACCESS DENIED — forbidden.";
@@ -161,7 +168,11 @@ export function useWorker({ notify }) {
             setSnapshot((previous) => {
               if (!previous) return previous;
               if (previous.history?.some((item) => item.id === entry.id)) return previous;
-              return { ...previous, history: [entry, ...(previous.history || [])].slice(0, 60) };
+              return {
+                ...previous,
+                history: [entry, ...(previous.history || [])].slice(0, LOOT_LIVE_WINDOW),
+                historyTotal: (Number(previous.historyTotal) || 0) + 1
+              };
             });
             notifyRef.current?.(
               "success",
@@ -190,7 +201,11 @@ export function useWorker({ notify }) {
           setSnapshot((previous) => {
             if (!previous) return previous;
             if (previous.history?.some((item) => item.id === data.id)) return previous;
-            return { ...previous, history: [data, ...(previous.history || [])].slice(0, 60) };
+            return {
+              ...previous,
+              history: [data, ...(previous.history || [])].slice(0, LOOT_LIVE_WINDOW),
+              historyTotal: (Number(previous.historyTotal) || 0) + 1
+            };
           });
           break;
         }
@@ -220,6 +235,11 @@ export function useWorker({ notify }) {
         case "latency":
           setSnapshot((previous) => (previous ? { ...previous, latency: data } : previous));
           break;
+        case "system":
+          if (data) {
+            setSnapshot((previous) => (previous ? { ...previous, system: data } : previous));
+          }
+          break;
         case "settings":
           setSnapshot((previous) => (previous ? { ...previous, settings: data } : previous));
           break;
@@ -230,7 +250,14 @@ export function useWorker({ notify }) {
           break;
         case "history-cleared":
           setSnapshot((previous) =>
-            previous ? { ...previous, history: [], report: { since: Date.now(), items: [], totals: null } } : previous
+            previous
+              ? {
+                  ...previous,
+                  history: [],
+                  historyTotal: 0,
+                  report: { since: Date.now(), items: [], totals: null }
+                }
+              : previous
           );
           break;
         default:
@@ -431,6 +458,7 @@ export function useWorker({ notify }) {
             ...previous,
             stats: result.stats,
             history: [],
+            historyTotal: 0,
             configs: previous.configs.map((config) => ({
               ...config,
               runtime: config.runtime
@@ -472,6 +500,14 @@ export function useWorker({ notify }) {
     return result;
   }, [request]);
 
+  const fetchSystem = useCallback(async () => {
+    const result = await request("/api/system");
+    if (result?.system) {
+      setSnapshot((previous) => (previous ? { ...previous, system: result.system } : previous));
+    }
+    return result;
+  }, [request]);
+
   const previewItem = useCallback(
     (itemId, itemType = "mutation_component") => {
       const params = new URLSearchParams({ itemId, itemType });
@@ -506,6 +542,7 @@ export function useWorker({ notify }) {
     previewItem,
     refreshLatency,
     fetchLatency,
+    fetchSystem,
     clearLogs,
     appendLog
   };
