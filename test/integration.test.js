@@ -137,6 +137,15 @@ test("mock engine fills a seeded target", { timeout: TIMEOUT }, async () => {
   assert.ok(ranged, `expected the market frame to cache an allowed price band\n${output}`);
   assert.ok(ranged.runtime.allowedPriceMax > ranged.runtime.allowedPriceMin);
   assert.equal(snapshot.startedAt > 0, true);
+
+  assert.ok(snapshot.report?.items?.length > 0, "snapshot must include the per-product report");
+  const reportResponse = await fetch(`${baseUrl}/api/report`, { headers: authHeaders() });
+  assert.equal(reportResponse.status, 200);
+  const reportBody = await reportResponse.json();
+  assert.equal(reportBody.ok, true);
+  assert.ok(reportBody.report.items.length > 0);
+  assert.ok(reportBody.report.totals.fills > 0);
+  assert.ok(reportBody.report.items.some((item) => item.fills > 0 && item.avgBuy > 0));
 });
 
 test("target CRUD validates and broadcasts snapshots", { timeout: TIMEOUT }, async () => {
@@ -223,6 +232,13 @@ test("settings, pause and history reset work", { timeout: TIMEOUT }, async () =>
   const reset = await fetch(`${baseUrl}/api/history`, { method: "DELETE", headers: authHeaders() });
   assert.equal(reset.status, 200);
   assert.equal((await reset.json()).stats.filled, 0);
+
+  const clearedReport = await fetch(`${baseUrl}/api/report`, { headers: authHeaders() });
+  assert.equal(clearedReport.status, 200);
+  const clearedBody = await clearedReport.json();
+  assert.deepEqual(clearedBody.report.items, []);
+  assert.equal(clearedBody.report.totals.fills, 0);
+  assert.equal(clearedBody.report.totals.profitRlt, 0);
 });
 
 test("bridge CORS headers survive preflight and auth errors", { timeout: TIMEOUT }, async () => {

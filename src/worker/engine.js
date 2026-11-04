@@ -404,6 +404,7 @@ export class Engine {
 
       this.broadcast("order", { phase: "filled", ...entry, stockAfter: runtime.lastStock });
       this.broadcast("stats", stats);
+      this.broadcast("report", this.store.reportView());
       return;
     }
 
@@ -448,6 +449,7 @@ export class Engine {
     this.store.addHistory(entry);
     this.broadcast("history", entry);
     this.broadcast("stats", stats);
+    this.broadcast("report", this.store.reportView());
   }
 
   #takeRateSlot(now, maxPerMinute) {

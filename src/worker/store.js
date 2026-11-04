@@ -8,7 +8,8 @@ import {
 } from "node:fs";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
-import { MAX_HISTORY } from "../shared/constants.js";
+import { MAX_HISTORY, MAX_REPORT_PRODUCTS } from "../shared/constants.js";
+import { roundPrice } from "../shared/rules.js";
 import { validateSettings, validateTargets } from "../shared/validation.js";
 
 const STATE_VERSION = 1;
@@ -38,6 +39,11 @@ export function createWorkerToken() {
 function asFinite(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : fallback;
+}
+
+function asSigned(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
 }
 
 function asNullableTime(value) {
@@ -74,7 +80,72 @@ function defaultState() {
       failed: 0,
       ordersSent: 0
     },
+    report: {
+      since: now,
+      items: {}
+    },
     history: []
+  };
+}
+
+function productKey(itemId, label) {
+  const id = String(itemId || "").trim().toLowerCase();
+  if (id) return id;
+  const name = String(label || "").trim().toLowerCase();
+  return name ? `label:${name}` : "unknown";
+}
+
+function emptyProduct(entry, at) {
+  return {
+    itemId: String(entry.itemId || ""),
+    label: String(entry.label || "").slice(0, 48),
+    fills: 0,
+    failed: 0,
+    qty: 0,
+    spentRlt: 0,
+    profitRlt: 0,
+    firstAt: at,
+    lastAt: at
+  };
+}
+
+function sanitizeReport(raw, fallbackSince) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const rawItems = source.items && typeof source.items === "object" ? source.items : {};
+  const items = {};
+
+  for (const [key, value] of Object.entries(rawItems)) {
+    if (!value || typeof value !== "object") continue;
+    const itemId = String(value.itemId || "").trim();
+    const label = String(value.label || "").slice(0, 48);
+    if (!itemId && !label) continue;
+    const at = asFinite(value.lastAt, Date.now());
+    const product = {
+      itemId,
+      label,
+      fills: Math.floor(asFinite(value.fills)),
+      failed: Math.floor(asFinite(value.failed)),
+      qty: Math.floor(asFinite(value.qty)),
+      spentRlt: asFinite(value.spentRlt),
+      profitRlt: asSigned(value.profitRlt),
+      firstAt: asFinite(value.firstAt, at),
+      lastAt: at
+    };
+    if (product.fills === 0 && product.failed === 0) continue;
+    items[String(key)] = product;
+  }
+
+  const keys = Object.keys(items);
+  if (keys.length > MAX_REPORT_PRODUCTS) {
+    keys
+      .sort((a, b) => items[b].profitRlt - items[a].profitRlt)
+      .slice(MAX_REPORT_PRODUCTS)
+      .forEach((key) => delete items[key]);
+  }
+
+  return {
+    since: asFinite(source.since, fallbackSince),
+    items
   };
 }
 
@@ -91,7 +162,7 @@ function sanitizeHistory(entries) {
       unitPrice: asFinite(entry.unitPrice),
       totalPrice: asFinite(entry.totalPrice),
       targetPrice: asFinite(entry.targetPrice),
-      profitRlt: asFinite(entry.profitRlt),
+      profitRlt: asSigned(entry.profitRlt),
       status: entry.status === "failed" ? "failed" : "filled",
       at: asFinite(entry.at, Date.now()),
       latencyMs: Number.isFinite(Number(entry.latencyMs)) ? Number(entry.latencyMs) : null,
@@ -165,6 +236,7 @@ export class Store {
 
     if (parsed) this.#hydrate(parsed);
     this.#loadHistory(parsed?.history);
+    this.#backfillReportFromHistory();
 
     // Even when loot-log.json already exists, rewrite an older state.json once
     // so the history array no longer lives there.
@@ -231,6 +303,7 @@ export class Store {
     });
 
     const sessionSource = source.session && typeof source.session === "object" ? source.session : {};
+    const stats = sanitizeStats(source.stats, base.stats);
 
     this.state = {
       ...base,
@@ -250,9 +323,27 @@ export class Store {
       },
       configs: configsResult.values,
       settings: settingsResult.ok ? { ...DEFAULT_SETTINGS, ...settingsResult.value } : { ...DEFAULT_SETTINGS },
-      stats: sanitizeStats(source.stats, base.stats),
+      stats,
+      report: sanitizeReport(source.report, stats.since),
       history: []
     };
+  }
+
+  /**
+   * Older state files have no report block. Rebuild it from the loot log once so
+   * the panel has data immediately after an upgrade instead of starting empty.
+   */
+  #backfillReportFromHistory() {
+    if (this.state.history.length === 0) return;
+    if (Object.keys(this.state.report.items).length > 0) return;
+    for (const entry of this.state.history) this.#recordProduct(entry);
+    this.state.report.since = Math.min(this.state.report.since, this.state.stats.since);
+    this.logger?.info(
+      "store",
+      `rebuilt profit report for ${Object.keys(this.state.report.items).length} products from the loot log`
+    );
+    this.dirty = true;
+    this.flush();
   }
 
   /**
@@ -384,9 +475,98 @@ export class Store {
     this.save();
   }
 
+  #recordProduct(entry) {
+    if (!entry || typeof entry !== "object") return;
+    const report = this.state.report;
+    const key = productKey(entry.itemId, entry.label);
+    const at = asFinite(entry.at, Date.now());
+    let product = report.items[key];
+    if (!product) {
+      product = emptyProduct(entry, at);
+      report.items[key] = product;
+    }
+
+    if (entry.label) product.label = String(entry.label).slice(0, 48);
+    if (entry.itemId) product.itemId = String(entry.itemId);
+    product.firstAt = Math.min(product.firstAt, at);
+    product.lastAt = Math.max(product.lastAt, at);
+
+    if (entry.status === "failed") {
+      product.failed += 1;
+    } else {
+      product.fills += 1;
+      product.qty += Math.max(0, Math.floor(asFinite(entry.qty)));
+      product.spentRlt = roundPrice(product.spentRlt + asFinite(entry.totalPrice));
+      product.profitRlt = roundPrice(product.profitRlt + asSigned(entry.profitRlt));
+    }
+
+    this.#trimReport();
+  }
+
+  #trimReport() {
+    const items = this.state.report.items;
+    const keys = Object.keys(items);
+    if (keys.length <= MAX_REPORT_PRODUCTS) return;
+    keys.sort((a, b) => items[a].profitRlt - items[b].profitRlt);
+    for (const key of keys.slice(0, keys.length - MAX_REPORT_PRODUCTS)) delete items[key];
+  }
+
+  /**
+   * All-time profit grouped by product. The aggregate is persisted in
+   * state.json, so it keeps counting past MAX_HISTORY loot-log rotation.
+   */
+  reportView() {
+    const report = this.state.report;
+    const items = Object.values(report.items)
+      .map((product) => {
+        const completed = product.fills + product.failed;
+        return {
+          ...product,
+          spentRlt: roundPrice(product.spentRlt),
+          profitRlt: roundPrice(product.profitRlt),
+          avgBuy: product.qty > 0 ? roundPrice(product.spentRlt / product.qty) : 0,
+          marginPct:
+            product.spentRlt > 0
+              ? Math.round((product.profitRlt / product.spentRlt) * 1000) / 10
+              : null,
+          successPct: completed > 0 ? Math.round((product.fills / completed) * 100) : null
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.profitRlt - a.profitRlt ||
+          b.spentRlt - a.spentRlt ||
+          String(a.label).localeCompare(String(b.label))
+      );
+
+    const totals = {
+      products: items.length,
+      fills: 0,
+      failed: 0,
+      qty: 0,
+      spentRlt: 0,
+      profitRlt: 0,
+      marginPct: null
+    };
+    for (const item of items) {
+      totals.fills += item.fills;
+      totals.failed += item.failed;
+      totals.qty += item.qty;
+      totals.spentRlt += item.spentRlt;
+      totals.profitRlt += item.profitRlt;
+    }
+    totals.spentRlt = roundPrice(totals.spentRlt);
+    totals.profitRlt = roundPrice(totals.profitRlt);
+    totals.marginPct =
+      totals.spentRlt > 0 ? Math.round((totals.profitRlt / totals.spentRlt) * 1000) / 10 : null;
+
+    return { since: report.since, totals, items };
+  }
+
   addHistory(entry) {
     this.state.history.unshift(entry);
     if (this.state.history.length > MAX_HISTORY) this.state.history.length = MAX_HISTORY;
+    this.#recordProduct(entry);
     this.saveHistory();
     this.save();
   }
@@ -402,6 +582,7 @@ export class Store {
       failed: 0,
       ordersSent: 0
     };
+    this.state.report = { since: now, items: {} };
     this.state.history = [];
     this.saveHistory();
     this.save();

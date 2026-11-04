@@ -36,10 +36,23 @@ untuk login, mengatur target, memantau market, dan melihat loot.
   dry-run, partial-order minimum, validasi ketat, dan konfirmasi untuk aksi destruktif. Tombol
   **PAUSE / START** tunggal di header menghentikan atau menjalankan kembali seluruh proses buying;
   market feed tetap hidup agar harga langsung segar saat di-resume.
-- **Live data plane** — HUD, target cards + chart, market wire, terminal event, loot log, health
-  token, runtime config, sound effect, dan tampilan mobile.
+- **Loot log + profit report** — setiap fill/failure dicatat, lalu diagregasi permanen per produk
+  (fills, qty, spend, avg buy, profit, margin, success rate, last activity). Profit all-time juga
+  tampil langsung di tiap product card. Panel **PROFIT BY PRODUCT** bisa diekspor ke CSV; angkanya
+  tetap utuh walau loot log sudah berputar melewati `MAX_HISTORY` atau worker restart.
+- **Live data plane** — HUD, target cards + chart, market wire, terminal event, loot log, profit
+  report, health token, runtime config, sound effect, dan tampilan mobile.
 - **Mock mode** — simulator market bawaan untuk mencoba seluruh alur tanpa akun Rollercoin.
 - **Test suite** — unit test untuk rules/validation/event/store + integration test end-to-end.
+
+### Profit by product
+
+Agregat per produk tampil di bawah loot log: total profit, spend, margin, lalu tabel per produk
+dengan fills/missed, qty, spend, avg buy, profit, margin, success rate, dan aktivitas terakhir.
+Setiap product card juga menampilkan **PROFIT · ALL TIME** (dengan fills, qty, dan margin) untuk
+item tersebut. Tombol **CSV** mengekspor seluruh baris untuk analisis lanjutan.
+
+![Profit by product](docs/preview-report.png)
 
 ---
 
@@ -185,8 +198,8 @@ Catatan:
 - Gunakan **satu instance** (`fork`), jangan `-i max`/cluster. Worker memegang satu koneksi
   WebSocket dan state order; beberapa instance bisa saling menimpa state dan mengirim order ganda.
 - `.env` dibaca oleh worker dari `cwd` (`ecosystem.config.cjs` mengarah ke root project).
-- Data target/session tetap di `data/state.json`; loot log ada di `data/loot-log.json`. PM2
-  restart tidak menghapus keduanya.
+- Data target/session dan agregat profit per produk tetap di `data/state.json`; loot log ada di
+  `data/loot-log.json`. PM2 restart tidak menghapus keduanya.
 - Log default ada di `~/.pm2/logs/`. Jangan commit log karena bisa memuat access key saat boot pertama.
 - `pm2 startup` membutuhkan sudo. Jika tidak tersedia, jalankan PM2 dari systemd user service.
 
@@ -260,6 +273,13 @@ Perilaku pembelian:
   mode live mulai kosong dan terisi seiring waktu. History runtime hilang saat worker restart.
 - **Profit** di dashboard = `(targetPrice - hargaBeli) × qty`, yaitu selisih terhadap harga target,
   bukan hasil penjualan kembali.
+- **PROFIT BY PRODUCT** mengagregasi semua fill dan failure per `itemId` ke `state.json`
+  (`report.items`). Karena counter disimpan terpisah dari loot log, laporan tetap akurat setelah
+  loot log berputar melewati `MAX_HISTORY = 200` dan setelah worker restart. Kolomnya: fills,
+  failed, qty, spend, avg buy, profit, margin (`profit / spend`), success rate, dan last activity.
+  `DELETE /api/history` mereset report bersama stats; menghapus satu target tidak menghapus
+  riwayat produknya. Saat upgrade dari state lama tanpa `report`, worker membangun ulang laporan
+  sekali dari loot log yang masih tersimpan.
 
 Label otomatis diambil dari:
 
@@ -419,7 +439,8 @@ Authorization: Bearer <access-key>
 | Method | Path | Fungsi |
 | --- | --- | --- |
 | `GET` | `/api/health` | Health publik (tanpa auth) |
-| `GET` | `/api/state` | Snapshot lengkap: config, runtime, stats, session, history |
+| `GET` | `/api/state` | Snapshot lengkap: config, runtime, stats, report, session, history |
+| `GET` | `/api/report` | Agregat profit per produk all-time (`totals` + `items`) |
 | `GET` | `/api/item-info?itemId=&itemType=` | Resolve label/rarity/itemType dari marketplace |
 | `GET` | `/api/configs` | Daftar target + runtime |
 | `PUT` | `/api/configs` | Ganti seluruh daftar (`[ ... ]` atau `{ "configs": [ ... ] }`) |
@@ -454,8 +475,8 @@ Error validasi memakai status `422` dan `fields`, misalnya:
 - URL: `ws://<host>:<port>/ws`
 - Auth: subprotocol `rcw.v1, <access-key>` (fallback query `?token=...`)
 - Client boleh mengirim `{ "type": "ping", "t": 123 }`; server membalas `{ "type": "pong", ... }`.
-- Event server: `hello`, `snapshot`, `log`, `market`, `order`, `history`, `stats`, `session`,
-  `gateway`, `settings`, `configs`, `latency`, `history-cleared`.
+- Event server: `hello`, `snapshot`, `log`, `market`, `order`, `history`, `stats`, `report`,
+  `session`, `gateway`, `settings`, `configs`, `latency`, `history-cleared`.
 - `order.phase`: `submitted`, `accepted`, `filled`, `failed`, `dry`.
 - `market` membawa `price`, `stock`, `targetPrice`, `hot`, `at`, serta `allowedPriceMin`,
   `allowedPriceMax`, `allowedAt` (cache band harga terakhir per target).
