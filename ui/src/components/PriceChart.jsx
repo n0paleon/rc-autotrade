@@ -88,7 +88,7 @@ export default function PriceChart({ history, targetPrice }) {
               type="button"
               role="tab"
               aria-selected={timeframe === key}
-              className={`rounded px-1.5 py-0.5 font-mono text-[8.5px] uppercase tracking-[0.08em] transition-colors ${
+              className={`inline-flex h-6 min-w-6 items-center justify-center rounded px-1.5 font-mono text-[8.5px] uppercase tracking-[0.08em] transition-colors ${
                 timeframe === key ? "bg-carbon-800 text-signal" : "text-faint hover:text-ink-dim"
               }`}
               onClick={() => setTimeframe(key)}

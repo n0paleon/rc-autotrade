@@ -179,7 +179,7 @@ function BootScreen({ onLogin, busy, error }) {
                   type={showToken ? "text" : "password"}
                   value={token}
                   onChange={(event) => setToken(event.target.value)}
-                  placeholder="paste the key printed by the worker"
+                  placeholder="Paste access key"
                   spellCheck="false"
                   required
                 />
@@ -255,10 +255,10 @@ function Header({ snapshot, status, latency, now, soundOn, onSound, onLogout, on
   }
 
   return (
-    <header className="sticky top-0 z-40 border-b border-line bg-carbon-950/85 backdrop-blur-md">
+    <header className="sticky top-0 z-40 border-b border-line bg-carbon-950/85 pt-[env(safe-area-inset-top)] backdrop-blur-md">
       <div className="mx-auto flex min-h-14 w-full max-w-[1600px] items-center gap-3 px-3 sm:px-4 lg:px-6">
         <div className="flex min-w-0 items-center gap-2.5">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-signal/25 bg-signal/10 text-signal">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-signal/25 bg-signal/10 text-signal max-[359px]:hidden">
             <svg viewBox="0 0 16 16" className="h-4 w-4" aria-hidden="true"><use href="#i-coin" /></svg>
           </div>
           <div className="min-w-0">
@@ -299,7 +299,7 @@ function Header({ snapshot, status, latency, now, soundOn, onSound, onLogout, on
             <span className="tabular-nums">{formatTime(now)}</span>
           </span>
           <button
-            className="icon-btn h-8 w-8"
+            className="icon-btn h-10 w-10 sm:h-8 sm:w-8"
             type="button"
             aria-label={soundOn ? "Mute sound" : "Enable sound"}
             aria-pressed={soundOn}
@@ -308,7 +308,7 @@ function Header({ snapshot, status, latency, now, soundOn, onSound, onLogout, on
           >
             <Icon name={soundOn ? "i-sound" : "i-mute"} />
           </button>
-          <button className="icon-btn icon-btn-danger h-8 w-8" type="button" aria-label="Lock control deck" title="Lock deck" onClick={onLogout}>
+          <button className="icon-btn icon-btn-danger h-10 w-10 sm:h-8 sm:w-8" type="button" aria-label="Lock control deck" title="Lock deck" onClick={onLogout}>
             <Icon name="i-power" />
           </button>
         </div>
@@ -378,58 +378,58 @@ function Hud({ snapshot, now, eps }) {
       className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-line bg-line sm:grid-cols-3 xl:grid-cols-7"
       aria-label="Session stats"
     >
-      <article className="col-span-2 bg-carbon-900 px-4 py-3">
+      <article className="col-span-2 bg-carbon-900 px-3 py-2.5 sm:col-span-1 sm:px-4 sm:py-3 xl:col-span-2">
         <div className="flex items-center justify-between gap-2">
           <span className="label">Profit</span>
-          <Icon name="i-coin" className="h-3.5 w-3.5 text-signal/70" />
+          <Icon name="i-coin" className="h-3.5 w-3.5 text-signal/70 max-sm:hidden" />
         </div>
-        <div className={`mt-1 font-mono text-[24px] font-semibold leading-none tracking-tight tabular-nums ${profit > 0 ? "text-signal" : "text-ink"}`} id="stat-profit">
+        <div className={`mt-1 font-mono text-[22px] font-semibold leading-none tracking-tight tabular-nums sm:text-[24px] ${profit > 0 ? "text-signal" : "text-ink"}`} id="stat-profit">
           {formatRlt(stats.profitRlt)}
         </div>
         <div className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.1em] text-faint" id="stat-profit-sub">
           RLT · {formatInt(stats.bought)} items looted
         </div>
       </article>
-      <article className="bg-carbon-900 px-4 py-3">
+      <article className="bg-carbon-900 px-3 py-2.5 sm:px-4 sm:py-3">
         <div className="flex items-center justify-between gap-2">
           <span className="label">Loot secured</span>
-          <Icon name="i-target" className="h-3.5 w-3.5 text-muted" />
+          <Icon name="i-target" className="h-3.5 w-3.5 text-muted max-sm:hidden" />
         </div>
-        <div className="mt-1 font-mono text-[20px] font-semibold leading-none tracking-tight tabular-nums" id="stat-filled">
+        <div className="mt-1 font-mono text-[18px] font-semibold leading-none tracking-tight tabular-nums sm:text-[20px]" id="stat-filled">
           {formatInt(stats.filled)}
         </div>
         <div className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.1em] text-faint">
           <span id="stat-failed">{formatInt(stats.failed)}</span> missed · <span id="stat-bought">{formatInt(stats.bought)}</span> items
         </div>
       </article>
-      <article className="bg-carbon-900 px-4 py-3">
+      <article className="bg-carbon-900 px-3 py-2.5 sm:px-4 sm:py-3">
         <div className="flex items-center justify-between gap-2">
           <span className="label">Targets</span>
-          <Icon name="i-bolt" className="h-3.5 w-3.5 text-muted" />
+          <Icon name="i-bolt" className="h-3.5 w-3.5 text-muted max-sm:hidden" />
         </div>
-        <div className="mt-1 font-mono text-[20px] font-semibold leading-none tracking-tight tabular-nums" id="stat-targets">
+        <div className="mt-1 font-mono text-[18px] font-semibold leading-none tracking-tight tabular-nums sm:text-[20px]" id="stat-targets">
           {formatInt(configs.length)}
         </div>
         <div className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.1em] text-faint">
           <span id="stat-armed">{formatInt(armed)}</span> armed · <span id="stat-hot">{formatInt(hot)}</span> in range
         </div>
       </article>
-      <article className="bg-carbon-900 px-4 py-3">
+      <article className="bg-carbon-900 px-3 py-2.5 sm:px-4 sm:py-3">
         <div className="flex items-center justify-between gap-2">
           <span className="label">Market events</span>
-          <Icon name="i-wifi" className="h-3.5 w-3.5 text-muted" />
+          <Icon name="i-wifi" className="h-3.5 w-3.5 text-muted max-sm:hidden" />
         </div>
-        <div className="mt-1 font-mono text-[20px] font-semibold leading-none tracking-tight tabular-nums" id="stat-events">
+        <div className="mt-1 font-mono text-[18px] font-semibold leading-none tracking-tight tabular-nums sm:text-[20px]" id="stat-events">
           {formatInt(gateway.eventCount || 0)}
         </div>
         <div className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.1em] text-faint">
           <span id="stat-eps">{eps.toFixed(1)}</span>/s · <span id="stat-uptime">{formatUptime(now - (snapshot.startedAt || now))}</span>
         </div>
       </article>
-      <article className="bg-carbon-900 px-4 py-3">
+      <article className="bg-carbon-900 px-3 py-2.5 sm:px-4 sm:py-3">
         <div className="flex items-center justify-between gap-2">
           <span className="label">Session</span>
-          <Icon name="i-link" className="h-3.5 w-3.5 text-muted" />
+          <Icon name="i-link" className="h-3.5 w-3.5 text-muted max-sm:hidden" />
         </div>
         <div className="mt-1 font-mono text-[15px] font-semibold leading-none tracking-tight" id="stat-session">
           {session.value}
@@ -441,12 +441,12 @@ function Hud({ snapshot, now, eps }) {
           {session.sub}
         </div>
       </article>
-      <article className="col-span-2 bg-carbon-900 px-4 py-3 sm:col-span-3 xl:col-span-1">
+      <article className="col-span-2 bg-carbon-900 px-3 py-2.5 sm:col-span-1 sm:px-4 sm:py-3">
         <div className="flex items-center justify-between gap-2">
           <span className="label">Upstream</span>
-          <Icon name="i-wifi" className="h-3.5 w-3.5 text-muted" />
+          <Icon name="i-wifi" className="h-3.5 w-3.5 text-muted max-sm:hidden" />
         </div>
-        <div className={`mt-1 font-mono text-[20px] font-semibold leading-none tracking-tight tabular-nums ${fresh ? latencyClass(fresh.last) : "text-muted"}`} id="stat-upstream">
+        <div className={`mt-1 font-mono text-[18px] font-semibold leading-none tracking-tight tabular-nums sm:text-[20px] ${fresh ? latencyClass(fresh.last) : "text-muted"}`} id="stat-upstream">
           {fresh ? formatMs(fresh.last) : "—"}
         </div>
         <div className="mt-1.5 font-mono text-[9px] uppercase tracking-[0.1em] text-faint" id="stat-upstream-sub">
@@ -506,9 +506,9 @@ function TargetCard({ config, onEdit, onDelete, onToggle, notify }) {
             <h3 className="truncate text-[14px] font-semibold leading-tight text-ink">{label}</h3>
             <span className="type-badge shrink-0" title="Marketplace item type">{itemTypeLabel(itemType)}</span>
           </div>
-          <div className="mt-1 flex items-center gap-2">
+          <div className="mt-0.5 flex items-center gap-2">
             <button
-              className="inline-flex items-center gap-1 font-mono text-[10px] text-muted transition-colors hover:text-ink"
+              className="-my-1 inline-flex min-h-6 items-center gap-1 whitespace-nowrap py-1 font-mono text-[10px] text-muted transition-colors hover:text-ink"
               type="button"
               title="Copy item ID"
               onClick={async () => {
@@ -520,7 +520,7 @@ function TargetCard({ config, onEdit, onDelete, onToggle, notify }) {
               <Icon name="i-copy" className="h-3 w-3" />
             </button>
             <a
-              className="text-muted transition-colors hover:text-ink"
+              className="-m-1.5 inline-flex h-6 w-6 items-center justify-center text-muted transition-colors hover:text-ink"
               href={marketplaceUrl(itemType, config.itemId)}
               target="_blank"
               rel="noopener noreferrer"
@@ -555,28 +555,28 @@ function TargetCard({ config, onEdit, onDelete, onToggle, notify }) {
       </div>
 
       <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border border-line bg-line">
-        <div className="bg-carbon-950/60 px-3 py-2">
+        <div className="bg-carbon-950/60 px-2.5 py-2 sm:px-3">
           <span className="label">Market</span>
           <div className="mt-0.5 flex items-baseline gap-1">
-            <strong className={`font-mono text-[19px] font-semibold leading-none tabular-nums ${hot ? "text-signal" : "text-ink"}`}>
+            <strong className={`font-mono text-[17px] font-semibold leading-none tabular-nums min-[360px]:text-[19px] ${hot ? "text-signal" : "text-ink"}`}>
               {Number.isFinite(runtime.lastPrice) ? fixedPrice(runtime.lastPrice) : "—"}
             </strong>
-            <span className="font-mono text-[9px] text-faint">RLT</span>
+            <span className="font-mono text-[8px] text-faint min-[360px]:text-[9px]">RLT</span>
           </div>
         </div>
-        <div className="bg-carbon-950/60 px-3 py-2">
+        <div className="bg-carbon-950/60 px-2.5 py-2 sm:px-3">
           <span className="label">Target</span>
           <div className="mt-0.5 flex items-baseline gap-1">
-            <strong className="font-mono text-[19px] font-semibold leading-none tabular-nums text-ink-dim">
+            <strong className="font-mono text-[17px] font-semibold leading-none tabular-nums text-ink-dim min-[360px]:text-[19px]">
               {fixedPrice(config.targetPrice)}
             </strong>
-            <span className="font-mono text-[9px] text-faint">RLT</span>
+            <span className="font-mono text-[8px] text-faint min-[360px]:text-[9px]">RLT</span>
           </div>
         </div>
       </div>
 
       <div
-        className="flex items-center justify-between gap-2 rounded-md border border-dashed border-line/80 px-2.5 py-1.5"
+        className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 rounded-md border border-dashed border-line/80 px-2.5 py-1.5"
         title={
           runtime.allowedAt
             ? `Allowed price band from the marketplace frame · updated ${relTime(runtime.allowedAt)}`
@@ -633,10 +633,10 @@ function TargetCard({ config, onEdit, onDelete, onToggle, notify }) {
           {lastText(config)}
         </span>
         <div className="flex shrink-0 items-center gap-1">
-          <button className="icon-btn h-7 w-7" type="button" aria-label="Edit target" title="Edit target" onClick={() => onEdit(config)}>
+          <button className="icon-btn h-9 w-9 sm:h-8 sm:w-8" type="button" aria-label="Edit target" title="Edit target" onClick={() => onEdit(config)}>
             <Icon name="i-edit" className="h-3.5 w-3.5" />
           </button>
-          <button className="icon-btn icon-btn-danger h-7 w-7" type="button" aria-label="Delete target" title="Delete target" onClick={() => onDelete(config)}>
+          <button className="icon-btn icon-btn-danger h-9 w-9 sm:h-8 sm:w-8" type="button" aria-label="Delete target" title="Delete target" onClick={() => onDelete(config)}>
             <Icon name="i-trash" className="h-3.5 w-3.5" />
           </button>
         </div>
@@ -662,14 +662,14 @@ function TargetsPanel({ configs, search, typeFilter, onSearch, onTypeFilter, onA
   }, {});
 
   const chipClass = (active) =>
-    `inline-flex h-7 items-center gap-1.5 rounded-md border px-2 font-mono text-[9px] uppercase tracking-[0.1em] transition-colors ${
+    `inline-flex h-8 items-center gap-1.5 rounded-md border px-2 font-mono text-[9px] uppercase tracking-[0.1em] transition-colors ${
       active
         ? "border-signal/40 bg-signal/10 text-signal"
         : "border-line bg-carbon-850/50 text-muted hover:border-line-strong hover:text-ink"
     }`;
 
   return (
-    <section className="panel">
+    <section className="panel xl:col-start-1 xl:row-start-1">
       <div className="panel-head flex-wrap gap-y-2">
         <h2 className="panel-title">
           <Icon name="i-target" className="h-3.5 w-3.5 text-signal/80" />
@@ -686,7 +686,7 @@ function TargetsPanel({ configs, search, typeFilter, onSearch, onTypeFilter, onA
               type="search"
               value={search}
               onChange={(event) => onSearch(event.target.value)}
-              placeholder="Search targets"
+              placeholder="Search"
               aria-label="Search targets"
             />
           </div>
@@ -767,7 +767,7 @@ function TargetsPanel({ configs, search, typeFilter, onSearch, onTypeFilter, onA
 
 function LootLog({ history, onReset }) {
   return (
-    <section className="panel flex h-[360px] flex-col">
+    <section className="panel flex h-[360px] flex-col xl:col-start-1 xl:row-start-2">
       <div className="panel-head shrink-0">
         <h2 className="panel-title">
           <Icon name="i-coin" className="h-3.5 w-3.5 text-signal/80" /> Loot log
@@ -785,7 +785,7 @@ function LootLog({ history, onReset }) {
         </div>
       ) : (
         <>
-          <ul className="min-h-0 flex-1 divide-y divide-line/40 overflow-y-auto overscroll-contain sm:hidden">
+          <ul className="min-h-0 flex-1 divide-y divide-line/40 overflow-y-auto overscroll-contain md:hidden">
             {history.slice(0, 60).map((entry) => (
               <li
                 className="flex items-start justify-between gap-3 px-4 py-2.5"
@@ -809,7 +809,7 @@ function LootLog({ history, onReset }) {
               </li>
             ))}
           </ul>
-          <div className="hidden min-h-0 flex-1 overflow-auto overscroll-contain sm:block">
+          <div className="hidden min-h-0 flex-1 overflow-auto overscroll-contain md:block">
             <table className="w-full min-w-[720px] border-collapse text-left font-mono text-[11px] tabular-nums">
               <thead className="sticky top-0 z-10 bg-carbon-900">
                 <tr className="border-b border-line text-[9px] uppercase tracking-[0.12em] text-faint">
@@ -916,14 +916,14 @@ function FeedPanel({ logs, onClear, notify }) {
   };
 
   return (
-    <section className="panel flex h-[440px] flex-col xl:h-[560px]">
+    <section className="panel flex h-[clamp(15rem,52dvh,27.5rem)] flex-col xl:h-[560px]">
       <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-2.5">
         <div className="flex items-center gap-1.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.14em] text-muted">
           <span className="led led-pulse bg-signal" />Live event log
         </div>
         <div className="flex items-center gap-1">
           <button
-            className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 font-mono text-[9px] uppercase tracking-[0.1em] transition-colors ${
+            className={`inline-flex h-9 items-center gap-1.5 rounded-md border px-2 font-mono text-[9px] uppercase tracking-[0.1em] transition-colors sm:h-8 ${
               isTailing
                 ? "border-signal/40 bg-signal/10 text-signal"
                 : "border-line bg-carbon-850/50 text-muted hover:text-ink"
@@ -936,11 +936,11 @@ function FeedPanel({ logs, onClear, notify }) {
             <Icon name="i-arrow-down" className="h-3 w-3" />
             <span className="hidden sm:inline">{isTailing ? "Tailing" : "Tail logs"}</span>
           </button>
-          <button className="icon-btn h-7 w-7" type="button" title={paused ? "Resume feed" : "Pause feed"} aria-pressed={paused} onClick={togglePause}>
+          <button className="icon-btn h-9 w-9 sm:h-8 sm:w-8" type="button" title={paused ? "Resume feed" : "Pause feed"} aria-pressed={paused} onClick={togglePause}>
             <Icon name={paused ? "i-play" : "i-pause"} className="h-3.5 w-3.5" />
           </button>
           <button
-            className="icon-btn h-7 w-7"
+            className="icon-btn h-9 w-9 sm:h-8 sm:w-8"
             type="button"
             title="Clear feed"
             onClick={() => {
@@ -1291,7 +1291,7 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, ba
       </div>
       <div className="panel-body">
         <form className="space-y-3" onSubmit={saveNumbers}>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <label className="field">
               <span>Order cooldown (ms)</span>
               <input className="input" type="number" inputMode="numeric" step="10" min="50" max="60000" value={delay} onChange={(event) => setDelay(event.target.value)} />
@@ -1359,12 +1359,12 @@ function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSes
     { id: "latency", label: "LATENCY" }
   ];
   return (
-    <aside className="flex min-w-0 flex-col gap-3 xl:sticky xl:top-20 xl:row-span-2 xl:max-h-[calc(100dvh-6rem)] xl:self-start xl:overflow-y-auto">
+    <aside className="flex min-w-0 flex-col gap-3 xl:sticky xl:top-20 xl:col-start-2 xl:row-start-1 xl:row-span-2 xl:max-h-[calc(100dvh-6rem)] xl:self-start xl:overflow-y-auto">
       <div className="grid grid-cols-4 gap-1 rounded-lg border border-line bg-carbon-900 p-1" role="tablist" aria-label="Control panels">
         {tabs.map((item) => (
           <button
             key={item.id}
-            className={`rounded-md px-2 py-1.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.12em] transition-colors ${
+            className={`h-10 rounded-md px-2 py-1.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.12em] transition-colors sm:h-9 ${
               tab === item.id ? "bg-carbon-800 text-signal" : "text-muted hover:bg-carbon-850 hover:text-ink"
             }`}
             type="button"
@@ -1413,7 +1413,7 @@ function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSes
 function ToastStack({ toasts, onDismiss }) {
   return (
     <div
-      className="pointer-events-none fixed inset-x-3 bottom-3 z-[60] flex flex-col items-end gap-2 sm:inset-x-auto sm:bottom-4 sm:right-4 sm:w-[360px]"
+      className="pointer-events-none fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-[60] flex flex-col items-end gap-2 sm:inset-x-auto sm:bottom-4 sm:right-4 sm:w-[360px]"
       aria-live="polite"
     >
       {toasts.map((toast) => (
@@ -1598,18 +1598,6 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
         <Hud snapshot={snapshot} now={now} eps={eps} />
       </div>
       <main className="mx-auto mt-4 grid w-full max-w-[1600px] gap-4 px-3 pb-10 sm:px-4 lg:px-6 xl:grid-cols-[minmax(0,1fr)_380px] xl:items-start">
-        <TargetsPanel
-          configs={snapshot.configs || []}
-          search={search}
-          typeFilter={typeFilter}
-          onSearch={setSearch}
-          onTypeFilter={setTypeFilter}
-          onAdd={() => setModal({ type: "target", config: null })}
-          onEdit={(config) => setModal({ type: "target", config })}
-          onDelete={deleteTarget}
-          onToggle={toggleTarget}
-          notify={notify}
-        />
         <SidePanel
           tab={tab}
           setTab={setTab}
@@ -1625,6 +1613,18 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           onReset={resetStats}
           onReconnect={reconnect}
           baseUrl={baseUrl}
+        />
+        <TargetsPanel
+          configs={snapshot.configs || []}
+          search={search}
+          typeFilter={typeFilter}
+          onSearch={setSearch}
+          onTypeFilter={setTypeFilter}
+          onAdd={() => setModal({ type: "target", config: null })}
+          onEdit={(config) => setModal({ type: "target", config })}
+          onDelete={deleteTarget}
+          onToggle={toggleTarget}
+          notify={notify}
         />
         <LootLog history={snapshot.history || []} onReset={resetStats} />
       </main>

@@ -191,7 +191,7 @@ export function TargetModal({ config, onClose, worker, notify }) {
       title={editing ? "Edit target" : "Deploy target"}
       onClose={onClose}
       footer={
-        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
           <button className="btn" type="button" onClick={onClose}>
             Cancel
           </button>
@@ -395,7 +395,7 @@ export function SessionModal({ session, onClose, worker, notify }) {
       title="Link Rollercoin session"
       onClose={onClose}
       footer={
-        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
           <button className="btn" type="button" onClick={onClose}>
             Cancel
           </button>
@@ -694,7 +694,7 @@ export function KeyModal({ token, onClose, notify }) {
         <div className="key-box">
           <code>{token}</code>
           <button
-            className="icon-btn h-8 w-8 shrink-0"
+            className="icon-btn h-10 w-10 shrink-0 sm:h-8 sm:w-8"
             type="button"
             aria-label="Copy new access key"
             onClick={async () => {

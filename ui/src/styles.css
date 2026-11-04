@@ -67,6 +67,14 @@
     outline-offset: 2px;
   }
 
+  button,
+  input,
+  select,
+  textarea,
+  [role="tab"] {
+    touch-action: manipulation;
+  }
+
   * {
     scrollbar-width: thin;
     scrollbar-color: var(--color-line) transparent;
@@ -94,6 +102,8 @@
 @layer components {
   /* ── surfaces ─────────────────────────────────────────────────── */
   .deck-bg {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
     background-color: var(--color-carbon-950);
     background-image:
       radial-gradient(1100px 600px at 10% -18%, rgb(205 231 54 / 0.055), transparent 62%),
@@ -150,7 +160,7 @@
   }
 
   .btn-sm {
-    @apply h-8 gap-1 px-2.5 text-[9.5px] max-sm:h-9;
+    @apply h-8 gap-1 px-2.5 text-[9.5px] max-sm:h-10;
   }
 
   .btn-lg {
@@ -430,6 +440,13 @@
   /* ── overlays and code ────────────────────────────────────────── */
   .modal-body {
     @apply space-y-4 p-4 sm:p-5;
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+
+  @media (min-width: 640px) {
+    .modal-body {
+      padding-bottom: max(1.25rem, env(safe-area-inset-bottom));
+    }
   }
 
   .toast {

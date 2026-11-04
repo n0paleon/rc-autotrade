@@ -66,7 +66,7 @@ export function ModalShell({
   }, []);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-6">
+    <div className="fixed inset-0 z-[70] flex items-end justify-center pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] sm:items-center sm:p-6">
       <div
         className="absolute inset-0 bg-carbon-950/80 backdrop-blur-sm"
         onMouseDown={() => closeRef.current()}
@@ -89,13 +89,13 @@ export function ModalShell({
           >
             {title}
           </h2>
-          <button className="icon-btn -mr-1.5 h-8 w-8" type="button" onClick={onClose} aria-label="Close">
+          <button className="icon-btn -mr-1.5 h-10 w-10 sm:h-8 sm:w-8" type="button" onClick={onClose} aria-label="Close">
             <Icon name="i-x" />
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
         {footer ? (
-          <div className="shrink-0 border-t border-line bg-carbon-900/95 px-4 py-3 backdrop-blur sm:px-5">
+          <div className="shrink-0 border-t border-line bg-carbon-900/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:px-5">
             {footer}
           </div>
         ) : null}
