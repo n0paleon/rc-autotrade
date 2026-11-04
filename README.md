@@ -5,7 +5,7 @@ Headless **Rollercoin marketplace sniper** dengan control deck bergaya arcade, d
 > Font: **Arcana** oleh vilogsign. File demo di `public/fonts/` gratis untuk penggunaan pribadi; untuk distribusi komersial, beli lisensi penuh dari author. **Chakra Petch** dan **JetBrains Mono** berlisensi OFL; file lisensinya ada di `public/fonts/`.
 
 Dulu `trade.js` harus ditempel di console browser dan ikut melambat saat tab inactive.
-Sekarang engine berjalan sebagai proses Node.js terpisah; browser hanya menjadi **data plane**
+Sekarang engine berjalan sebagai proses Bun terpisah; browser hanya menjadi **data plane**
 untuk login, mengatur target, memantau market, dan melihat loot.
 
 ![Control deck](docs/preview.png)
@@ -67,13 +67,13 @@ untuk login, mengatur target, memantau market, dan melihat loot.
   **PROFIT BY PRODUCT** bisa diekspor ke CSV; angkanya tetap utuh setelah worker restart.
 - **Live data plane** — HUD, target cards + chart, market wire, terminal event, loot log, profit
   report, health token, runtime config, sound effect, dan tampilan mobile.
-- **Worker health monitor** — tab **SYSTEM** menampilkan CPU worker dan host, heap V8 + batasnya,
-  RSS, RAM sistem (MemAvailable, bukan MemFree), swap, load average, latency event loop
-  (p50/p95/p99), active handles, plus sparkline historis. Status `HEALTHY / DEGRADED / CRITICAL`
-  dihitung dari tekanan heap, RAM, dan event loop, dan setiap transisi ikut tercatat di log.
-- **GC event detection** — `PerformanceObserver` menangkap setiap garbage collection V8 (minor/
-  major, durasi pause, timestamp asli). Panel menampilkan agregat 60 detik, tipe GC terakhir, dan
-  sparkline pause per sampel, sehingga lonjakan ping bisa dicocokkan dengan major GC penyebabnya.
+- **Worker health monitor** — tab **SYSTEM** menampilkan CPU worker dan host, heap (kompatibilitas
+  V8) + batasnya, RSS, RAM sistem (MemAvailable, bukan MemFree), swap, load average, latency event
+  loop (p50/p95/p99), active handles, plus sparkline historis. Status `HEALTHY / DEGRADED /
+  CRITICAL` dihitung dari tekanan heap, RAM, dan event loop, dan setiap transisi ikut tercatat di log.
+- **GC event detection (opsional)** — `PerformanceObserver` menangkap garbage collection bila
+  runtime memancarkan entry `gc` (Node). Bun/JavaScriptCore belum memancarkannya, jadi panel GC
+  menampilkan status tidak didukung; metrik CPU, heap, event loop, dan SQLite tetap berjalan.
 - **DB performance metrics** — setiap statement SQLite di-timing (read/write, avg/p95/max, error,
   slow query), plus ukuran file DB/WAL/-shm, page/freelist, mode jurnal, cache, dan transaksi.
   Sparkline query rate membantu melihat lonjakan I/O yang menahan event loop.
@@ -115,7 +115,7 @@ item tersebut. Tombol **CSV** mengekspor seluruh baris untuk analisis lanjutan.
                 │ HTTP + WebSocket (bearer key)             │
 ┌───────────────┴──────────────────────────────────────────▼───────────────────┐
 │ Worker                                                                        │
-│  control server · auth · JSON store · matching engine · rate limiter          │
+│  control server · auth · SQLite store · matching engine · rate limiter         │
 │  session refresh · order history · mock upstream                              │
 └───────────────▲──────────────────────────────────────────┬───────────────────┘
                 │ WSS market frames                        │ HTTPS purchase + refresh
@@ -124,6 +124,8 @@ item tersebut. Tombol **CSV** mengekspor seluruh baris untuk analisis lanjutan.
 
 - **Worker** (`src/worker/`) adalah satu-satunya komponen yang menyentuh Rollercoin dan menyimpan
   kredensial. Ia tidak peduli tab browser aktif atau tidak.
+- **Market feed** memakai WebSocket native Bun (bukan paket `ws`), sehingga TLS handshake memakai
+  stack runtime Bun dan header `Origin`/`User-Agent`/`Cookie` tetap terkirim.
 - **Data plane** (`ui/` React + Vite → `dist/`, dilayani `ControlServer`) adalah UI + API/event
   stream yang dipakai client. UI disajikan oleh worker agar same-origin, tetapi semua kontrol
   tetap melewati bearer key.
@@ -145,12 +147,18 @@ item tersebut. Tombol **CSV** mengekspor seluruh baris untuk analisis lanjutan.
 
 ## Quick start
 
-Butuh **Node.js >= 20.19** (dites di Node 24; Vite 8 membutuhkan Node 20.19+).
+Butuh **Bun >= 1.2** (dites di Bun 1.3). Tidak ada Node.js, node-gyp, atau native addon yang perlu
+di-compile: SQLite memakai `bun:sqlite`, HTTP memakai `fetch` bawaan Bun, dan test berjalan dengan
+`bun run test`.
+
+> **Migrasi dari versi Node:** `bun install` menghapus `better-sqlite3`/`undici`, lalu worker
+> memakai `bun:sqlite`. File `data/rollercoin.db` lama tetap dipakai karena formatnya SQLite
+> standar — tidak perlu export/import.
 
 ```bash
-npm install
+bun install
 cp .env.example .env      # opsional; edit bila perlu
-npm start                 # build React → dist/, lalu jalankan worker
+bun start                 # build React → dist/, lalu jalankan worker
 ```
 
 Saat pertama kali berjalan, worker mencetak access key satu kali:
@@ -166,45 +174,53 @@ Buka `http://127.0.0.1:8787`, tempel key tersebut, lalu tekan **PRESS START**.
 Mau mencoba tanpa akun? Jalankan simulator:
 
 ```bash
-npm run mock              # build React + worker dalam mode simulasi
+bun run mock              # build React + worker dalam mode simulasi
 ```
 
 Satu perintah menyalakan worker dan Vite sekaligus:
 
 ```bash
-npm run dev               # worker di 127.0.0.1:8787 + Vite di 127.0.0.1:5173
+bun run dev               # worker di 127.0.0.1:8787 + Vite di 127.0.0.1:5173
 ```
 
 Butuh memisahkan prosesnya? Jalankan di dua terminal:
 
 ```bash
-npm run dev:worker        # worker di 127.0.0.1:8787
-npm run dev:ui            # Vite di 5173, proxy /api dan /ws ke 8787
+bun run dev:worker        # worker di 127.0.0.1:8787
+bun run dev:ui            # Vite di 5173, proxy /api dan /ws ke 8787
 ```
 
 Mock mode mengisi dua target contoh, membuat harga naik-turun, dan mengirim fill palsu sehingga
-seluruh dashboard bisa diuji offline. Di Windows, set `MOCK=1` di `.env` lalu jalankan `npm start`
-(karena script `MOCK=1 ...` memakai sintaks shell Unix).
+seluruh dashboard bisa diuji offline. Script `bun run mock` memakai environment assignment Bun
+shell, jadi tetap jalan di Windows.
 
 ## Jalankan dengan PM2
 
-PM2 menjalankan worker langsung sebagai proses Node. Build React tetap harus dibuat karena `dist/`
+PM2 hanya supervisor; proses worker-nya sendiri dijalankan dengan interpreter **Bun**
+(`ecosystem.config.cjs` → `interpreter: "bun"`). Build React tetap harus dibuat karena `dist/`
 tidak disimpan di repo.
+
+> PM2 masih berjalan di atas Node.js; yang dipindahkan ke Bun adalah worker-nya. Kalau server
+> benar-benar tanpa Node, jalankan worker langsung dengan `bun src/worker/index.js` atau lewat
+> systemd (`ExecStart=/usr/local/bin/bun src/worker/index.js`).
+>
+> Setelah mengubah `interpreter` di `ecosystem.config.cjs`, `pm2 restart` tidak mengganti
+> interpreter proses lama. Jalankan `pm2 delete rc-autotrade && pm2 start ecosystem.config.cjs`.
 
 1. Hentikan worker manual yang sedang berjalan (`Ctrl+C`) agar port `8787` bebas.
 2. Install PM2 sekali:
    ```bash
-   npm install -g pm2
+   bun install -g pm2
    ```
 3. Install dependency dan build UI:
    ```bash
-   npm ci
-   npm run build
+   bun install --frozen-lockfile
+   bun run build
    ```
 4. Start process:
    ```bash
    pm2 start ecosystem.config.cjs
-   # atau: npm run pm2:start  (build + start/reload)
+   # atau: bun run pm2:start  (build + start/reload)
    ```
 5. Verifikasi:
    ```bash
@@ -227,8 +243,8 @@ tidak disimpan di repo.
 
 ```bash
 git pull
-npm ci
-npm run build
+bun install --frozen-lockfile
+bun run build
 pm2 restart rc-autotrade --update-env
 ```
 
@@ -259,11 +275,11 @@ Catatan:
 | --- | --- |
 | Key pertama kali | Dicetak di terminal, hanya sekali |
 | Key tetap | Set `WORKER_TOKEN` (minimal 16 karakter) di `.env` |
-| Key hilang | **Stop worker**, lalu `npm run key:reset` |
+| Key hilang | **Stop worker**, lalu `bun run key:reset` |
 | Rotasi dari UI | Tab **LINK → ROTATE KEY** (ditolak bila `WORKER_TOKEN` dipin) |
 | Ganti key | Semua socket lama dicabut (`4003`) dan client harus login ulang |
 
-> `npm run key:reset` harus dijalankan saat worker berhenti. Kalau worker masih hidup, state
+> `bun run key:reset` harus dijalankan saat worker berhenti. Kalau worker masih hidup, state
 > in-memory-nya bisa menimpa key baru saat shutdown.
 
 ---
@@ -664,7 +680,7 @@ sendiri; bridge hanya menjembatani localStorage. Hentikan dengan `__TURU_RC_BRID
 
 ### Cookie Cloudflare
 
-Purchase dari Node tidak membawa cookie browser. Bila Rollercoin membalas `403`/halaman challenge,
+Purchase dari worker tidak membawa cookie browser. Bila Rollercoin membalas `403`/halaman challenge,
 salin header cookie dari request browser (minimal `cf_clearance`, sering juga `__cf_bm`) ke field
 **CLOUDFLARE COOKIE** atau `RC_COOKIE`. Cookie dan IP harus cocok; ini bukan jaminan bypass.
 
@@ -681,17 +697,15 @@ salin header cookie dari request browser (minimal `cf_clearance`, sering juga `_
 | `RC_API_BASE` | `https://rollercoin.com` | Base URL API |
 | `RC_WS_URL` | `wss://nws.rollercoin.com/` | URL market socket |
 | `RC_COOKIE` | — | Cookie header awal (bisa juga dari UI) |
-| `RC_HTTP_KEEPALIVE_MS` | `60000` | Idle timeout socket keep-alive (1000–600000 ms) |
-| `RC_HTTP_CONNECTIONS` | `8` | Maksimum koneksi per origin (1–32) |
 | `RC_KEEPALIVE_MS` | `30000` | Interval warm probe; `0` = mati (5000–600000 ms) |
 | `RC_KEEPALIVE_URL` | `${RC_API_BASE}/api/events/config` | Endpoint probe publik |
 | `SYSTEM_SAMPLE_MS` | `2000` | Interval sampling health worker (500–60000 ms) |
 | `MOCK` | `0` | `1` = simulator, tidak ada order nyata |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 
-Semua request API memakai satu pool keep-alive. Warm probe hanya dikirim bila tidak ada request
-nyata dalam ~90% interval, memakai `GET` publik (bukan payload palsu), dan otomatis berhenti
-5 menit bila menerima `403`/`429`.
+Bun mengelola pool koneksi keep-alive per origin secara otomatis (tidak ada agent/dispatcher yang
+perlu dikonfigurasi). Warm probe hanya dikirim bila tidak ada request nyata dalam ~90% interval,
+memakai `GET` publik (bukan payload palsu), dan otomatis berhenti 5 menit bila menerima `403`/`429`.
 
 ### Latency worker → upstream
 
@@ -767,10 +781,15 @@ terakhir, serta sparkline **GC PAUSE WINDOW** di samping CPU/RSS. Sparkline dibu
 per sampel (`gc` = total pause pada interval itu, `gcCount` = jumlah event), sehingga lonjakan bisa
 dibandingkan langsung dengan spike di tab **LATENCY** (WS ping) atau ping control link di header.
 Ambang warning/critical juga ikut dikirim di payload (`gc.thresholds`) supaya UI dan health tidak
-memakai angka yang berbeda. GC tracking memakai `perf_hooks` bawaan Node; tidak ada dependency baru
-dan tidak ada overhead berarti.
+memakai angka yang berbeda. GC tracking memakai `perf_hooks`; Bun memakai JavaScriptCore dan belum
+memancarkan entry `gc`, jadi panel GC menampilkan status tidak didukung. Metrik CPU, heap, event
+loop, dan SQLite tetap berjalan.
 
 ### Performa database (SQLite)
+
+Database memakai `bun:sqlite` — SQLite yang sudah tertanam di Bun, tanpa native addon atau
+node-gyp. File `data/rollercoin.db` tetap format SQLite standar, jadi database lama dari versi
+Node/better-sqlite3 langsung terbaca dan bisa dibuka dengan `sqlite3` CLI.
 
 Semua statement yang melewati `Store` diukur. `DbMetrics` membungkus `db.prepare()` dan
 `db.transaction()` **sebelum** prepared statement hot-path dibuat, lalu mencatat durasi setiap
@@ -780,7 +799,7 @@ Semua statement yang melewati `Store` diukur. `DbMetrics` membungkus `db.prepare
 | --- | --- |
 | `files` | Ukuran `rollercoin.db`, `-wal`, `-shm`, dan totalnya |
 | `storage` | `page_size`, `page_count`, `freelist_count`, payload bytes, free bytes, utilisasi halaman |
-| `sqlite` | `sqlite_version`, `journal_mode`, `synchronous`, `cache_size`, `wal_autocheckpoint`, `busy_timeout` |
+| `sqlite` | `driver` (`bun:sqlite`), `sqlite_version`, `journal_mode`, `synchronous`, `cache_size`, `wal_autocheckpoint`, `busy_timeout` |
 | `queries` | Total statement, read/write/pragma/schema, error, `SQLITE_BUSY`, avg/max/last ms, rate per detik |
 | `window` | Agregat 60 detik terakhir: count per jenis, avg/max/p95 ms, error, slow |
 | `transactions` | Jumlah commit/rollback, total dan max wall time |
@@ -844,6 +863,9 @@ Error validasi memakai status `422` dan `fields`, misalnya:
 
 - URL: `ws://<host>:<port>/ws`
 - Auth: subprotocol `rcw.v1, <access-key>` (fallback query `?token=...`)
+- Key salah: handshake tetap diterima (Bun belum bisa mengirim HTTP 403 pada upgrade socket), lalu
+  server menutup socket dengan code `4001`. Rotasi key memakai `4003` agar client langsung reconnect
+  dengan key baru.
 - Client boleh mengirim `{ "type": "ping", "t": 123 }`; server membalas `{ "type": "pong", ... }`.
 - Event server: `hello`, `snapshot`, `log`, `market`, `order`, `history`, `stats`, `report`,
   `session`, `gateway`, `settings`, `configs`, `latency`, `system`, `history-cleared`.
@@ -943,7 +965,7 @@ Kalau worker dijalankan manual:
 
 ```bash
 # Ctrl+C worker lama
-npm start
+bun start
 ```
 
 > Jangan biarkan worker tetap listen di `0.0.0.0:8787`. Setelah Caddy aktif, port 8787 tidak boleh
@@ -1062,7 +1084,7 @@ sudo systemctl reload caddy
 Setelah mengubah `.env`/kode worker:
 
 ```bash
-npm run build
+bun run build
 pm2 restart rc-autotrade --update-env
 ```
 
@@ -1072,7 +1094,7 @@ pm2 restart rc-autotrade --update-env
 | --- | --- |
 | Sertifikat gagal diterbitkan | DNS belum mengarah ke IP, port 80/443 tertutup, atau Cloudflare proxy aktif. Cek `journalctl -u caddy -n 100 --no-pager`. |
 | `502 Bad Gateway` | Worker mati atau bukan di `127.0.0.1:8787`. Jalankan `curl http://127.0.0.1:8787/api/health`. |
-| Halaman 404/blank | `dist/` belum dibuild. Jalankan `npm run build`, lalu restart worker/PM2. |
+| Halaman 404/blank | `dist/` belum dibuild. Jalankan `bun run build`, lalu restart worker/PM2. |
 | WebSocket offline | Pastikan hanya Caddy yang memakai 443 dan tidak ada proxy lain. Caddy menangani `/ws` otomatis. |
 | Masih mixed content | Masih membuka deck/bridge dari URL `http://18.205...`. Buka via HTTPS, hard refresh, lalu generate ulang snippet/userscript. |
 | `address already in use` | Apache/Nginx lain memakai 80/443. Stop service tersebut atau gunakan Caddy di port lain + firewall. |
@@ -1132,7 +1154,7 @@ pm2 restart rc-autotrade --update-env
 ## Mock mode
 
 ```bash
-npm run mock
+bun run mock
 ```
 
 - Mengisi dua target contoh bila state kosong.
@@ -1141,18 +1163,18 @@ npm run mock
 - Purchase disimulasikan: 8% gagal, sisanya fill setelah 0.5–1.4 detik.
 - Tidak ada request keluar ke Rollercoin.
 
-Mock juga dipakai oleh integration test, jadi `npm test` tidak membutuhkan akun atau network.
+Mock juga dipakai oleh integration test, jadi `bun run test` tidak membutuhkan akun atau network.
 
 ---
 
 ## Testing
 
 ```bash
-npm test
+bun run test
 ```
 
-`pretest` otomatis menjalankan `vite build` terlebih dahulu, jadi integration test selalu memakai
-UI React yang sedang aktif.
+`pretest` otomatis menjalankan `bun run build` (Vite lewat Bun) terlebih dahulu, jadi integration
+test selalu memakai UI React yang sedang aktif.
 
 Cakupan:
 
@@ -1202,17 +1224,18 @@ Total 108 test; integration test memakai port acak dan data directory sementara.
 │       ├── index.js         # bootstrap, graceful shutdown
 │       ├── config.js        # env loader
 │       ├── logger.js        # console + socket log buffer
-│       ├── store.js         # atomic JSON state, token hash
-│       ├── http.js          # shared keep-alive dispatcher + fetch
+│       ├── store.js         # SQLite-backed state, token hash
+│       ├── http.js          # Bun fetch + user agent
 │       ├── api.js           # Rollercoin HTTP client
 │       ├── keepalive.js     # warm probe with backoff/suspend
 │       ├── session.js       # token refresh scheduler
-│       ├── gateway.js       # real WSS client + reconnect
+│       ├── gateway.js       # Bun native WSS client + reconnect
 │       ├── mock.js          # simulator upstream
 │       ├── engine.js        # matching + order execution + 24h minute history
 │       ├── item-info.js     # auto label/rarity resolver
 │       ├── events.js        # upstream frame normalizer
 │       ├── system.js        # CPU/heap/event-loop/GC/host health sampler
+│       ├── db.js            # bun:sqlite wrapper (pragma/transaction/named params)
 │       ├── db-metrics.js    # SQLite statement timing, file/WAL and slow-query probe
 │       ├── server.js        # control plane HTTP/WS + static UI
 │       └── reset-token.js
@@ -1220,6 +1243,7 @@ Total 108 test; integration test memakai port acak dan data directory sementara.
 ├── docs/                    # screenshot
 ├── vite.config.js           # root ui/, output dist/
 ├── package.json
+├── bun.lock
 ├── trade.js                 # script asli (referensi)
 ├── test.json                # contoh konfigurasi
 └── .env.example
@@ -1231,22 +1255,23 @@ Total 108 test; integration test memakai port acak dan data directory sementara.
 
 | Gejala | Penyebab / solusi |
 | --- | --- |
-| `ACCESS DENIED` saat login | Key salah atau sudah dirotasi. Cek terminal; reset dengan `npm run key:reset` (worker harus berhenti). |
+| `ACCESS DENIED` saat login | Key salah atau sudah dirotasi. Cek terminal; reset dengan `bun run key:reset` (worker harus berhenti). |
 | `429` saat login | Terlalu banyak key salah. Tunggu 1 menit. |
-| Halaman menampilkan “REACT DECK READY” atau 404 | Worker lama masih menyajikan `public/`. Restart dengan `Ctrl+C` lalu `npm start` agar worker menyajikan `dist/` React. |
+| Halaman menampilkan “REACT DECK READY” atau 404 | Worker lama masih menyajikan `public/`. Restart dengan `Ctrl+C` lalu `bun start` agar worker menyajikan `dist/` React. |
 | `LINK LOST` | Control WebSocket putus. Worker mati? Cek proses/port. |
 | `FEED DOWN` / `SYNCING` | Worker hidup tetapi socket Rollercoin belum tersambung. Cek log, token, jaringan. |
+| Log gateway `TLS handshake failed` | Versi lama memakai paket `ws` lewat `node:tls`; versi Bun ini memakai WebSocket native. Restart worker dengan build terbaru. Jika masih muncul, cek DNS/firewall/IP server ke `nws.rollercoin.com`. |
 | `NO TOKEN` | Belum ada sesi Rollercoin. Buka tab LINK dan tempel token. |
 | `AUTH ERR` | Token ditolak Rollercoin. Tempel sesi baru; cek cookie/UA bila perlu. |
 | Purchase `403` / HTML challenge | Cloudflare. Isi cookie dari browser; pastikan IP/UA wajar. |
 | Bridge `CORS` / `Failed to fetch` | Console mode memakai `fetch` halaman dan bisa diblokir CSP/Private Network Access. Pakai **USERSCRIPT · AUTO** (memakai `GM_xmlhttpRequest`). Pastikan URL bridge `http://127.0.0.1:<port>`, worker hidup, dan userscript di-generate ulang. Error `401` sekarang juga mengirim header CORS, jadi restart worker agar pesan aslinya terlihat. |
-| `EADDRINUSE` | Port dipakai. `PORT=8788 npm start` atau hentikan proses lain. |
-| Key hilang | `npm run key:reset`, lalu restart worker dan login dengan key baru. |
+| `EADDRINUSE` | Port dipakai. `PORT=8788 bun start` atau hentikan proses lain. |
+| Key hilang | `bun run key:reset`, lalu restart worker dan login dengan key baru. |
 | Harga terlihat, order tidak jalan | Target terlalu rendah, stok di bawah minimum, pause/dry-run aktif, cooldown, atau batas order/menit. Cocokkan dengan [reason code](#reason-code-yang-muncul-di-log) di log `scan` dan cek state card. |
 | Label tetap `ITEM xxxx` / `Item not found` | Item ID tidak ditemukan untuk tipe yang dicoba, atau `item-info` gagal (sesi/Cloudflare/jaringan). Buka edit target dan klik **RETRY**; worker akan mencoba `mutation_component`, `miner`, `rack`, `battery`. `rarityGroup` yang tidak ada akan fallback ke nama item. |
 | Chart masih kosong | Mode live mulai tanpa history; tunggu beberapa menit. Worker restart menghapus history in-memory. Mock mode mengisi 24 jam awal agar semua timeframe terisi. |
 | BOOK di ticker tidak turun setelah fill | Fill sukses menurunkan book segera; frame market berikutnya bisa mengembalikannya jika memang ada stok baru. Order gagal tidak pernah menambah book. Meter BOOK di card sudah diganti success rate. |
-| Tab browser inactive | Tidak masalah lagi; engine berjalan di Node. Hanya UI yang berhenti menggambar. |
+| Tab browser inactive | Tidak masalah lagi; engine berjalan di Bun. Hanya UI yang berhenti menggambar. |
 
 ### Batasan yang disengaja
 

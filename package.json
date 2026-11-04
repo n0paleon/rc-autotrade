@@ -5,26 +5,24 @@
   "description": "Headless Rollercoin marketplace sniper with an 8-bit arcade control deck.",
   "type": "module",
   "engines": {
-    "node": ">=20.19"
+    "bun": ">=1.2"
   },
   "scripts": {
-    "build": "vite build",
-    "start": "npm run build && node src/worker/index.js",
-    "dev": "node scripts/dev.js",
-    "dev:ui": "vite",
-    "dev:worker": "node --watch src/worker/index.js",
-    "mock": "npm run build && MOCK=1 node src/worker/index.js",
-    "pretest": "npm run build",
-    "test": "node --test",
-    "key:reset": "node src/worker/reset-token.js",
-    "pm2:start": "npm run build && pm2 startOrReload ecosystem.config.cjs --update-env"
+    "build": "bunx --bun vite build",
+    "start": "bun run build && bun src/worker/index.js",
+    "dev": "bun scripts/dev.js",
+    "dev:ui": "bunx --bun vite",
+    "dev:worker": "bun --watch src/worker/index.js",
+    "mock": "bun run build && MOCK=1 bun src/worker/index.js",
+    "pretest": "bun run build",
+    "test": "bun test",
+    "key:reset": "bun src/worker/reset-token.js",
+    "pm2:start": "bun run build && pm2 startOrReload ecosystem.config.cjs --update-env"
   },
   "dependencies": {
-    "better-sqlite3": "^12.11.1",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "recharts": "^3.10.1",
-    "undici": "^7.30.1",
     "ws": "^8.18.0"
   },
   "devDependencies": {

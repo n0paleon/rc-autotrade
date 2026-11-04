@@ -1,7 +1,7 @@
-import test from "node:test";
+import { test, beforeAll, afterAll, setDefaultTimeout } from "bun:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createServer } from "node:net";
+import { connect, createServer } from "node:net";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -10,6 +10,7 @@ import WebSocket from "ws";
 const ROOT = resolve(import.meta.dirname, "..");
 const TOKEN = "integration-test-access-key";
 const TIMEOUT = 30_000;
+setDefaultTimeout(TIMEOUT);
 
 let child;
 let baseUrl;
@@ -25,6 +26,46 @@ async function freePort() {
   const port = server.address().port;
   await new Promise((resolveClose) => server.close(resolveClose));
   return port;
+}
+
+/**
+ * Raw WebSocket handshake. Bun's ws client does not implement
+ * `unexpected-response` and its `protocol` getter is unreliable, so the
+ * negotiation and the rejected-key status are asserted from the HTTP reply.
+ */
+function websocketHandshake(protocols) {
+  const port = new URL(baseUrl).port;
+  return new Promise((resolve, reject) => {
+    const socket = connect(Number(port), "127.0.0.1", () => {
+      socket.write(
+        `GET /ws HTTP/1.1\r\n` +
+          `Host: 127.0.0.1:${port}\r\n` +
+          `Upgrade: websocket\r\n` +
+          `Connection: Upgrade\r\n` +
+          `Sec-WebSocket-Key: ${Buffer.from("0123456789abcdef").toString("base64")}\r\n` +
+          `Sec-WebSocket-Version: 13\r\n` +
+          `Sec-WebSocket-Protocol: ${protocols.join(", ")}\r\n\r\n`
+      );
+    });
+    let data = "";
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("websocket handshake timed out"));
+    }, 3000);
+    socket.on("data", (chunk) => {
+      data += chunk.toString("latin1");
+      if (!data.includes("\r\n\r\n")) return;
+      clearTimeout(timer);
+      socket.destroy();
+      const status = Number(/^HTTP\/1\.1 (\d{3})/.exec(data)?.[1] || 0);
+      const protocol = /sec-websocket-protocol:\s*([^\r\n]+)/i.exec(data)?.[1]?.trim() || null;
+      resolve({ status, protocol });
+    });
+    socket.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
 }
 
 async function waitForHealth(url, deadline) {
@@ -44,7 +85,7 @@ function authHeaders(extra = {}) {
   return { authorization: `Bearer ${TOKEN}`, ...extra };
 }
 
-test.before(async () => {
+beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "turuc-int-"));
   const port = await freePort();
   const env = {
@@ -68,7 +109,7 @@ test.before(async () => {
   await waitForHealth(baseUrl, Date.now() + 12_000);
 });
 
-test.after(async () => {
+afterAll(async () => {
   if (child) {
     child.kill("SIGTERM");
     await Promise.race([
@@ -80,7 +121,7 @@ test.after(async () => {
   if (dataDir) rmSync(dataDir, { recursive: true, force: true });
 });
 
-test("health and dashboard are available without a key", { timeout: TIMEOUT }, async () => {
+test("health and dashboard are available without a key", async () => {
   const health = await fetch(`${baseUrl}/api/health`);
   assert.equal(health.status, 200);
   const body = await health.json();
@@ -95,14 +136,14 @@ test("health and dashboard are available without a key", { timeout: TIMEOUT }, a
   assert.ok(page.headers.get("content-security-policy"));
 });
 
-test("API requires the access key", { timeout: TIMEOUT }, async () => {
+test("API requires the access key", async () => {
   const response = await fetch(`${baseUrl}/api/state`);
   assert.equal(response.status, 401);
   const withKey = await fetch(`${baseUrl}/api/state`, { headers: authHeaders() });
   assert.equal(withKey.status, 200);
 });
 
-test("item-info endpoint resolves an automatic label", { timeout: TIMEOUT }, async () => {
+test("item-info endpoint resolves an automatic label", async () => {
   const response = await fetch(
     `${baseUrl}/api/item-info?itemId=6571aa39ca8bfef34adcd9e9&itemType=mutation_component`,
     { headers: authHeaders() }
@@ -115,7 +156,7 @@ test("item-info endpoint resolves an automatic label", { timeout: TIMEOUT }, asy
   assert.equal(body.item.rarityColor, "b8ff3c");
 });
 
-test("mock engine fills a seeded target", { timeout: TIMEOUT }, async () => {
+test("mock engine fills a seeded target", async () => {
   const deadline = Date.now() + 20_000;
   let snapshot;
   while (Date.now() < deadline) {
@@ -170,7 +211,7 @@ test("mock engine fills a seeded target", { timeout: TIMEOUT }, async () => {
   );
 });
 
-test("target CRUD validates and broadcasts snapshots", { timeout: TIMEOUT }, async () => {
+test("target CRUD validates and broadcasts snapshots", async () => {
   const itemId = "66ccddeeff001122334455";
   const created = await fetch(`${baseUrl}/api/configs`, {
     method: "POST",
@@ -213,7 +254,7 @@ test("target CRUD validates and broadcasts snapshots", { timeout: TIMEOUT }, asy
   assert.equal(removedBody.configs.some((config) => config.itemId === itemId), false);
 });
 
-test("settings, pause and history reset work", { timeout: TIMEOUT }, async () => {
+test("settings, pause and history reset work", async () => {
   const settings = await fetch(`${baseUrl}/api/settings`, {
     method: "PATCH",
     headers: authHeaders({ "content-type": "application/json" }),
@@ -263,7 +304,7 @@ test("settings, pause and history reset work", { timeout: TIMEOUT }, async () =>
   assert.equal(clearedBody.report.totals.profitRlt, 0);
 });
 
-test("bridge CORS headers survive preflight and auth errors", { timeout: TIMEOUT }, async () => {
+test("bridge CORS headers survive preflight and auth errors", async () => {
   const preflight = await fetch(`${baseUrl}/api/session/push`, {
     method: "OPTIONS",
     headers: {
@@ -298,7 +339,7 @@ test("bridge CORS headers survive preflight and auth errors", { timeout: TIMEOUT
   assert.equal(invalid.headers.get("access-control-allow-origin"), "*");
 });
 
-test("session push accepts a newer JWT and CORS is enabled", { timeout: TIMEOUT }, async () => {
+test("session push accepts a newer JWT and CORS is enabled", async () => {
   const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
   const payload = Buffer.from(
     JSON.stringify({ sub: "bridge-test", exp: Math.floor(Date.now() / 1000) + 7200 })
@@ -330,7 +371,7 @@ test("session push accepts a newer JWT and CORS is enabled", { timeout: TIMEOUT 
   assert.equal(state.session.source, "bridge");
 });
 
-test("session can be cleared from the control deck", { timeout: TIMEOUT }, async () => {
+test("session can be cleared from the control deck", async () => {
   const cleared = await fetch(`${baseUrl}/api/session`, {
     method: "DELETE",
     headers: authHeaders()
@@ -347,7 +388,7 @@ test("session can be cleared from the control deck", { timeout: TIMEOUT }, async
   assert.equal(state.session.hasRefreshToken, false);
 });
 
-test("WebSocket accepts the subprotocol key and answers ping", { timeout: TIMEOUT }, async () => {
+test("WebSocket accepts the subprotocol key and answers ping", async () => {
   const socket = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws`, ["rcw.v1", TOKEN]);
   const seen = new Set();
 
@@ -367,21 +408,29 @@ test("WebSocket accepts the subprotocol key and answers ping", { timeout: TIMEOU
     socket.on("error", reject);
   });
 
+  // Reaching hello/snapshot proves the server accepted the rcw.v1 subprotocol
+  // and the key. Bun's ws client corrupts `socket.protocol` after the
+  // handshake, so the negotiation is asserted through the connection itself.
   assert.equal(seen.has("hello"), true);
   assert.equal(seen.has("snapshot"), true);
-  assert.equal(socket.protocol, "rcw.v1");
   socket.close();
 
+  const accepted = await websocketHandshake(["rcw.v1", TOKEN]);
+  assert.equal(accepted.status, 101);
+  assert.equal(accepted.protocol, "rcw.v1");
+
+  // Bun cannot send an HTTP 403 on an upgrade socket, so a rejected key is
+  // accepted at the HTTP layer and closed with 4001 by the server.
   const bad = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws`, ["rcw.v1", "wrong-key"]);
-  const status = await new Promise((resolveStatus) => {
-    bad.on("unexpected-response", (_request, response) => resolveStatus(response.statusCode));
-    bad.on("error", () => resolveStatus(0));
-    setTimeout(() => resolveStatus(0), 2500);
+  const closeCode = await new Promise((resolveClose) => {
+    bad.on("close", (code) => resolveClose(code));
+    bad.on("error", () => resolveClose(0));
+    setTimeout(() => resolveClose(-1), 2500);
   });
-  assert.equal(status, 403);
+  assert.equal(closeCode, 4001);
 });
 
-test("system monitor exposes live worker and host metrics", { timeout: TIMEOUT }, async () => {
+test("system monitor exposes live worker and host metrics", async () => {
   // CPU percent needs two samples, and the monitor samples every 2s, so give
   // it a window before asking for the current view.
   await new Promise((resolveSleep) => setTimeout(resolveSleep, 2500));
@@ -432,7 +481,7 @@ test("system monitor exposes live worker and host metrics", { timeout: TIMEOUT }
   assert.ok(state.system.memory.rss > 0);
 });
 
-test("key rotation is refused when WORKER_TOKEN pins the key", { timeout: TIMEOUT }, async () => {
+test("key rotation is refused when WORKER_TOKEN pins the key", async () => {
   const response = await fetch(`${baseUrl}/api/auth/rotate`, { method: "POST", headers: authHeaders() });
   assert.equal(response.status, 409);
 });

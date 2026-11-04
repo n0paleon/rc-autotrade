@@ -216,6 +216,12 @@ export class WorkerClient {
       if (event.code === 4003) {
         this.reconnectAttempt = 0;
         this.#scheduleReconnect(250);
+      } else if (event.code === 4001) {
+        // The worker accepted the socket but rejected the key. Retrying would
+        // just hammer the auth limiter, so stop and surface the login error.
+        this.manualClose = true;
+        this.#setStatus("auth-error");
+        this.onAuthFailure?.("ACCESS KEY REJECTED — it may have been rotated. Paste the current key.");
       } else {
         this.#scheduleReconnect();
       }

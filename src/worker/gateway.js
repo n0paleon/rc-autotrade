@@ -1,8 +1,8 @@
 import { EventEmitter } from "node:events";
-import WebSocket from "ws";
 
 const MAX_BACKOFF_MS = 30_000;
 const HEARTBEAT_MS = 25_000;
+const HANDSHAKE_TIMEOUT_MS = 15_000;
 const USER_AGENT =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
@@ -12,9 +12,23 @@ function withToken(rawUrl, token) {
   return url.toString();
 }
 
+function decodeMessage(data) {
+  if (typeof data === "string") return data;
+  if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+    return new TextDecoder().decode(data);
+  }
+  return null;
+}
+
 /**
  * Real Rollercoin market socket. It listens to every frame, exposes all of
  * them as "frame" events, and reconnects with jittered exponential backoff.
+ *
+ * This uses Bun's native WebSocket client instead of the `ws` package: the
+ * ws client goes through node:tls on Bun and can fail the TLS handshake to
+ * the upstream edge, while Bun's own client uses the runtime's native TLS
+ * stack and supports the custom Origin/User-Agent/Cookie headers the market
+ * feed expects.
  */
 export class RollercoinGateway extends EventEmitter {
   constructor({ url, getToken, getCookie, logger, latency = null, now = () => Date.now() }) {
@@ -40,6 +54,7 @@ export class RollercoinGateway extends EventEmitter {
     this.reconnectTimer = null;
     this.heartbeatTimer = null;
     this.openTimer = null;
+    this.handshakeTimer = null;
     this.connectGeneration = 0;
     this.connectStartedAt = null;
     this.pingSentAt = null;
@@ -78,11 +93,10 @@ export class RollercoinGateway extends EventEmitter {
   #closeSocket(socket, reason) {
     if (!socket) return;
     try {
-      socket.removeAllListeners();
-      // ws emits an "error" event when close()/terminate() races the opening
-      // handshake. Keep a no-op listener so shutdown never becomes uncaught.
-      socket.on("error", () => {});
-      if (socket.readyState === WebSocket.CONNECTING) {
+      // A close during the opening handshake still emits "error"; keep a
+      // listener so shutdown never turns into an uncaught event.
+      socket.addEventListener("error", () => {});
+      if (socket.readyState === WebSocket.CONNECTING && typeof socket.terminate === "function") {
         socket.terminate();
       } else {
         socket.close(1000, reason);
@@ -96,9 +110,11 @@ export class RollercoinGateway extends EventEmitter {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.openTimer) clearTimeout(this.openTimer);
+    if (this.handshakeTimer) clearTimeout(this.handshakeTimer);
     this.reconnectTimer = null;
     this.heartbeatTimer = null;
     this.openTimer = null;
+    this.handshakeTimer = null;
   }
 
   #setStatus(status) {
@@ -126,20 +142,18 @@ export class RollercoinGateway extends EventEmitter {
     this.emit("status", this.stats());
     this.logger.info("gateway", `connecting to market feed (${reason})`);
 
+    const headers = {
+      origin: "https://rollercoin.com",
+      referer: "https://rollercoin.com/",
+      "user-agent": USER_AGENT
+    };
+    const cookie = this.getCookie();
+    if (cookie) headers.cookie = cookie;
+
     let socket;
     try {
-      const headers = {
-        origin: "https://rollercoin.com",
-        referer: "https://rollercoin.com/",
-        "user-agent": USER_AGENT
-      };
-      const cookie = this.getCookie();
-      if (cookie) headers.cookie = cookie;
-      socket = new WebSocket(withToken(this.url, token), {
-        headers,
-        handshakeTimeout: 15_000,
-        maxPayload: 8 * 1024 * 1024
-      });
+      socket = new WebSocket(withToken(this.url, token), { headers });
+      socket.binaryType = "arraybuffer";
     } catch (error) {
       this.lastError = error?.message || String(error);
       this.logger.error("gateway", `could not create socket: ${this.lastError}`);
@@ -154,11 +168,9 @@ export class RollercoinGateway extends EventEmitter {
     }
 
     this.socket = socket;
-
-    socket.on("unexpected-response", (request, response) => {
-      if (generation !== this.connectGeneration) return;
-      const code = response.statusCode;
-      this.lastError = `Handshake rejected with HTTP ${code}`;
+    this.handshakeTimer = setTimeout(() => {
+      if (generation !== this.connectGeneration || this.stopped) return;
+      this.lastError = `WebSocket handshake timed out after ${HANDSHAKE_TIMEOUT_MS}ms`;
       this.logger.warn("gateway", this.lastError);
       if (this.latency) {
         this.latency.record("wsHandshake", this.now() - this.connectStartedAt, {
@@ -166,19 +178,22 @@ export class RollercoinGateway extends EventEmitter {
           error: this.lastError
         });
       }
-      response.resume();
-      request.destroy();
-      if (code === 401 || code === 403) {
-        this.status = "auth-error";
-        this.#setStatus("auth-error");
-      }
-    });
+      this.connectGeneration += 1;
+      const pending = this.socket;
+      this.socket = null;
+      this.#closeSocket(pending, "handshake timeout");
+      this.#setStatus("offline");
+      this.#scheduleReconnect();
+    }, HANDSHAKE_TIMEOUT_MS);
+    this.handshakeTimer.unref?.();
 
-    socket.on("open", () => {
+    socket.addEventListener("open", () => {
       if (generation !== this.connectGeneration || this.stopped) {
         socket.close(1000, "stale");
         return;
       }
+      if (this.handshakeTimer) clearTimeout(this.handshakeTimer);
+      this.handshakeTimer = null;
       this.connectedAt = this.now();
       if (this.latency) {
         this.latency.record("wsHandshake", this.now() - this.connectStartedAt, { ok: true });
@@ -202,7 +217,7 @@ export class RollercoinGateway extends EventEmitter {
       this.heartbeatTimer.unref?.();
     });
 
-    socket.on("pong", () => {
+    socket.addEventListener("pong", () => {
       if (generation !== this.connectGeneration) return;
       if (this.pingSentAt === null) return;
       const ms = this.now() - this.pingSentAt;
@@ -211,12 +226,17 @@ export class RollercoinGateway extends EventEmitter {
       if (this.latency) this.latency.record("wsPing", ms, { ok: true });
     });
 
-    socket.on("message", (data, isBinary) => {
+    socket.addEventListener("message", (event) => {
       if (generation !== this.connectGeneration) return;
       this.lastMessageAt = Date.now();
+      const text = decodeMessage(event.data);
+      if (text === null) {
+        this.parseErrors += 1;
+        return;
+      }
       let parsed;
       try {
-        parsed = JSON.parse(isBinary ? data.toString("utf8") : data.toString());
+        parsed = JSON.parse(text);
       } catch {
         this.parseErrors += 1;
         return;
@@ -230,9 +250,12 @@ export class RollercoinGateway extends EventEmitter {
       this.emit("frame", { cmd, value: parsed.value, raw: parsed, at: Date.now() });
     });
 
-    socket.on("close", (code, reasonBuffer) => {
+    socket.addEventListener("close", (event) => {
       if (generation !== this.connectGeneration) return;
-      const reason = reasonBuffer?.toString?.() || "";
+      if (this.handshakeTimer) clearTimeout(this.handshakeTimer);
+      this.handshakeTimer = null;
+      const code = Number(event.code) || 1006;
+      const reason = typeof event.reason === "string" ? event.reason : "";
       this.socket = null;
       this.connectedAt = null;
       if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
@@ -260,9 +283,11 @@ export class RollercoinGateway extends EventEmitter {
       this.#scheduleReconnect();
     });
 
-    socket.on("error", (error) => {
+    socket.addEventListener("error", (event) => {
       if (generation !== this.connectGeneration) return;
-      this.lastError = error?.message || String(error);
+      if (this.handshakeTimer) clearTimeout(this.handshakeTimer);
+      this.handshakeTimer = null;
+      this.lastError = event?.message || "WebSocket error";
       this.logger.warn("gateway", `socket error: ${this.lastError}`);
       if (this.connectStartedAt !== null && this.status === "connecting" && this.latency) {
         this.latency.record("wsHandshake", this.now() - this.connectStartedAt, {

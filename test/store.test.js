@@ -1,9 +1,9 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import { openSqlite } from "../src/worker/db.js";
 import { LOOT_LOG_PAGE_SIZE, MAX_HISTORY } from "../src/shared/constants.js";
 import { Store, jwtExpiry } from "../src/worker/store.js";
 
@@ -12,7 +12,7 @@ function tempDir() {
 }
 
 function readDb(dir) {
-  return new Database(join(dir, "rollercoin.db"), { readonly: true });
+  return openSqlite(join(dir, "rollercoin.db"), { readonly: true });
 }
 
 test("store generates, verifies and rotates worker keys", () => {

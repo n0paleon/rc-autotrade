@@ -1,4 +1,4 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { createRateLimiter, microToRlt, planOrder, roundPrice } from "../src/shared/rules.js";
 

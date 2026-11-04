@@ -4,7 +4,10 @@ module.exports = {
       name: "rc-autotrade",
       cwd: __dirname,
       script: "src/worker/index.js",
-      interpreter: "node",
+      // The worker itself runs on Bun (bun:sqlite, Bun fetch, Bun test).
+      // PM2 may still be installed under Node; only the child interpreter
+      // changes here.
+      interpreter: "bun",
       instances: 1,
       exec_mode: "fork",
       autorestart: true,

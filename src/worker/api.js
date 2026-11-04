@@ -29,7 +29,6 @@ export class RollercoinApi {
     session,
     logger,
     timeoutMs = 15_000,
-    dispatcher = null,
     fetchImpl = httpFetch,
     latency = null
   }) {
@@ -37,7 +36,6 @@ export class RollercoinApi {
     this.session = session;
     this.logger = logger;
     this.timeoutMs = timeoutMs;
-    this.dispatcher = dispatcher;
     this.fetchImpl = fetchImpl;
     this.latency = latency;
     this.lastRequestAt = 0;
@@ -85,8 +83,7 @@ export class RollercoinApi {
         headers: this.#headers(),
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,
-        redirect: "follow",
-        ...(this.dispatcher ? { dispatcher: this.dispatcher } : {})
+        redirect: "follow"
       });
       const { body: parsed, text } = await readJsonResponse(response);
 
@@ -172,8 +169,7 @@ export class RollercoinApi {
         method: "GET",
         headers: this.#headers(),
         signal: controller.signal,
-        redirect: "follow",
-        ...(this.dispatcher ? { dispatcher: this.dispatcher } : {})
+        redirect: "follow"
       });
       const { body, text } = await readJsonResponse(response);
       if (response.status === 401 && retryOn401) {
@@ -227,8 +223,7 @@ export class RollercoinApi {
         method: "POST",
         headers,
         body: JSON.stringify({ refresh_token: refreshToken }),
-        signal: controller.signal,
-        ...(this.dispatcher ? { dispatcher: this.dispatcher } : {})
+        signal: controller.signal
       });
       const { body, text } = await readJsonResponse(response);
       if (!response.ok) {

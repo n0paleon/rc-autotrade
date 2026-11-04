@@ -1,14 +1,14 @@
-import test from "node:test";
+import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import { openSqlite } from "../src/worker/db.js";
 
 import { DbMetrics, sqlSnippet, statementKind } from "../src/worker/db-metrics.js";
 
 function memoryDb() {
-  const db = new Database(":memory:");
+  const db = openSqlite(":memory:");
   db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT UNIQUE)");
   return db;
 }
@@ -118,7 +118,7 @@ test("transactions are timed separately from their statements", () => {
 test("file sizes come from the db, wal and shm paths", () => {
   const dir = mkdtempSync(join(tmpdir(), "turuc-dbmetrics-"));
   const dbPath = join(dir, "probe.db");
-  const db = new Database(dbPath);
+  const db = openSqlite(dbPath);
   db.pragma("journal_mode = WAL");
   db.exec("CREATE TABLE t (id INTEGER PRIMARY KEY)");
   db.prepare("INSERT INTO t DEFAULT VALUES").run();
