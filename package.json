@@ -2,7 +2,7 @@
   "name": "turu-rc-worker",
   "version": "1.0.0",
   "private": true,
-  "description": "Headless Rollercoin marketplace sniper with a night-cabinet control deck.",
+  "description": "Headless Rollercoin marketplace sniper with an 8-bit arcade control deck.",
   "type": "module",
   "engines": {
     "node": ">=20.19"

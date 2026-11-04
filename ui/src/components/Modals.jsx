@@ -227,7 +227,7 @@ export function TargetModal({ config, onClose, worker, notify }) {
               <span className="flex items-center gap-2">
                 {auto.rarity ? (
                   <span
-                    className="rounded border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.08em]"
+                    className="border-2 border-[#05030f] px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-[0.06em]"
                     style={auto.color ? { borderColor: `#${auto.color}`, color: `#${auto.color}` } : undefined}
                   >
                     {auto.rarity}
@@ -235,7 +235,7 @@ export function TargetModal({ config, onClose, worker, notify }) {
                 ) : null}
                 {auto.state === "warn" ? (
                   <button
-                    className="font-mono text-[9px] uppercase tracking-[0.1em] text-warn underline-offset-2 hover:underline"
+                    className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-gold underline-offset-2 hover:underline"
                     type="button"
                     onClick={() => lookupRef.current?.()}
                   >
@@ -244,8 +244,8 @@ export function TargetModal({ config, onClose, worker, notify }) {
                 ) : null}
               </span>
             </div>
-            <strong className="mt-1 block text-[13px] font-medium text-ink">{auto.label}</strong>
-            <small className="mt-0.5 block text-[11px] leading-snug text-faint">
+            <strong className="mt-1 block text-[14px] font-medium text-ink">{auto.label}</strong>
+            <small className="mt-0.5 block text-[12px] leading-snug text-faint">
               From Rollercoin item-info: rarity + item name. Falls back to the item name when rarity is absent.
             </small>
           </div>
@@ -406,7 +406,7 @@ export function SessionModal({ session, onClose, worker, notify }) {
       }
     >
       <form id="session-form" className="modal-body" noValidate autoComplete="off" onSubmit={submit}>
-        <p className="text-[12px] leading-relaxed text-muted">
+        <p className="text-[13px] leading-relaxed text-muted">
           Grab the tokens from a logged-in rollercoin.com tab: DevTools → Application → Local Storage →{" "}
           <code className="text-ink-dim">token</code> and <code className="text-ink-dim">refreshToken</code>. The
           browser bridge can keep them in sync automatically.
@@ -578,14 +578,12 @@ export function BridgeModal({ onClose, getConnection, notify }) {
   return (
     <ModalShell title="Token bridge" onClose={onClose} wide>
       <div className="modal-body">
-        <div className="grid grid-cols-2 gap-1 rounded-lg border border-line bg-carbon-900 p-1" role="tablist" aria-label="Bridge mode">
+        <div className="tab-rail grid-cols-2" role="tablist" aria-label="Bridge mode">
           <button
             type="button"
             role="tab"
             aria-selected={mode === "console"}
-            className={`rounded-md px-2 py-1.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em] transition-colors ${
-              mode === "console" ? "bg-carbon-800 text-signal" : "text-muted hover:bg-carbon-850 hover:text-ink"
-            }`}
+            className="pixel-tab"
             onClick={() => setMode("console")}
           >
             Console snippet
@@ -594,9 +592,7 @@ export function BridgeModal({ onClose, getConnection, notify }) {
             type="button"
             role="tab"
             aria-selected={mode === "userscript"}
-            className={`rounded-md px-2 py-1.5 font-mono text-[9.5px] font-semibold uppercase tracking-[0.1em] transition-colors ${
-              mode === "userscript" ? "bg-carbon-800 text-signal" : "text-muted hover:bg-carbon-850 hover:text-ink"
-            }`}
+            className="pixel-tab"
             onClick={() => setMode("userscript")}
           >
             Userscript · auto
@@ -635,7 +631,7 @@ export function BridgeModal({ onClose, getConnection, notify }) {
         </div>
 
         {mode === "console" ? (
-          <p className="flex items-start gap-2 text-[11px] leading-relaxed text-faint">
+          <p className="flex items-start gap-2 text-[12px] leading-relaxed text-faint">
             <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
             <span>
               Console mode uses the page's <code className="text-ink-dim">fetch</code>, so Rollercoin's CSP or
@@ -644,7 +640,7 @@ export function BridgeModal({ onClose, getConnection, notify }) {
             </span>
           </p>
         ) : (
-          <p className="flex items-start gap-2 text-[11px] leading-relaxed text-faint">
+          <p className="flex items-start gap-2 text-[12px] leading-relaxed text-faint">
             <Icon name="i-check" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-signal" />
             <span>
               Userscript mode uses <code className="text-ink-dim">GM_xmlhttpRequest</code>, which bypasses page CORS
@@ -653,7 +649,7 @@ export function BridgeModal({ onClose, getConnection, notify }) {
             </span>
           </p>
         )}
-        <p className="flex items-start gap-2 text-[11px] leading-relaxed text-faint">
+        <p className="flex items-start gap-2 text-[12px] leading-relaxed text-faint">
           <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
           <span>
             Both variants contain this deck's access key. Keep them private and never paste them into a public gist
@@ -672,7 +668,7 @@ export function ConfirmModal({ title, message, confirmLabel = "CONFIRM", danger 
   return (
     <ModalShell title={title} onClose={onCancel} small role="alertdialog" titleColor={danger ? "danger" : "lime"}>
       <div className="modal-body">
-        <p className="text-[13px] leading-relaxed text-muted">{message}</p>
+        <p className="text-[14px] leading-relaxed text-muted">{message}</p>
         <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">
           <button className="btn" type="button" onClick={onCancel} data-autofocus>Cancel</button>
           <button className={`btn ${danger ? "btn-danger" : "btn-primary"}`} type="button" onClick={onConfirm}>
@@ -688,7 +684,7 @@ export function KeyModal({ token, onClose, notify }) {
   return (
     <ModalShell title="New access key" onClose={onClose}>
       <div className="modal-body">
-        <p className="text-[12px] leading-relaxed text-muted">
+        <p className="text-[13px] leading-relaxed text-muted">
           The old key is dead and open control sockets were revoked. Save this key. It is shown once.
         </p>
         <div className="key-box">
@@ -705,7 +701,7 @@ export function KeyModal({ token, onClose, notify }) {
             <Icon name="i-copy" />
           </button>
         </div>
-        <p className="flex items-start gap-2 text-[11px] leading-relaxed text-faint">
+        <p className="flex items-start gap-2 text-[12px] leading-relaxed text-faint">
           <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
           <span>
             This deck reconnects automatically. Other browser tabs must paste the new key. If you installed the

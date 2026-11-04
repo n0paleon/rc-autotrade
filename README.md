@@ -1,6 +1,9 @@
 # TURU.RC // MARKET SNIPER
 
-Headless **Rollercoin marketplace sniper** dengan control deck bergaya night cabinet, dibangun dengan React 19 + Tailwind CSS v4.
+Headless **Rollercoin marketplace sniper** dengan control deck bergaya arcade dan tipografi **Arcana**, dibangun dengan React 19 + Tailwind CSS v4.
+
+> Font UI: **Arcana** oleh vilogsign. File demo di `public/fonts/` gratis untuk penggunaan pribadi; untuk distribusi komersial, beli lisensi penuh dari author.
+
 Dulu `trade.js` harus ditempel di console browser dan ikut melambat saat tab inactive.
 Sekarang engine berjalan sebagai proses Node.js terpisah; browser hanya menjadi **data plane**
 untuk login, mengatur target, memantau market, dan melihat loot.
@@ -989,7 +992,8 @@ pm2 restart rc-autotrade --update-env
 - `data/state.json` berisi token sesi Rollercoin (plaintext), target, settings, dan statistik.
   **Tidak** lagi menyimpan loot log.
 - `data/loot-log.json` berisi history fill/failure (maks 200 entri) dan ditulis terpisah dengan
-  atomic write. Kedua file dibuat `0600`, direktori `0700`.
+  atomic write. Tiap entri punya field `message`: `"-"` untuk fill, dan alasan error untuk failure.
+  Kedua file dibuat `0600`, direktori `0700`.
 - Saat pertama start setelah update, history lama di `state.json` otomatis dimigrasikan ke
   `loot-log.json`, lalu `state.json` ditulis ulang tanpa field `history`. Jangan commit atau backup
   isi `data/` ke tempat publik.

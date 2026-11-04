@@ -384,7 +384,8 @@ export class Engine {
         status: "filled",
         at: now,
         latencyMs: pendingMeta ? now - pendingMeta.at : null,
-        note: null
+        note: null,
+        message: "-"
       };
 
       this.store.addHistory(entry);
@@ -444,7 +445,8 @@ export class Engine {
       status: "failed",
       at: this.clock(),
       latencyMs: meta.at ? this.clock() - meta.at : null,
-      note: String(reason || "failed").slice(0, 160)
+      note: String(reason || "failed").slice(0, 160),
+      message: String(reason || "failed").slice(0, 160)
     };
     this.store.addHistory(entry);
     this.broadcast("history", entry);
