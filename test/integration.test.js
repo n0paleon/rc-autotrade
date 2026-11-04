@@ -359,6 +359,46 @@ test("WebSocket accepts the subprotocol key and answers ping", { timeout: TIMEOU
   assert.equal(status, 403);
 });
 
+test("system monitor exposes live worker and host metrics", { timeout: TIMEOUT }, async () => {
+  // CPU percent needs two samples, and the monitor samples every 2s, so give
+  // it a window before asking for the current view.
+  await new Promise((resolveSleep) => setTimeout(resolveSleep, 2500));
+
+  const response = await fetch(`${baseUrl}/api/system`, { headers: authHeaders() });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.ok, true);
+
+  const system = body.system;
+  assert.ok(system, "system payload must be present");
+  assert.ok(system.sampledAt > 0);
+  assert.ok(system.intervalMs >= 500);
+  assert.equal(system.process.pid > 0, true);
+  assert.ok(system.process.uptimeMs > 0);
+  assert.ok(system.memory.rss > 0, "the worker must report RSS");
+  assert.ok(system.memory.heapLimit > 0, "the worker must report the V8 heap ceiling");
+  assert.ok(system.memory.heapPercent > 0 && system.memory.heapPercent <= 100);
+  assert.ok(system.system.total > 0, "host memory must be reported");
+  assert.ok(system.system.available >= 0);
+  assert.ok(Array.isArray(system.history) && system.history.length >= 1);
+  assert.ok(["ok", "warn", "critical"].includes(system.health.level));
+  assert.deepEqual(Object.keys(system.eventLoop).sort(), ["lag", "utilization"]);
+
+  assert.ok(system.gc, "GC view must be present");
+  assert.equal(system.gc.supported, true);
+  assert.equal(system.gc.observed, true, "the GC PerformanceObserver must be attached");
+  assert.ok(Array.isArray(system.gc.recent));
+  assert.ok(system.gc.totals.count >= 0);
+  assert.equal(typeof system.gc.window.pausedMs, "number");
+  assert.equal(typeof system.gc.window.maxMs, "number");
+  assert.equal(system.gc.thresholds.warnMs > 0, true);
+  assert.ok("gc" in system.history[0], "history must carry the per-sample GC pause");
+
+  const state = await (await fetch(`${baseUrl}/api/state`, { headers: authHeaders() })).json();
+  assert.ok(state.system, "snapshot must embed the system view");
+  assert.ok(state.system.memory.rss > 0);
+});
+
 test("key rotation is refused when WORKER_TOKEN pins the key", { timeout: TIMEOUT }, async () => {
   const response = await fetch(`${baseUrl}/api/auth/rotate`, { method: "POST", headers: authHeaders() });
   assert.equal(response.status, 409);

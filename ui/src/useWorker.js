@@ -220,6 +220,11 @@ export function useWorker({ notify }) {
         case "latency":
           setSnapshot((previous) => (previous ? { ...previous, latency: data } : previous));
           break;
+        case "system":
+          if (data) {
+            setSnapshot((previous) => (previous ? { ...previous, system: data } : previous));
+          }
+          break;
         case "settings":
           setSnapshot((previous) => (previous ? { ...previous, settings: data } : previous));
           break;
@@ -472,6 +477,14 @@ export function useWorker({ notify }) {
     return result;
   }, [request]);
 
+  const fetchSystem = useCallback(async () => {
+    const result = await request("/api/system");
+    if (result?.system) {
+      setSnapshot((previous) => (previous ? { ...previous, system: result.system } : previous));
+    }
+    return result;
+  }, [request]);
+
   const previewItem = useCallback(
     (itemId, itemType = "mutation_component") => {
       const params = new URLSearchParams({ itemId, itemType });
@@ -506,6 +519,7 @@ export function useWorker({ notify }) {
     previewItem,
     refreshLatency,
     fetchLatency,
+    fetchSystem,
     clearLogs,
     appendLog
   };

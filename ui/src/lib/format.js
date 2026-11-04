@@ -256,3 +256,49 @@ export function sparkBars(values, count = 24) {
     return { value: number, height };
   });
 }
+
+/* ── worker health ─────────────────────────────────────────────────── */
+
+/** Human-readable byte size. Binary units, one decimal under 100. */
+export function formatBytes(value, digits = 1) {
+  const number = Number(value);
+  if (value === null || value === undefined || !Number.isFinite(number) || number < 0) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = number;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  if (index === 0) return `${Math.round(size)} ${units[index]}`;
+  const fixed = size >= 100 ? size.toFixed(0) : size.toFixed(digits);
+  return `${fixed} ${units[index]}`;
+}
+
+/** Percentage with a trailing %; null-safe like the rest of the formatters. */
+export function formatPercent(value, digits = 0) {
+  const number = Number(value);
+  if (value === null || value === undefined || !Number.isFinite(number)) return "—";
+  return `${number.toFixed(digits)}%`;
+}
+
+/**
+ * Semantic color class for a 0..100 utilization value. Thresholds are the
+ * same shape as the worker's health rules so the panel and the log agree.
+ */
+export function utilizationClass(value, warn = 80, danger = 92) {
+  const number = Number(value);
+  if (value === null || value === undefined || !Number.isFinite(number)) return "text-muted";
+  if (number >= danger) return "text-danger";
+  if (number >= warn) return "text-warn";
+  return "text-signal";
+}
+
+/** Semantic color for any higher-is-worse metric with explicit brackets. */
+export function thresholdClass(value, warn, danger) {
+  const number = Number(value);
+  if (value === null || value === undefined || !Number.isFinite(number)) return "text-muted";
+  if (Number.isFinite(danger) && number >= danger) return "text-danger";
+  if (Number.isFinite(warn) && number >= warn) return "text-warn";
+  return "text-signal";
+}

@@ -65,6 +65,13 @@ untuk login, mengatur target, memantau market, dan melihat loot.
   tetap utuh walau loot log sudah berputar melewati `MAX_HISTORY` atau worker restart.
 - **Live data plane** — HUD, target cards + chart, market wire, terminal event, loot log, profit
   report, health token, runtime config, sound effect, dan tampilan mobile.
+- **Worker health monitor** — tab **SYSTEM** menampilkan CPU worker dan host, heap V8 + batasnya,
+  RSS, RAM sistem (MemAvailable, bukan MemFree), swap, load average, latency event loop
+  (p50/p95/p99), active handles, plus sparkline historis. Status `HEALTHY / DEGRADED / CRITICAL`
+  dihitung dari tekanan heap, RAM, dan event loop, dan setiap transisi ikut tercatat di log.
+- **GC event detection** — `PerformanceObserver` menangkap setiap garbage collection V8 (minor/
+  major, durasi pause, timestamp asli). Panel menampilkan agregat 60 detik, tipe GC terakhir, dan
+  sparkline pause per sampel, sehingga lonjakan ping bisa dicocokkan dengan major GC penyebabnya.
 - **Mock mode** — simulator market bawaan untuk mencoba seluruh alur tanpa akun Rollercoin.
 - **Test suite** — unit test untuk rules/validation/event/store + integration test end-to-end.
 
@@ -658,6 +665,7 @@ salin header cookie dari request browser (minimal `cf_clearance`, sering juga `_
 | `RC_HTTP_CONNECTIONS` | `8` | Maksimum koneksi per origin (1–32) |
 | `RC_KEEPALIVE_MS` | `30000` | Interval warm probe; `0` = mati (5000–600000 ms) |
 | `RC_KEEPALIVE_URL` | `${RC_API_BASE}/api/events/config` | Endpoint probe publik |
+| `SYSTEM_SAMPLE_MS` | `2000` | Interval sampling health worker (500–60000 ms) |
 | `MOCK` | `0` | `1` = simulator, tidak ada order nyata |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 
@@ -687,6 +695,56 @@ bersama statistik lainnya.
 
 `HOST=0.0.0.0` memungkinkan akses dari LAN. Jangan lakukan itu tanpa firewall/TLS, dan ingat
 control deck memegang kredensial Rollercoin.
+
+### Health worker & host
+
+Worker men-sample dirinya sendiri tiap `SYSTEM_SAMPLE_MS` (default 2 detik) tanpa dependency
+tambahan, lalu menyimpan maksimal 120 titik historis di memori (tidak pernah ditulis ke SQLite).
+Tab **SYSTEM** menampilkan:
+
+| Metrik | Sumber / arti |
+| --- | --- |
+| `Worker CPU` | `process.cpuUsage()` delta ÷ wall time — persen dari satu core |
+| `Host CPU` | Delta `os.cpus()` — persen dari seluruh core |
+| `Heap` | `heapUsed / heap_size_limit` dari V8 |
+| `RSS` | Resident set size proses worker |
+| `External` | Buffer/native memory di luar heap V8 |
+| `System RAM` | `MemTotal − MemAvailable` (bukan `MemFree`, agar page cache tidak dihitung) |
+| `Load 1m` | `os.loadavg()[0]`, dinormalisasi per core untuk indikator warna |
+| `Loop p95` | Histogram `monitorEventLoopDelay` — indikator event loop tersendat |
+| `GCs` | Jumlah event GC V8 dalam 60 detik terakhir (minor + major) |
+| `GC paused` | Total durasi pause GC dalam 60 detik terakhir |
+| `GC max` | Pause GC terpanjang dalam 60 detik — biasanya mark-sweep (major) |
+| `Last GC` | Event GC terakhir: tipe, durasi, dan umurnya |
+| `Handles` | `process.getActiveResourcesInfo().length` |
+
+Status health: `HEALTHY` → `DEGRADED` pada heap ≥ 80%, RAM ≥ 88%, event-loop p95 ≥ 100 ms, GC pause
+≥ 120 ms dalam 15 detik terakhir, atau CPU worker ≥ 95%; `CRITICAL` pada heap ≥ 92%, RAM ≥ 96%,
+p95 ≥ 250 ms, atau GC pause ≥ 300 ms. Transisi ke `DEGRADED`/`CRITICAL` (dan pemulihannya) ditulis
+ke log scope `system`, jadi tetap terlihat walau tidak ada browser yang terbuka. Panel live lewat
+broadcast `system` tiap 5 detik dan juga mem-poll `GET /api/system` tiap 10 detik sebagai fallback.
+
+### Deteksi GC event
+
+Kalau ping control link atau market feed tiba-tiba melonjak, penyebab paling sering adalah **major
+GC** (mark-sweep) yang menghentikan event loop. Worker memasang
+`PerformanceObserver({ entryTypes: ["gc"] })` sejak boot dan mencatat **setiap** event ke ring
+buffer 200 entri:
+
+| Field | Arti |
+| --- | --- |
+| `kind` | `minor` (scavenge), `major` (mark-sweep), `incremental`, `weakcb` |
+| `duration` | Lama pause GC (ms) — inilah yang membekukan timer/socket |
+| `at` | Waktu mulai GC (dari `entry.startTime` + time origin), bukan saat entry diterima |
+| `flags` | Flag V8 (`4` = forced, mis. `--expose-gc`) |
+
+Panel menampilkan GC dalam tiga lapisan: agregat 60 detik (jumlah/paused/max), badge tipe dan 3 event
+terakhir, serta sparkline **GC PAUSE WINDOW** di samping CPU/RSS. Sparkline dibuat dari `history[]`
+per sampel (`gc` = total pause pada interval itu, `gcCount` = jumlah event), sehingga lonjakan bisa
+dibandingkan langsung dengan spike di tab **LATENCY** (WS ping) atau ping control link di header.
+Ambang warning/critical juga ikut dikirim di payload (`gc.thresholds`) supaya UI dan health tidak
+memakai angka yang berbeda. GC tracking memakai `perf_hooks` bawaan Node; tidak ada dependency baru
+dan tidak ada overhead berarti.
 
 ---
 
@@ -718,6 +776,7 @@ Authorization: Bearer <access-key>
 | `POST` | `/api/auth/rotate` | Rotasi access key (409 bila dipin env) |
 | `GET` | `/api/latency` | Statistik latency worker → upstream per channel (HTTP, warm probe, WS handshake, WS ping) |
 | `POST` | `/api/latency/probe` | Jalankan warm probe sekarang dan balas sampel baru |
+| `GET` | `/api/system` | Snapshot health worker/host: CPU, memory, event loop, load, history |
 | `DELETE` | `/api/history` | Reset profit, counter, loot log, dan sampel latency |
 
 Error validasi memakai status `422` dan `fields`, misalnya:
@@ -738,7 +797,7 @@ Error validasi memakai status `422` dan `fields`, misalnya:
 - Auth: subprotocol `rcw.v1, <access-key>` (fallback query `?token=...`)
 - Client boleh mengirim `{ "type": "ping", "t": 123 }`; server membalas `{ "type": "pong", ... }`.
 - Event server: `hello`, `snapshot`, `log`, `market`, `order`, `history`, `stats`, `report`,
-  `session`, `gateway`, `settings`, `configs`, `latency`, `history-cleared`.
+  `session`, `gateway`, `settings`, `configs`, `latency`, `system`, `history-cleared`.
 - `order.phase`: `submitted`, `accepted`, `filled`, `failed`, `dry`.
 - `market` membawa `price`, `stock`, `targetPrice`, `hot`, `at`, serta `allowedPriceMin`,
   `allowedPriceMax`, `allowedAt` (cache band harga terakhir per target).
@@ -1055,12 +1114,13 @@ Cakupan:
 - `engine.test.js` — order gagal tidak menambah book; fill sukses menguranginya.
 - `keepalive.test.js` — warm probe, idle timeout, dan suspend saat `403`/`429`.
 - `latency.test.js` — rolling sample per channel, percentile, dan jitter.
+- `system.test.js` — delta CPU/event loop, batas history, dan klasifikasi health worker.
 - `report.test.js` — agregat profit per produk bertahan setelah loot log berputar.
-- `format.test.js` — formatter UI (label itemType, URL marketplace).
+- `format.test.js` — formatter UI (label itemType, URL marketplace, byte/percent).
 - `session.test.js` — jadwal refresh token dan fallback token opaque.
 - `integration.test.js` — spawn worker mock, auth, CRUD, settings, CORS, session push, item-info, WS, fill.
 
-Total 78 test; integration test memakai port acak dan data directory sementara.
+Total 98 test; integration test memakai port acak dan data directory sementara.
 
 ---
 
@@ -1098,6 +1158,7 @@ Total 78 test; integration test memakai port acak dan data directory sementara.
 │       ├── engine.js        # matching + order execution + 24h minute history
 │       ├── item-info.js     # auto label/rarity resolver
 │       ├── events.js        # upstream frame normalizer
+│       ├── system.js        # CPU/heap/event-loop/host health sampler
 │       ├── server.js        # control plane HTTP/WS + static UI
 │       └── reset-token.js
 ├── test/

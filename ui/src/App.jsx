@@ -35,8 +35,12 @@ import {
   trimPrice,
   drawPixelAvatar,
   formatMs,
+  formatBytes,
+  formatPercent,
   latencyClass,
-  sparkBars
+  sparkBars,
+  thresholdClass,
+  utilizationClass
 } from "./lib/format.js";
 import { sound } from "./lib/sound.js";
 
@@ -1552,6 +1556,273 @@ function ConfigPanel({ snapshot, worker, notify }) {
   );
 }
 
+/**
+ * Worker health panel. The worker samples itself every few seconds and pushes
+ * a `system` event, so this panel is almost entirely a render of
+ * `snapshot.system`; a slow poll is only a safety net.
+ */
+function SystemMeter({ label, value, detail, tone }) {
+  const number = Number(value);
+  const width = Number.isFinite(number) ? Math.max(0, Math.min(100, number)) : 0;
+  const fill =
+    tone === "text-danger" ? "bg-danger" : tone === "text-warn" ? "bg-warn" : "bg-signal";
+  return (
+    <div className="border-2 border-line bg-night-950/60 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="label">{label}</span>
+        <b className={`font-mono text-[14px] font-semibold tabular-nums ${tone || "text-ink-dim"}`}>
+          {formatPercent(value, 1)}
+        </b>
+      </div>
+      <div className="meter meter-thin mt-2">
+        <i className={fill} style={{ "--meter-value": `${width}%` }} />
+      </div>
+      <span className="mt-1.5 block font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+        {detail}
+      </span>
+    </div>
+  );
+}
+
+function HistoryStrip({ label, bars, format, tone }) {
+  return (
+    <div className="border-2 border-line bg-night-950/60 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <span className="label">{label}</span>
+        <span className="font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+          {bars.length} samples
+        </span>
+      </div>
+      <div className="mt-2 flex h-10 items-end gap-[2px]" aria-hidden="true">
+        {bars.length === 0 ? (
+          <span className="font-mono text-[12px] uppercase tracking-wide text-faint">Collecting…</span>
+        ) : (
+          bars.map((bar, index) => (
+            <i
+              key={index}
+              className={`max-w-[10px] min-w-[2px] flex-1 bg-current ${tone ? tone(bar.value) : "text-signal"}`}
+              style={{ height: `${bar.height}%` }}
+              title={format(bar.value)}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SystemPanel({ snapshot, worker }) {
+  const system = snapshot.system || null;
+  const health = system?.health || { level: "ok", reasons: [] };
+  const proc = system?.process || {};
+  const cpu = system?.cpu || {};
+  const memory = system?.memory || {};
+  const host = system?.system || {};
+  const loop = system?.eventLoop || {};
+  const lag = loop.lag || {};
+  const history = system?.history || [];
+  const gc = system?.gc || null;
+  const gcWindow = gc?.window || {};
+  const gcTotals = gc?.totals || {};
+  const gcWarn = Number(gc?.thresholds?.warnMs) || 120;
+  const gcCritical = Number(gc?.thresholds?.criticalMs) || 300;
+
+  // Safety net: the worker pushes `system` alongside gateway/latency every 5s.
+  // Quietly poll as well so the panel survives a missed push after a reconnect.
+  // Depend on the stable callback, not the whole worker object: the deck
+  // re-renders every second and would otherwise restart this timer forever.
+  const fetchSystem = worker?.fetchSystem;
+  useEffect(() => {
+    if (typeof fetchSystem !== "function") return undefined;
+    const timer = setInterval(() => {
+      fetchSystem().catch(() => {
+        /* a reconnect or the push stream will refresh it */
+      });
+    }, 10_000);
+    return () => clearInterval(timer);
+  }, [fetchSystem]);
+
+  if (!system) {
+    return (
+      <section className="panel" data-accent="lime">
+        <div className="panel-head">
+          <h2 className="panel-title"><Icon name="i-bolt" className="h-4 w-4 text-signal" /> Worker health</h2>
+        </div>
+        <div className="panel-body">
+          <p className="text-[13px] leading-relaxed text-faint">
+            Waiting for the first metrics sample. The worker samples CPU, memory and event-loop
+            health every few seconds; make sure it is running the latest build.
+          </p>
+        </div>
+      </section>
+    );
+  }
+
+  const healthLabel = health.level === "critical" ? "CRITICAL" : health.level === "warn" ? "DEGRADED" : "HEALTHY";
+  const healthChip =
+    health.level === "critical" ? "chip-offline" : health.level === "warn" ? "chip-warn" : "chip-online";
+  const heapTone = utilizationClass(memory.heapPercent, 80, 92);
+  const hostTone = utilizationClass(host.usedPercent, 88, 96);
+  const cpuTone = thresholdClass(cpu.processPercent, 80, 100);
+  const loadPerCore = Number.isFinite(Number(cpu.load1)) && cpu.cores ? cpu.load1 / cpu.cores : null;
+
+  return (
+    <section className="panel" data-accent="lime">
+      <div className="panel-head">
+        <h2 className="panel-title"><Icon name="i-bolt" className="h-4 w-4 text-signal" /> Worker health</h2>
+        <span className={`chip ${healthChip}`} title={health.reasons?.join(" · ") || "All health checks passed"}>
+          <span className="led led-pulse" />{healthLabel}
+        </span>
+      </div>
+      <div className="panel-body">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="label flex items-center gap-1.5">
+            <Icon name="i-clock" className="h-3 w-3" /> Uptime {formatUptime(proc.uptimeMs)}
+          </span>
+          <span className="font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+            PID {proc.pid} · {proc.node}
+          </span>
+        </div>
+
+        {health.level !== "ok" ? (
+          <p className="border-2 border-line bg-night-950/60 px-3 py-2 font-mono text-[12px] uppercase tracking-[0.08em] text-warn">
+            {health.reasons?.length ? health.reasons.join(" · ") : "Health check degraded"}
+          </p>
+        ) : null}
+
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <SystemMeter
+            label="Worker CPU"
+            value={cpu.processPercent}
+            detail={`${formatInt(cpu.cores)} cores · host ${formatPercent(cpu.hostPercent, 1)}`}
+            tone={cpuTone}
+          />
+          <SystemMeter
+            label="Heap"
+            value={memory.heapPercent}
+            detail={`${formatBytes(memory.heapUsed)} / ${formatBytes(memory.heapLimit)}`}
+            tone={heapTone}
+          />
+          <SystemMeter
+            label="System RAM"
+            value={host.usedPercent}
+            detail={`${formatBytes(host.used)} / ${formatBytes(host.total)}`}
+            tone={hostTone}
+          />
+        </div>
+
+        <div className="grid grid-cols-3 gap-1.5">
+          {[
+            ["RSS", formatBytes(memory.rss), "text-ink-dim"],
+            ["External", formatBytes(memory.external), "text-ink-dim"],
+            ["Free RAM", formatBytes(host.available), thresholdClass(host.usedPercent, 88, 96)],
+            ["Load 1m", Number.isFinite(Number(cpu.load1)) ? Number(cpu.load1).toFixed(2) : "—", thresholdClass(loadPerCore ? loadPerCore * 100 : null, 70, 95)],
+            ["Loop p95", formatMs(lag.p95), thresholdClass(lag.p95, 100, 250)],
+            ["Handles", proc.activeHandles == null ? "—" : formatInt(proc.activeHandles), "text-ink-dim"]
+          ].map(([key, value, tone]) => (
+            <span
+              key={key}
+              className="flex flex-col gap-0.5 border border-line/70 bg-night-900/60 px-1.5 py-1 font-mono text-[12px] uppercase tracking-[0.08em] text-faint"
+            >
+              {key}
+              <b className={`text-[12px] font-semibold tabular-nums ${tone || "text-ink-dim"}`}>{value}</b>
+            </span>
+          ))}
+        </div>
+
+        <div className="border-2 border-line bg-night-950/60 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="label flex items-center gap-1.5">
+              <Icon name="i-bolt" className="h-3 w-3" /> Garbage collector · last 60s
+            </span>
+            <span
+              className={`font-mono text-[12px] uppercase tracking-[0.08em] ${
+                gc?.observed ? "text-signal" : gc?.supported === false ? "text-warn" : "text-faint"
+              }`}
+              title="V8 GC events captured through perf_hooks PerformanceObserver"
+            >
+              {gc?.observed ? "observing" : gc?.supported === false ? "unsupported" : "starting"}
+            </span>
+          </div>
+          <div className="mt-2 grid grid-cols-4 gap-1.5">
+            {[
+              ["GCs", formatInt(gcWindow.count || 0), "text-ink-dim"],
+              ["Paused", formatMs(gcWindow.pausedMs || 0), "text-ink-dim"],
+              ["Max", formatMs(gcWindow.maxMs || 0), thresholdClass(gcWindow.maxMs, gcWarn, gcCritical)],
+              [
+                "Last",
+                gcTotals.last ? `${formatMs(gcTotals.last.duration)} · ${relTime(gcTotals.last.at)}` : "—",
+                thresholdClass(gcTotals.last?.duration, gcWarn, gcCritical)
+              ]
+            ].map(([key, value, tone]) => (
+              <span
+                key={key}
+                className="flex flex-col gap-0.5 border border-line/70 bg-night-900/60 px-1.5 py-1 font-mono text-[12px] uppercase tracking-[0.08em] text-faint"
+              >
+                {key}
+                <b className={`text-[12px] font-semibold tabular-nums ${tone || "text-ink-dim"}`}>{value}</b>
+              </span>
+            ))}
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-1">
+            <span className="border border-line/70 bg-night-900/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+              {formatInt(gcWindow.minor || 0)} minor
+            </span>
+            <span
+              className={`border border-line/70 bg-night-900/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] ${
+                gcWindow.major > 0 ? "text-warn" : "text-faint"
+              }`}
+            >
+              {formatInt(gcWindow.major || 0)} major
+            </span>
+            {(gc?.recent || []).slice(0, 3).map((event, index) => (
+              <span
+                key={`${event.at}-${index}`}
+                className={`border border-line/70 bg-night-900/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] ${
+                  event.kind === "major" ? "text-warn" : "text-faint"
+                }`}
+                title={`${event.kind} GC · ${event.duration}ms · ${formatTime(event.at)}`}
+              >
+                {event.kind} {formatMs(event.duration)}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <HistoryStrip
+            label="CPU window"
+            bars={sparkBars(history.map((point) => point.cpu ?? 0))}
+            format={(value) => formatPercent(value, 1)}
+            tone={(value) => thresholdClass(value, 80, 100)}
+          />
+          <HistoryStrip
+            label="RSS window"
+            bars={sparkBars(history.map((point) => point.rss ?? 0))}
+            format={(value) => formatBytes(value * 1024 * 1024)}
+            tone={() => "text-info"}
+          />
+          <HistoryStrip
+            label="GC pause window"
+            bars={sparkBars(history.map((point) => point.gc ?? 0))}
+            format={(value) => formatMs(value)}
+            tone={(value) => thresholdClass(value, gcWarn, gcCritical)}
+          />
+        </div>
+
+        <p className="text-[13px] leading-relaxed text-faint">
+          Sampled every {formatInt(Math.round((system.intervalMs || 2000) / 1000)) || 1}s, pushed every
+          5s. CPU is the worker process as a percentage of one core; system RAM uses MemAvailable on
+          Linux. Warnings trigger at 80% heap, 88% RAM, 100ms event-loop p95, or a GC pause above{" "}
+          {formatInt(gcWarn)}ms in the last 15s (critical at {formatInt(gcCritical)}ms). GC pauses
+          come straight from V8 perf entries, so a spike in the ping panel can be matched to the
+          major GC that caused it.
+        </p>
+      </div>
+    </section>
+  );
+}
+
 function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, baseUrl }) {
   const settings = snapshot.settings || {};
   const [delay, setDelay] = useState(String(settings.delayPerOrder ?? 200));
@@ -1659,7 +1930,8 @@ function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSes
     { id: "feed", label: "FEED" },
     { id: "link", label: "LINK" },
     { id: "config", label: "CONFIG" },
-    { id: "latency", label: "LATENCY" }
+    { id: "latency", label: "LATENCY" },
+    { id: "system", label: "SYSTEM" }
   ];
   return (
     <aside className="flex min-w-0 flex-col gap-3 max-xl:order-2 xl:sticky xl:top-24 xl:col-start-2 xl:row-start-1 xl:row-span-2 xl:max-h-[calc(100dvh-6rem)] xl:self-start xl:overflow-y-auto">
@@ -1708,6 +1980,7 @@ function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSes
             notify={notify}
           />
         ) : null}
+        {tab === "system" ? <SystemPanel snapshot={snapshot} worker={worker} /> : null}
       </div>
     </aside>
   );

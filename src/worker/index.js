@@ -11,6 +11,7 @@ import { Engine } from "./engine.js";
 import { ItemInfoService } from "./item-info.js";
 import { ControlServer } from "./server.js";
 import { LatencyTracker } from "./latency.js";
+import { SystemMonitor } from "./system.js";
 import { APP_NAME, APP_VERSION } from "../shared/constants.js";
 
 const MOCK_TARGETS = [
@@ -151,6 +152,11 @@ async function main() {
 
   const itemInfo = new ItemInfoService({ store, api, logger });
 
+  // Worker/host health sampler (CPU, memory, event loop, load). Runs even
+  // without connected clients so health transitions still reach the log.
+  const system = new SystemMonitor({ intervalMs: config.systemSampleMs });
+  system.start();
+
   let broadcast = () => {};
   const engine = new Engine({
     store,
@@ -179,6 +185,7 @@ async function main() {
     itemInfo,
     keepalive,
     latency,
+    system,
     logger,
     startedAt
   });
@@ -240,6 +247,7 @@ async function main() {
     closing = true;
     logger.info("worker", `${signal} received — shutting down`);
     try {
+      system.stop();
       keepalive?.stop();
       gateway.stop();
       session.stop();
