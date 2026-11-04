@@ -10,7 +10,8 @@
   "scripts": {
     "build": "vite build",
     "start": "npm run build && node src/worker/index.js",
-    "dev": "vite",
+    "dev": "node scripts/dev.js",
+    "dev:ui": "vite",
     "dev:worker": "node --watch src/worker/index.js",
     "mock": "npm run build && MOCK=1 node src/worker/index.js",
     "pretest": "npm run build",

@@ -106,11 +106,17 @@ Mau mencoba tanpa akun? Jalankan simulator:
 npm run mock              # build React + worker dalam mode simulasi
 ```
 
-Untuk development UI, jalankan worker dan Vite di dua terminal:
+Satu perintah menyalakan worker dan Vite sekaligus:
+
+```bash
+npm run dev               # worker di 127.0.0.1:8787 + Vite di 127.0.0.1:5173
+```
+
+Butuh memisahkan prosesnya? Jalankan di dua terminal:
 
 ```bash
 npm run dev:worker        # worker di 127.0.0.1:8787
-npm run dev               # Vite di 5173, proxy /api dan /ws ke 8787
+npm run dev:ui            # Vite di 5173, proxy /api dan /ws ke 8787
 ```
 
 Mock mode mengisi dua target contoh, membuat harga naik-turun, dan mengirim fill palsu sehingga
