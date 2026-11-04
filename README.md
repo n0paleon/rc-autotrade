@@ -992,7 +992,8 @@ pm2 restart rc-autotrade --update-env
 - `data/state.json` berisi token sesi Rollercoin (plaintext), target, settings, dan statistik.
   **Tidak** lagi menyimpan loot log.
 - `data/loot-log.json` berisi history fill/failure (maks 200 entri) dan ditulis terpisah dengan
-  atomic write. Kedua file dibuat `0600`, direktori `0700`.
+  atomic write. Tiap entri punya field `message`: `"-"` untuk fill, dan alasan error untuk failure.
+  Kedua file dibuat `0600`, direktori `0700`.
 - Saat pertama start setelah update, history lama di `state.json` otomatis dimigrasikan ke
   `loot-log.json`, lalu `state.json` ditulis ulang tanpa field `history`. Jangan commit atau backup
   isi `data/` ke tempat publik.

@@ -153,21 +153,33 @@ function sanitizeHistory(entries) {
   if (!Array.isArray(entries)) return [];
   return entries
     .filter((entry) => entry && typeof entry === "object")
-    .map((entry) => ({
-      id: String(entry.id ?? ""),
-      orderId: entry.orderId ? String(entry.orderId) : null,
-      itemId: String(entry.itemId ?? ""),
-      label: String(entry.label ?? "").slice(0, 48),
-      qty: Math.max(0, Math.floor(asFinite(entry.qty))),
-      unitPrice: asFinite(entry.unitPrice),
-      totalPrice: asFinite(entry.totalPrice),
-      targetPrice: asFinite(entry.targetPrice),
-      profitRlt: asSigned(entry.profitRlt),
-      status: entry.status === "failed" ? "failed" : "filled",
-      at: asFinite(entry.at, Date.now()),
-      latencyMs: Number.isFinite(Number(entry.latencyMs)) ? Number(entry.latencyMs) : null,
-      note: typeof entry.note === "string" ? entry.note.slice(0, 160) : null
-    }))
+    .map((entry) => {
+      const status = entry.status === "failed" ? "failed" : "filled";
+      const note = typeof entry.note === "string" ? entry.note.slice(0, 160) : null;
+      // Filled entries show "-", failures carry the rejection reason as their message.
+      const message =
+        typeof entry.message === "string" && entry.message.trim()
+          ? entry.message.slice(0, 160)
+          : status === "failed"
+            ? note || "failed"
+            : "-";
+      return {
+        id: String(entry.id ?? ""),
+        orderId: entry.orderId ? String(entry.orderId) : null,
+        itemId: String(entry.itemId ?? ""),
+        label: String(entry.label ?? "").slice(0, 48),
+        qty: Math.max(0, Math.floor(asFinite(entry.qty))),
+        unitPrice: asFinite(entry.unitPrice),
+        totalPrice: asFinite(entry.totalPrice),
+        targetPrice: asFinite(entry.targetPrice),
+        profitRlt: asSigned(entry.profitRlt),
+        status,
+        at: asFinite(entry.at, Date.now()),
+        latencyMs: Number.isFinite(Number(entry.latencyMs)) ? Number(entry.latencyMs) : null,
+        note,
+        message
+      };
+    })
     .slice(0, MAX_HISTORY);
 }
 

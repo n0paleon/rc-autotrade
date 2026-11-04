@@ -1062,6 +1062,11 @@ function LootLog({ history, onReset }) {
                   <p className="mt-0.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-faint">
                     {formatTime(entry.at)} · {formatInt(entry.qty)} × {fixedPrice(entry.unitPrice)} RLT
                   </p>
+                  {entry.status === "failed" ? (
+                    <p className="mt-0.5 truncate font-mono text-[10.5px] text-danger/80" title={entry.message || entry.note || undefined}>
+                      {entry.message || entry.note || "failed"}
+                    </p>
+                  ) : null}
                 </div>
                 <div className="shrink-0 text-right">
                   <p className={`font-mono text-[12px] tabular-nums ${entry.profitRlt > 0 ? "text-gold" : entry.profitRlt < 0 ? "text-danger" : "text-ink-dim"}`}>
@@ -1075,7 +1080,7 @@ function LootLog({ history, onReset }) {
             ))}
           </ul>
           <div className="hidden min-h-0 flex-1 overflow-auto overscroll-contain md:block">
-            <table className="w-full min-w-[720px] border-collapse text-left font-mono text-[12px] tabular-nums">
+            <table className="w-full min-w-[760px] border-collapse text-left font-mono text-[12px] tabular-nums">
               <thead className="sticky top-0 z-10 bg-night-900">
                 <tr className="border-b-2 border-line text-[10px] uppercase tracking-[0.06em] text-faint">
                   <th scope="col" className="px-4 py-2 font-medium">Time</th>
@@ -1085,7 +1090,8 @@ function LootLog({ history, onReset }) {
                   <th scope="col" className="px-3 py-2 font-medium">Total</th>
                   <th scope="col" className="px-3 py-2 font-medium">Profit</th>
                   <th scope="col" className="px-3 py-2 font-medium">Latency</th>
-                  <th scope="col" className="px-4 py-2 font-medium">Status</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Status</th>
+                  <th scope="col" className="px-4 py-2 font-medium">Message</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line/40">
@@ -1104,10 +1110,16 @@ function LootLog({ history, onReset }) {
                       {entry.status === "failed" ? "0.000000" : formatSignedRlt(entry.profitRlt)}
                     </td>
                     <td className="px-3 py-2 text-muted">{entry.latencyMs != null ? `${Math.round(entry.latencyMs)}ms` : "—"}</td>
-                    <td className="px-4 py-2">
+                    <td className="px-3 py-2">
                       <span className={`status-pill${entry.status === "failed" ? " is-failed" : ""}`}>
                         {entry.status === "failed" ? "Failed" : "Filled"}
                       </span>
+                    </td>
+                    <td
+                      className="max-w-[220px] truncate px-4 py-2 text-muted"
+                      title={entry.status === "failed" ? entry.message || entry.note || undefined : undefined}
+                    >
+                      {entry.status === "failed" ? entry.message || entry.note || "failed" : "-"}
                     </td>
                   </tr>
                 ))}

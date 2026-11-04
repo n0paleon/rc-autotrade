@@ -128,6 +128,7 @@ test("a rejected purchase never increases the book stock", async () => {
   assert.equal(runtime.failures, 1);
   assert.equal(runtime.fills, 0);
   assert.equal(runtime.lastResult.status, "rejected");
+  assert.equal(harness.store.state.history[0].message, "rejected", "failures carry the rejection reason");
 });
 
 test("a filled purchase reduces the book stock immediately", async () => {
@@ -165,4 +166,7 @@ test("a filled purchase reduces the book stock immediately", async () => {
 
   const fillEvent = harness.events.find((event) => event.type === "order" && event.data.phase === "filled");
   assert.equal(fillEvent.data.stockAfter, 0);
+
+  const filledEntry = harness.store.state.history.find((entry) => entry.status === "filled");
+  assert.equal(filledEntry.message, "-", "filled loot rows show a dash");
 });

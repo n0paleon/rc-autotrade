@@ -82,6 +82,7 @@ test("store persists session, targets and history", () => {
     assert.equal(reloaded.state.configs[0].label, "NEON SHARD");
     assert.equal(reloaded.state.history.length, 1);
     assert.equal(reloaded.state.history[0].profitRlt, 0.1);
+    assert.equal(reloaded.state.history[0].message, "-");
     assert.equal(reloaded.state.stats.filled, 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -132,6 +133,44 @@ test("store can clear a single credential while keeping the others", () => {
   }
 });
 
+test("backfills loot messages: dash for fills, reason for failures", () => {
+  const dir = tempDir();
+  try {
+    writeFileSync(
+      join(dir, "loot-log.json"),
+      JSON.stringify({
+        history: [
+          {
+            id: "failed-1",
+            itemId: "6571aa39ca8bfef34adcd9e9",
+            label: "LEGACY FAIL",
+            qty: 0,
+            status: "failed",
+            at: Date.now(),
+            note: "marketplace rejected the order"
+          },
+          {
+            id: "filled-1",
+            itemId: "6571aa39ca8bfef34adcd9e9",
+            label: "LEGACY FILL",
+            qty: 3,
+            status: "filled",
+            at: Date.now(),
+            note: null
+          }
+        ]
+      })
+    );
+
+    const store = new Store({ dataDir: dir, logger: null }).load();
+    const [failed, filled] = store.state.history;
+    assert.equal(failed.message, "marketplace rejected the order");
+    assert.equal(filled.message, "-");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("migrates legacy state.json history into a separate loot-log.json", () => {
   const dir = tempDir();
   try {
@@ -167,6 +206,7 @@ test("migrates legacy state.json history into a separate loot-log.json", () => {
     const store = new Store({ dataDir: dir, logger: null }).load();
     assert.equal(store.state.history.length, 1);
     assert.equal(store.state.history[0].id, "legacy-1");
+    assert.equal(store.state.history[0].message, "-");
 
     const persistedState = JSON.parse(readFileSync(join(dir, "state.json"), "utf8"));
     const lootLog = JSON.parse(readFileSync(join(dir, "loot-log.json"), "utf8"));
