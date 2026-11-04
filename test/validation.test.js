@@ -102,3 +102,20 @@ test("session input strips a bearer prefix and ignores empty refresh", () => {
   assert.equal(result.value.refreshToken, "");
   assert.equal(result.value.cookie, "cf_clearance=abc");
 });
+
+test("session input accepts explicit clear flags", () => {
+  const result = validateSessionInput({
+    clearAccessToken: true,
+    clearRefreshToken: true,
+    clearCookie: true
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.value, {
+    clearAccessToken: true,
+    clearRefreshToken: true,
+    clearCookie: true
+  });
+
+  assert.equal(validateSessionInput({ clearAccessToken: "yes" }).ok, false);
+  assert.equal(validateSessionInput({ clearCookie: 1 }).ok, false);
+});

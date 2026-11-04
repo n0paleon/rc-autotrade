@@ -373,6 +373,17 @@ textarea:focus-visible {
   border-color: var(--red);
 }
 
+.btn-pause {
+  color: var(--amber);
+  border-color: rgba(255, 200, 87, 0.5);
+  background: transparent;
+}
+
+.btn-pause:hover {
+  background: var(--amber-soft);
+  border-color: var(--amber);
+}
+
 .btn-ghost {
   background: transparent;
 }
@@ -1046,6 +1057,17 @@ textarea.input {
   color: var(--lime);
   border-color: rgba(184, 255, 60, 0.5);
   background: var(--lime-soft);
+}
+
+.topbar-pause {
+  flex: none;
+  padding: 6px 8px;
+  font-size: 7px;
+}
+
+.topbar-pause .icon {
+  width: 10px;
+  height: 10px;
 }
 
 .topbar-latency,
@@ -3104,6 +3126,16 @@ textarea.input {
   }
 
   .topbar-status #trading-state {
+    display: none;
+  }
+
+  .topbar-pause {
+    width: 30px;
+    height: 30px;
+    padding: 0;
+  }
+
+  .topbar-pause span {
     display: none;
   }
 

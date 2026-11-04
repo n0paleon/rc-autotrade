@@ -88,6 +88,50 @@ test("store persists session, targets and history", () => {
   }
 });
 
+test("store clears session credentials on explicit flags", () => {
+  const dir = tempDir();
+  try {
+    const store = new Store({ dataDir: dir, logger: null }).load();
+    store.setSession({
+      accessToken: "access-token-123456",
+      refreshToken: "refresh-token-123456",
+      cookie: "cf=1"
+    });
+
+    const cleared = store.setSession({ clearAccessToken: true, clearRefreshToken: true, clearCookie: true });
+    assert.equal(cleared.hasAccessToken, false);
+    assert.equal(cleared.hasRefreshToken, false);
+    assert.equal(cleared.hasCookie, false);
+
+    store.flush();
+    const reloaded = new Store({ dataDir: dir, logger: null }).load();
+    assert.equal(reloaded.state.session.accessToken, "");
+    assert.equal(reloaded.state.session.refreshToken, "");
+    assert.equal(reloaded.state.session.cookie, "");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("store can clear a single credential while keeping the others", () => {
+  const dir = tempDir();
+  try {
+    const store = new Store({ dataDir: dir, logger: null }).load();
+    store.setSession({
+      accessToken: "access-token-123456",
+      refreshToken: "refresh-token-123456",
+      cookie: "cf=1"
+    });
+
+    const cleared = store.setSession({ clearCookie: true });
+    assert.equal(cleared.hasAccessToken, true);
+    assert.equal(cleared.hasRefreshToken, true);
+    assert.equal(cleared.hasCookie, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("migrates legacy state.json history into a separate loot-log.json", () => {
   const dir = tempDir();
   try {

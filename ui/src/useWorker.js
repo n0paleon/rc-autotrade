@@ -382,6 +382,14 @@ export function useWorker({ notify }) {
     [request]
   );
 
+  const clearSession = useCallback(async () => {
+    const result = await request("/api/session", { method: "DELETE" });
+    setSnapshot((previous) =>
+      previous ? { ...previous, session: result.session } : previous
+    );
+    return result;
+  }, [request]);
+
   const rotateAccessKey = useCallback(
     async () => {
       const result = await request("/api/auth/rotate", { method: "POST" });
@@ -421,7 +429,15 @@ export function useWorker({ notify }) {
   }, [request]);
 
   const control = useCallback(
-    async (action) => request("/api/control", { method: "POST", body: { action } }),
+    async (action) => {
+      const result = await request("/api/control", { method: "POST", body: { action } });
+      if (result?.settings) {
+        setSnapshot((previous) =>
+          previous ? { ...previous, settings: result.settings } : previous
+        );
+      }
+      return result;
+    },
     [request]
   );
 
@@ -452,6 +468,7 @@ export function useWorker({ notify }) {
     saveSettings,
     refreshSession,
     saveSession,
+    clearSession,
     rotateAccessKey,
     resetStats,
     control,

@@ -24,6 +24,7 @@ export class SessionManager extends EventEmitter {
     this.lastAttemptAt = null;
     this.lastFailureAt = null;
     this.refreshing = false;
+    this.generation = 0;
   }
 
   start() {
@@ -52,16 +53,35 @@ export class SessionManager extends EventEmitter {
 
   set(patch) {
     const previous = this.getAccessToken();
+    const clearing = patch.clearAccessToken === true || patch.clearRefreshToken === true;
+    // A refresh that was already in flight must not resurrect credentials the
+    // user just removed. Bump the generation so its result is discarded.
+    if (clearing) this.generation += 1;
+
     this.store.setSession(patch);
     const next = this.getAccessToken();
     this.lastFailureAt = null;
     this.logger.info(
       "session",
-      previous && next && previous !== next ? "session token replaced" : "session settings updated"
+      clearing
+        ? "session credentials cleared"
+        : previous && next && previous !== next
+          ? "session token replaced"
+          : "session settings updated"
     );
     const reason = patch.source === "bridge" ? "bridge" : "manual";
     this.emit("updated", { reason, changed: previous !== next, status: this.status() });
     return this.status();
+  }
+
+  /** Remove the Rollercoin access token, refresh token and cookie. */
+  clear() {
+    return this.set({
+      clearAccessToken: true,
+      clearRefreshToken: true,
+      clearCookie: true,
+      source: "ui"
+    });
   }
 
   needsRefresh(now = Date.now()) {
@@ -110,11 +130,16 @@ export class SessionManager extends EventEmitter {
 
     this.lastAttemptAt = now;
     this.refreshing = true;
+    const generation = this.generation;
     this.logger.info("session", `refreshing access token (${reason})`);
 
     this.inflight = (async () => {
       try {
         const result = await this.api.refreshSession(refreshToken);
+        if (generation !== this.generation) {
+          this.logger.info("session", "discarding refresh result after session reset");
+          return false;
+        }
         if (!result.ok) {
           this.lastFailureAt = Date.now();
           this.store.markSessionError(result.error || "Token refresh failed.");
@@ -137,6 +162,10 @@ export class SessionManager extends EventEmitter {
         });
         return true;
       } catch (error) {
+        if (generation !== this.generation) {
+          this.logger.info("session", "discarding refresh failure after session reset");
+          return false;
+        }
         this.lastFailureAt = Date.now();
         this.store.markSessionError(error?.message || String(error));
         this.logger.error("session", `refresh crashed: ${error?.message || error}`);

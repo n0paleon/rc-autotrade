@@ -180,7 +180,7 @@ function BootScreen({ onLogin, busy, error }) {
   );
 }
 
-function Header({ snapshot, status, latency, now, soundOn, onSound, onLogout }) {
+function Header({ snapshot, status, latency, now, soundOn, onSound, onLogout, onTogglePause, pausing }) {
   const gateway = snapshot.gateway?.status;
   let connLabel = "LINK LOST";
   let connClass = "chip-offline";
@@ -229,6 +229,17 @@ function Header({ snapshot, status, latency, now, soundOn, onSound, onLogout }) 
         </div>
       </div>
       <div className="topbar-status">
+        <button
+          className={`btn btn-sm topbar-pause ${settings.paused ? "btn-primary" : "btn-pause"}`}
+          type="button"
+          onClick={onTogglePause}
+          disabled={pausing}
+          aria-label={settings.paused ? "Start buying" : "Pause buying"}
+          title={settings.paused ? "Resume all buying" : "Pause all buying; the market feed stays live"}
+        >
+          <Icon name={settings.paused ? "i-play" : "i-pause"} className="icon icon-xs" />
+          <span>{pausing ? "…" : settings.paused ? "START" : "PAUSE"}</span>
+        </button>
         <span id="trading-state" className={tradingClass}><span className="led" />{trading}</span>
         <span id="conn-chip" className={`chip ${connClass}`} title={snapshot.gateway?.lastError || "Control-plane link status"}>
           <span className="led" />{connLabel}
@@ -699,7 +710,7 @@ function sessionChip(session, now) {
   return { text: "LINKED", cls: "chip chip-ok" };
 }
 
-function LinkPanel({ snapshot, now, worker, notify, onEditSession, onBridge, onRotate }) {
+function LinkPanel({ snapshot, now, worker, notify, onEditSession, onBridge, onClearSession, onRotate }) {
   const session = snapshot.session || {};
   const settings = snapshot.settings || {};
   const [refreshing, setRefreshing] = useState(false);
@@ -778,12 +789,20 @@ function LinkPanel({ snapshot, now, worker, notify, onEditSession, onBridge, onR
           <button className="btn btn-sm" type="button" onClick={refresh} disabled={!session.hasRefreshToken || refreshing}>
             <Icon name="i-refresh" className="icon icon-xs" /> {refreshing ? "REFRESHING…" : "REFRESH NOW"}
           </button>
-          <button className="btn btn-primary btn-sm" type="button" onClick={onEditSession}>PASTE TOKEN</button>
+          <button className="btn btn-primary btn-sm" type="button" onClick={onEditSession}>EDIT TOKENS</button>
         </div>
         <div className="btn-row">
           <button className="btn btn-ghost btn-sm" type="button" onClick={onBridge}>TOKEN BRIDGE</button>
           <button className="btn btn-danger-ghost btn-sm" type="button" onClick={onRotate}>ROTATE KEY</button>
         </div>
+        <button
+          className="btn btn-danger-ghost btn-sm btn-block"
+          type="button"
+          onClick={onClearSession}
+          disabled={!session.hasAccessToken && !session.hasRefreshToken && !session.hasCookie}
+        >
+          <Icon name="i-trash" className="icon icon-xs" /> CLEAR SESSION
+        </button>
 
         <label className="toggle-row">
           <span>AUTO REFRESH<small>worker renews the session before expiry</small></span>
@@ -885,7 +904,7 @@ function ConfigPanel({ snapshot, worker, notify, onReset, onReconnect, baseUrl }
   );
 }
 
-function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSession, onBridge, onRotate, onReset, onReconnect, baseUrl }) {
+function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSession, onBridge, onClearSession, onRotate, onReset, onReconnect, baseUrl }) {
   const tabs = [
     { id: "feed", label: "FEED" },
     { id: "link", label: "LINK" },
@@ -916,6 +935,7 @@ function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSes
           notify={notify}
           onEditSession={onEditSession}
           onBridge={onBridge}
+          onClearSession={onClearSession}
           onRotate={onRotate}
         />
       ) : null}
@@ -956,6 +976,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
   const [modal, setModal] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
   const [soundOn, setSoundOn] = useState(sound.enabled);
+  const [pausing, setPausing] = useState(false);
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
@@ -982,6 +1003,40 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       notify("info", active ? "TARGET ARMED" : "TARGET DISARMED", config.label || shortId(config.itemId));
     } catch (error) {
       notify("error", "ARM FAILED", error.message);
+    }
+  };
+
+  const togglePause = async () => {
+    setPausing(true);
+    try {
+      const result = await worker.control("toggle");
+      const paused = Boolean(result?.settings?.paused);
+      notify(
+        paused ? "warn" : "success",
+        paused ? "BOT PAUSED" : "BOT STARTED",
+        paused ? "All buying is paused; the market feed stays live." : "The sniper is armed and hunting again."
+      );
+    } catch (error) {
+      notify("error", "CONTROL FAILED", error.message);
+    } finally {
+      setPausing(false);
+    }
+  };
+
+  const clearSession = async () => {
+    const confirmed = await askConfirm({
+      title: "CLEAR ROLLERCOIN SESSION",
+      message:
+        "Remove the stored access token, refresh token and Cloudflare cookie? The market feed disconnects until you paste a new session. If the Token Bridge is running, stop it first or it will re-link within 30 seconds.",
+      confirmLabel: "CLEAR SESSION",
+      danger: true
+    });
+    if (!confirmed) return;
+    try {
+      await worker.clearSession();
+      notify("warn", "SESSION CLEARED", "Stored Rollercoin credentials were removed.");
+    } catch (error) {
+      notify("error", "CLEAR FAILED", error.message);
     }
   };
 
@@ -1063,6 +1118,8 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
         soundOn={soundOn}
         onSound={toggleSound}
         onLogout={worker.logout}
+        onTogglePause={togglePause}
+        pausing={pausing}
       />
       <Ticker configs={snapshot.configs || []} mock={snapshot.worker?.mock} />
       <Hud snapshot={snapshot} now={now} eps={eps} />
@@ -1090,6 +1147,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           notify={notify}
           onEditSession={() => setModal({ type: "session" })}
           onBridge={() => setModal({ type: "bridge" })}
+          onClearSession={clearSession}
           onRotate={rotateKey}
           onReset={resetStats}
           onReconnect={reconnect}

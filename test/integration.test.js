@@ -199,6 +199,20 @@ test("settings, pause and history reset work", { timeout: TIMEOUT }, async () =>
   });
   assert.equal((await resumed.json()).settings.paused, false);
 
+  const toggled = await fetch(`${baseUrl}/api/control`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ action: "toggle" })
+  });
+  assert.equal((await toggled.json()).settings.paused, true);
+
+  const toggledBack = await fetch(`${baseUrl}/api/control`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ action: "toggle" })
+  });
+  assert.equal((await toggledBack.json()).settings.paused, false);
+
   const reset = await fetch(`${baseUrl}/api/history`, { method: "DELETE", headers: authHeaders() });
   assert.equal(reset.status, 200);
   assert.equal((await reset.json()).stats.filled, 0);
@@ -269,6 +283,23 @@ test("session push accepts a newer JWT and CORS is enabled", { timeout: TIMEOUT 
 
   const state = await (await fetch(`${baseUrl}/api/state`, { headers: authHeaders() })).json();
   assert.equal(state.session.source, "bridge");
+});
+
+test("session can be cleared from the control deck", { timeout: TIMEOUT }, async () => {
+  const cleared = await fetch(`${baseUrl}/api/session`, {
+    method: "DELETE",
+    headers: authHeaders()
+  });
+  assert.equal(cleared.status, 200);
+  const body = await cleared.json();
+  assert.equal(body.ok, true);
+  assert.equal(body.session.hasAccessToken, false);
+  assert.equal(body.session.hasRefreshToken, false);
+  assert.equal(body.session.hasCookie, false);
+
+  const state = await (await fetch(`${baseUrl}/api/state`, { headers: authHeaders() })).json();
+  assert.equal(state.session.hasAccessToken, false);
+  assert.equal(state.session.hasRefreshToken, false);
 });
 
 test("WebSocket accepts the subprotocol key and answers ping", { timeout: TIMEOUT }, async () => {

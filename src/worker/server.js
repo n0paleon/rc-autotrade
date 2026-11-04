@@ -488,6 +488,14 @@ export class ControlServer {
       return;
     }
 
+    if (method === "DELETE" && path === "/api/session") {
+      const status = this.session.clear();
+      this.keepalive?.wake("session cleared");
+      this.logger.info("session", "Rollercoin session cleared from the control deck");
+      json(res, 200, { ok: true, session: status });
+      return;
+    }
+
     if (method === "POST" && path === "/api/session") {
       const body = await readJson(req);
       const result = validateSessionInput(body);
@@ -700,10 +708,14 @@ export class ControlServer {
 
     if (method === "POST" && path === "/api/control") {
       const body = await readJson(req);
-      if (body.action === "pause" || body.action === "resume") {
-        this.store.patchSettings({ paused: body.action === "pause" });
-        this.logger.info("control", body.action === "pause" ? "trading paused" : "trading resumed");
-        if (body.action === "resume") this.keepalive?.wake("trading resumed");
+      if (body.action === "pause" || body.action === "resume" || body.action === "toggle") {
+        const paused =
+          body.action === "toggle"
+            ? !this.store.state.settings.paused
+            : body.action === "pause";
+        this.store.patchSettings({ paused });
+        this.logger.info("control", paused ? "trading paused" : "trading resumed");
+        if (!paused) this.keepalive?.wake("trading resumed");
         this.broadcast("settings", this.store.state.settings);
         json(res, 200, { ok: true, settings: this.store.state.settings });
         return;
@@ -713,7 +725,7 @@ export class ControlServer {
         json(res, 200, { ok: true });
         return;
       }
-      json(res, 400, { ok: false, error: "action must be pause, resume or reconnect." });
+      json(res, 400, { ok: false, error: "action must be pause, resume, toggle or reconnect." });
       return;
     }
 

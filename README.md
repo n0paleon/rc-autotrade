@@ -28,11 +28,14 @@ untuk login, mengatur target, memantau market, dan melihat loot.
 - **React + Vite data plane** — dashboard dibangun dengan React 19 + Recharts; worker menyajikan
   hasil build `dist/` sehingga tetap same-origin dan tanpa CDN runtime.
 - **Session manager** — menyimpan access/refresh token, memperbarui token sebelum kedaluwarsa,
-  dan mencoba ulang sekali saat request kena `401`.
+  mencoba ulang sekali saat request kena `401`, dan bisa diganti atau **dihapus langsung dari UI**
+  (termasuk cookie Cloudflare) tanpa menyentuh `data/state.json` secara manual.
 - **Token bridge** — opsional: console snippet sekali pakai atau **userscript Tampermonkey** yang
   dipasang sekali dan otomatis menyinkronkan token setiap 30 detik, bahkan saat tab background.
 - **Safety rails** — cooldown antar order, batas order per menit, backoff saat purchase ditolak,
-  dry-run, pause, partial-order minimum, validasi ketat, dan konfirmasi untuk aksi destruktif.
+  dry-run, partial-order minimum, validasi ketat, dan konfirmasi untuk aksi destruktif. Tombol
+  **PAUSE / START** tunggal di header menghentikan atau menjalankan kembali seluruh proses buying;
+  market feed tetap hidup agar harga langsung segar saat di-resume.
 - **Live data plane** — HUD, target cards + chart, market wire, terminal event, loot log, health
   token, runtime config, sound effect, dan tampilan mobile.
 - **Mock mode** — simulator market bawaan untuk mencoba seluruh alur tanpa akun Rollercoin.
@@ -393,8 +396,9 @@ Authorization: Bearer <access-key>
 | `PATCH` | `/api/configs/:itemId` | Update parsial / arm-disarm |
 | `DELETE` | `/api/configs/:itemId` | Hapus target |
 | `PATCH` | `/api/settings` | `delayPerOrder`, `maxOrdersPerMinute`, `dryRun`, `paused`, `autoRefresh` |
-| `POST` | `/api/control` | `{ "action": "pause" \| "resume" \| "reconnect" }` |
-| `POST` | `/api/session` | Simpan access/refresh token dan/atau cookie |
+| `POST` | `/api/control` | `{ "action": "pause" \| "resume" \| "toggle" \| "reconnect" }` |
+| `POST` | `/api/session` | Simpan access/refresh token dan/atau cookie; `clearAccessToken`/`clearRefreshToken`/`clearCookie` untuk menghapus |
+| `DELETE` | `/api/session` | Hapus access token, refresh token, dan cookie sekaligus |
 | `POST` | `/api/session/push` | Endpoint bridge (CORS); balas token terbaru |
 | `POST` | `/api/session/refresh` | Refresh paksa |
 | `POST` | `/api/auth/rotate` | Rotasi access key (409 bila dipin env) |

@@ -305,10 +305,12 @@ export class Store {
 
   setSession(patch, { source = "ui" } = {}) {
     const session = this.state.session;
+    if (patch.clearAccessToken === true) session.accessToken = "";
+    if (patch.clearRefreshToken === true) session.refreshToken = "";
+    if (patch.clearCookie === true) session.cookie = "";
     if (typeof patch.accessToken === "string") session.accessToken = patch.accessToken;
     if (typeof patch.refreshToken === "string") session.refreshToken = patch.refreshToken;
     if (typeof patch.cookie === "string") session.cookie = patch.cookie;
-    if (patch.clearCookie === true) session.cookie = "";
     session.source = patch.source || source;
     session.updatedAt = Date.now();
     session.lastError = null;

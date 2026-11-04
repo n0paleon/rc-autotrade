@@ -249,6 +249,12 @@ export function validateSessionInput(input, { allowEmptyRefresh = true } = {}) {
     }
   }
 
+  for (const key of ["clearAccessToken", "clearRefreshToken", "clearCookie"]) {
+    if (source[key] !== undefined && typeof source[key] !== "boolean") {
+      errors[key] = `${key} must be true or false.`;
+    }
+  }
+
   if (Object.keys(errors).length > 0) {
     return { ok: false, errors, value: null };
   }
@@ -266,8 +272,8 @@ export function validateSessionInput(input, { allowEmptyRefresh = true } = {}) {
   if (typeof source.source === "string") {
     value.source = source.source.slice(0, 40);
   }
-  if (source.clearCookie === true) {
-    value.clearCookie = true;
+  for (const key of ["clearAccessToken", "clearRefreshToken", "clearCookie"]) {
+    if (source[key] === true) value[key] = true;
   }
 
   return { ok: true, errors: {}, value };

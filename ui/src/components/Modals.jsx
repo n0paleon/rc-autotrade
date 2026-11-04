@@ -334,6 +334,7 @@ export function SessionModal({ session, onClose, worker, notify }) {
   const [accessToken, setAccessToken] = useState("");
   const [refreshToken, setRefreshToken] = useState("");
   const [cookie, setCookie] = useState("");
+  const [clearCookie, setClearCookie] = useState(false);
   const [errors, setErrors] = useState({});
   const [busy, setBusy] = useState(false);
 
@@ -343,7 +344,8 @@ export function SessionModal({ session, onClose, worker, notify }) {
     if (accessToken.trim()) body.accessToken = accessToken.trim();
     if (refreshToken.trim()) body.refreshToken = refreshToken.trim();
     if (cookie.trim()) body.cookie = cookie.trim();
-    if (!session.hasAccessToken && !body.accessToken) {
+    if (clearCookie) body.clearCookie = true;
+    if (!session.hasAccessToken && !body.accessToken && !clearCookie) {
       setErrors({ accessToken: "Paste an access token first." });
       return;
     }
@@ -423,6 +425,14 @@ export function SessionModal({ session, onClose, worker, notify }) {
           <small>Only needed if Rollercoin rejects API calls with a Cloudflare challenge.</small>
           <FieldError message={errors.cookie} />
         </label>
+        {session.hasCookie ? (
+          <ToggleRow
+            checked={clearCookie}
+            onChange={setClearCookie}
+            title="CLEAR STORED COOKIE"
+            hint="Remove the saved Cloudflare cookie without touching the tokens."
+          />
+        ) : null}
         <div className="modal-actions">
           <button className="btn" type="button" onClick={onClose}>
             CANCEL
