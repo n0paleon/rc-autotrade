@@ -1785,12 +1785,24 @@ function SystemMeter({ label, value, detail, tone }) {
   );
 }
 
+function StatTile({ label, value, tone, meta }) {
+  return (
+    <span className="flex min-w-0 flex-col gap-0.5 border border-line/70 bg-night-900/60 px-1.5 py-1 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+      <span className="truncate leading-tight">{label}</span>
+      <b className={`whitespace-nowrap text-[12px] font-semibold leading-tight tracking-normal tabular-nums ${tone || "text-ink-dim"}`}>
+        {value}
+      </b>
+      {meta ? <span className="whitespace-nowrap text-[11px] leading-tight tracking-[0.04em]">{meta}</span> : null}
+    </span>
+  );
+}
+
 function HistoryStrip({ label, bars, format, tone }) {
   return (
-    <div className="border-2 border-line bg-night-950/60 p-3">
+    <div className="@container border-2 border-line bg-night-950/60 p-3">
       <div className="flex items-center justify-between gap-2">
-        <span className="label">{label}</span>
-        <span className="font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+        <span className="label min-w-0 whitespace-nowrap">{label}</span>
+        <span className="hidden shrink-0 whitespace-nowrap font-mono text-[12px] uppercase tracking-[0.08em] text-faint @[20rem]:inline">
           {bars.length} samples
         </span>
       </div>
@@ -1877,7 +1889,7 @@ function SystemPanel({ snapshot, worker }) {
   const loadPerCore = Number.isFinite(Number(cpu.load1)) && cpu.cores ? cpu.load1 / cpu.cores : null;
 
   return (
-    <section className="panel" data-accent="lime">
+    <section className="panel @container" data-accent="lime">
       <div className="panel-head">
         <h2 className="panel-title"><Icon name="i-bolt" className="h-4 w-4 text-signal" /> Worker health</h2>
         <span className={`chip ${healthChip}`} title={health.reasons?.join(" · ") || "All health checks passed"}>
@@ -1900,7 +1912,7 @@ function SystemPanel({ snapshot, worker }) {
           </p>
         ) : null}
 
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-2 @2xl:grid-cols-3">
           <SystemMeter
             label="Worker CPU"
             value={cpu.processPercent}
@@ -1921,7 +1933,7 @@ function SystemPanel({ snapshot, worker }) {
           />
         </div>
 
-        <div className="grid grid-cols-3 gap-1.5">
+        <div className="grid grid-cols-3 gap-1.5 @xl:grid-cols-6">
           {[
             ["RSS", formatBytes(memory.rss), "text-ink-dim"],
             ["External", formatBytes(memory.external), "text-ink-dim"],
@@ -1929,14 +1941,8 @@ function SystemPanel({ snapshot, worker }) {
             ["Load 1m", Number.isFinite(Number(cpu.load1)) ? Number(cpu.load1).toFixed(2) : "—", thresholdClass(loadPerCore ? loadPerCore * 100 : null, 70, 95)],
             ["Loop p95", formatMs(lag.p95), thresholdClass(lag.p95, 100, 250)],
             ["Handles", proc.activeHandles == null ? "—" : formatInt(proc.activeHandles), "text-ink-dim"]
-          ].map(([key, value, tone]) => (
-            <span
-              key={key}
-              className="flex flex-col gap-0.5 border border-line/70 bg-night-900/60 px-1.5 py-1 font-mono text-[12px] uppercase tracking-[0.08em] text-faint"
-            >
-              {key}
-              <b className={`text-[12px] font-semibold tabular-nums ${tone || "text-ink-dim"}`}>{value}</b>
-            </span>
+          ].map(([label, value, tone]) => (
+            <StatTile key={label} label={label} value={value} tone={tone} />
           ))}
         </div>
 
@@ -1954,32 +1960,27 @@ function SystemPanel({ snapshot, worker }) {
               {gc?.observed ? "observing" : gc?.supported === false ? "unsupported" : "starting"}
             </span>
           </div>
-          <div className="mt-2 grid grid-cols-4 gap-1.5">
+          <div className="mt-2 grid grid-cols-2 gap-1.5 @xs:grid-cols-4">
             {[
               ["GCs", formatInt(gcWindow.count || 0), "text-ink-dim"],
               ["Paused", formatMs(gcWindow.pausedMs || 0), "text-ink-dim"],
               ["Max", formatMs(gcWindow.maxMs || 0), thresholdClass(gcWindow.maxMs, gcWarn, gcCritical)],
               [
                 "Last",
-                gcTotals.last ? `${formatMs(gcTotals.last.duration)} · ${relTime(gcTotals.last.at)}` : "—",
-                thresholdClass(gcTotals.last?.duration, gcWarn, gcCritical)
+                gcTotals.last ? formatMs(gcTotals.last.duration) : "—",
+                thresholdClass(gcTotals.last?.duration, gcWarn, gcCritical),
+                gcTotals.last ? relTime(gcTotals.last.at) : null
               ]
-            ].map(([key, value, tone]) => (
-              <span
-                key={key}
-                className="flex flex-col gap-0.5 border border-line/70 bg-night-900/60 px-1.5 py-1 font-mono text-[12px] uppercase tracking-[0.08em] text-faint"
-              >
-                {key}
-                <b className={`text-[12px] font-semibold tabular-nums ${tone || "text-ink-dim"}`}>{value}</b>
-              </span>
+            ].map(([label, value, tone, meta]) => (
+              <StatTile key={label} label={label} value={value} tone={tone} meta={meta} />
             ))}
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-1">
-            <span className="border border-line/70 bg-night-900/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+            <span className="whitespace-nowrap border border-line/70 bg-night-900/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
               {formatInt(gcWindow.minor || 0)} minor
             </span>
             <span
-              className={`border border-line/70 bg-night-900/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] ${
+              className={`whitespace-nowrap border border-line/70 bg-night-900/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] ${
                 gcWindow.major > 0 ? "text-warn" : "text-faint"
               }`}
             >
@@ -1988,7 +1989,7 @@ function SystemPanel({ snapshot, worker }) {
             {(gc?.recent || []).slice(0, 3).map((event, index) => (
               <span
                 key={`${event.at}-${index}`}
-                className={`border border-line/70 bg-night-900/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] ${
+                className={`whitespace-nowrap border border-line/70 bg-night-900/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] ${
                   event.kind === "major" ? "text-warn" : "text-faint"
                 }`}
                 title={`${event.kind} GC · ${event.duration}ms · ${formatTime(event.at)}`}
@@ -2013,7 +2014,7 @@ function SystemPanel({ snapshot, worker }) {
               {db?.instrumented ? "instrumented" : "not instrumented"}
             </span>
           </div>
-          <div className="mt-2 grid grid-cols-4 gap-1.5">
+          <div className="mt-2 grid grid-cols-2 gap-1.5 @xs:grid-cols-4">
             {[
               ["DB", formatBytes(dbFiles.db), "text-ink-dim"],
               ["WAL", formatBytes(dbFiles.wal), thresholdClass(dbFiles.wal, db?.thresholds?.walWarnBytes, db?.thresholds?.walCriticalBytes)],
@@ -2027,14 +2028,8 @@ function SystemPanel({ snapshot, worker }) {
                 formatInt((dbWindow.errors || 0) + (dbWindow.busy || 0)),
                 dbWindow.errors + dbWindow.busy > 0 ? "text-danger" : "text-ink-dim"
               ]
-            ].map(([key, value, tone]) => (
-              <span
-                key={key}
-                className="flex flex-col gap-0.5 border border-line/70 bg-night-900/60 px-1.5 py-1 font-mono text-[12px] uppercase tracking-[0.08em] text-faint"
-              >
-                {key}
-                <b className={`text-[12px] font-semibold tabular-nums ${tone || "text-ink-dim"}`}>{value}</b>
-              </span>
+            ].map(([label, value, tone]) => (
+              <StatTile key={label} label={label} value={value} tone={tone} />
             ))}
           </div>
           {db?.recentSlow?.length ? (
@@ -2058,27 +2053,27 @@ function SystemPanel({ snapshot, worker }) {
           )}
         </div>
 
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-2 @xs:grid-cols-2">
           <HistoryStrip
-            label="CPU window"
+            label="CPU"
             bars={sparkBars(history.map((point) => point.cpu ?? 0))}
             format={(value) => formatPercent(value, 1)}
             tone={(value) => thresholdClass(value, 80, 100)}
           />
           <HistoryStrip
-            label="RSS window"
+            label="RSS"
             bars={sparkBars(history.map((point) => point.rss ?? 0))}
             format={(value) => formatBytes(value * 1024 * 1024)}
             tone={() => "text-info"}
           />
           <HistoryStrip
-            label="GC pause window"
+            label="GC pause"
             bars={sparkBars(history.map((point) => point.gc ?? 0))}
             format={(value) => formatMs(value)}
             tone={(value) => thresholdClass(value, gcWarn, gcCritical)}
           />
           <HistoryStrip
-            label="SQL window"
+            label="SQL"
             bars={sparkBars((db?.history || []).map((point) => point.qps ?? 0))}
             format={(value) => `${Number(value).toFixed(1)}/s`}
             tone={() => "text-violet"}
