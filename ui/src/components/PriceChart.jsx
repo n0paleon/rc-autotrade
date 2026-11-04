@@ -51,7 +51,7 @@ export default function PriceChart({ history, targetPrice }) {
   const change =
     last && first && first.p > 0 ? ((last.p - first.p) / first.p) * 100 : null;
   const hot = Number.isFinite(last?.p) && Number.isFinite(targetPrice) && last.p <= targetPrice;
-  const color = hot ? "#cde736" : "#57d1e3";
+  const color = hot ? "#78f07a" : "#45e0ff";
 
   const values = data.map((point) => point.p);
   if (Number.isFinite(targetPrice)) values.push(targetPrice);
@@ -66,9 +66,9 @@ export default function PriceChart({ history, targetPrice }) {
   const domain = [min - pad, max + pad];
 
   return (
-    <div className="rounded-lg border border-line bg-carbon-950/40 p-2.5">
+    <div className="border-2 border-line bg-night-950/60 p-2.5">
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-        <div className="flex items-baseline gap-2 whitespace-nowrap font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+        <div className="flex items-baseline gap-2 whitespace-nowrap font-mono text-[10px] uppercase tracking-[0.06em] text-faint">
           Price history
           {change !== null && (
             <span className={`tabular-nums ${change >= 0 ? "text-signal" : "text-danger"}`}>
@@ -78,7 +78,7 @@ export default function PriceChart({ history, targetPrice }) {
           )}
         </div>
         <div
-          className="ml-auto -my-0.5 flex shrink-0 items-center gap-0.5 rounded border border-line bg-carbon-900 p-0.5"
+          className="ml-auto -my-0.5 flex shrink-0 items-center gap-0.5 border-2 border-line bg-night-950 p-0.5"
           role="tablist"
           aria-label="Chart timeframe"
         >
@@ -88,8 +88,8 @@ export default function PriceChart({ history, targetPrice }) {
               type="button"
               role="tab"
               aria-selected={timeframe === key}
-              className={`inline-flex h-6 min-w-6 items-center justify-center rounded px-1.5 font-mono text-[8.5px] uppercase tracking-[0.08em] transition-colors ${
-                timeframe === key ? "bg-carbon-800 text-signal" : "text-faint hover:text-ink-dim"
+              className={`inline-flex h-6 min-w-6 items-center justify-center px-1.5 font-mono text-[9.5px] uppercase tracking-[0.06em] transition-colors ${
+                timeframe === key ? "bg-gold font-bold text-[#1a1000]" : "text-faint hover:bg-night-850 hover:text-ink-dim"
               }`}
               onClick={() => setTimeframe(key)}
             >
@@ -105,7 +105,7 @@ export default function PriceChart({ history, targetPrice }) {
         aria-label={`Price history over ${TIMEFRAMES[timeframe].label}${change !== null ? `, ${change >= 0 ? "up" : "down"} ${Math.abs(change).toFixed(1)} percent` : ""}`}
       >
         {data.length < 2 ? (
-          <div className="absolute inset-0 z-10 flex items-center justify-center rounded bg-carbon-950/40 font-mono text-[9px] uppercase tracking-[0.12em] text-faint">
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-night-950/60 font-mono text-[10px] uppercase tracking-[0.06em] text-faint">
             {data.length === 0 ? "Collecting data" : "1 tick received"}
           </div>
         ) : null}
@@ -125,7 +125,7 @@ export default function PriceChart({ history, targetPrice }) {
               tickFormatter={(value) =>
                 timeframe === "1h" ? `${String(new Date(value).getHours()).padStart(2, "0")}:00` : formatTime(value).slice(0, 5)
               }
-              tick={{ fill: "#7b827c", fontSize: 9, fontFamily: "JetBrains Mono, monospace" }}
+              tick={{ fill: "#8576c4", fontSize: 9, fontFamily: "Arcana, sans-serif", letterSpacing: "0.06em" }}
               tickLine={false}
               axisLine={false}
               minTickGap={26}
@@ -134,24 +134,24 @@ export default function PriceChart({ history, targetPrice }) {
             <YAxis hide domain={domain} />
             <Tooltip
               content={<ChartTooltip />}
-              cursor={{ stroke: "rgba(147, 154, 148, 0.35)", strokeDasharray: "2 3" }}
+              cursor={{ stroke: "rgba(179, 136, 255, 0.45)", strokeDasharray: "2 3" }}
               wrapperStyle={{ outline: "none" }}
             />
             <ReferenceLine
               y={targetPrice}
-              stroke="#fac053"
+              stroke="#ffd23f"
               strokeDasharray="3 4"
-              strokeOpacity={0.65}
+              strokeOpacity={0.75}
               ifOverflow="extendDomain"
             />
             <Area
-              type="monotone"
+              type="stepAfter"
               dataKey="p"
               stroke={color}
               strokeWidth={1.75}
               fill={`url(#area-${gradientId})`}
               dot={false}
-              activeDot={{ r: 2.5, fill: color, stroke: "#070c08", strokeWidth: 1 }}
+              activeDot={{ r: 2.5, fill: color, stroke: "#080617", strokeWidth: 2 }}
               isAnimationActive={false}
             />
           </AreaChart>

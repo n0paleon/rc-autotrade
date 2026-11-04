@@ -68,25 +68,26 @@ export function ModalShell({
   return (
     <div className="fixed inset-0 z-[70] flex items-end justify-center pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] sm:items-center sm:p-6">
       <div
-        className="absolute inset-0 bg-carbon-950/80 backdrop-blur-sm"
+        className="absolute inset-0 bg-night-950/85 backdrop-blur-sm"
         onMouseDown={() => closeRef.current()}
       />
       <div
         ref={panelRef}
-        className={`panel modal-panel relative z-10 flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-2xl sm:rounded-xl ${
+        className={`panel modal-panel relative z-10 flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-none sm:rounded-none ${
           wide ? "sm:max-w-3xl" : small ? "sm:max-w-md" : "sm:max-w-lg"
         }`}
         role={role}
         aria-modal="true"
         aria-labelledby={titleId}
       >
-        <div className="flex items-center justify-between gap-4 border-b border-line px-4 py-3 sm:px-5">
+        <div className="flex items-center justify-between gap-4 border-b-2 border-line bg-night-850/70 px-4 py-3 sm:px-5">
           <h2
             id={titleId}
-            className={`font-mono text-[11px] font-semibold uppercase tracking-[0.18em] ${
-              titleColor === "danger" ? "text-danger" : "text-signal"
+            className={`flex items-center gap-2 font-mono text-[11px] font-bold uppercase tracking-[0.06em] ${
+              titleColor === "danger" ? "text-danger" : "text-gold"
             }`}
           >
+            <span className={`h-2 w-2 ${titleColor === "danger" ? "bg-danger" : "bg-gold"}`} aria-hidden="true" />
             {title}
           </h2>
           <button className="icon-btn -mr-1.5 h-10 w-10 sm:h-8 sm:w-8" type="button" onClick={onClose} aria-label="Close">
@@ -95,7 +96,7 @@ export function ModalShell({
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
         {footer ? (
-          <div className="shrink-0 border-t border-line bg-carbon-900/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:px-5">
+          <div className="shrink-0 border-t-2 border-line bg-night-900/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:px-5">
             {footer}
           </div>
         ) : null}

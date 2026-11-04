@@ -1,0 +1,9 @@
+Arcana by vilogsign (https://www.dafont.com/arcana.font)
+Arcana Pro DEMO.ttf — free for PERSONAL USE ONLY.
+
+This project bundles the demo cut for personal/local use. For commercial use,
+buy the full license from the author:
+https://www.creativefabrica.com/product/arcana/ref/237966
+
+If you own the full Arcana family, replace public/fonts/Arcana.ttf and keep the
+same family name in ui/src/styles.css.
