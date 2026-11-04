@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ItemInfoService } from "../src/worker/item-info.js";
+import { ItemInfoService, normalizeItemInfo } from "../src/worker/item-info.js";
 
 function makeStore(label = "") {
   const config = {
@@ -143,4 +143,48 @@ test("does not throw when item-info fails", async () => {
   const result = await service.enrich(store.config.itemId, store.config.itemType);
   assert.equal(result.ok, false);
   assert.equal(store.config.label, "Old label");
+});
+
+test("derives miner rarity from data.level (0-5)", () => {
+  const base = { name: { en: "Pepele" }, itemType: "miner" };
+
+  assert.deepEqual(
+    normalizeItemInfo({ ...base, level: 5 }, "abc", "miner"),
+    {
+      itemId: "abc",
+      itemName: "Pepele",
+      rarity: "Unreal",
+      rarityColor: "ff3b6b",
+      itemType: "miner",
+      label: "Unreal Pepele"
+    }
+  );
+
+  const expectations = {
+    0: null, // basic: no label prefix
+    1: "Uncommon",
+    2: "Rare",
+    3: "Epic",
+    4: "Legendary",
+    5: "Unreal"
+  };
+  for (const [level, rarity] of Object.entries(expectations)) {
+    const value = normalizeItemInfo({ ...base, level: Number(level) }, "abc", "miner");
+    assert.equal(value.rarity, rarity, `level ${level}`);
+    assert.equal(value.label, rarity ? `${rarity} Pepele` : "Pepele", `level ${level}`);
+  }
+
+  // Out-of-range levels stay plain.
+  assert.equal(normalizeItemInfo({ ...base, level: 6 }, "abc", "miner").label, "Pepele");
+  assert.equal(normalizeItemInfo({ ...base }, "abc", "miner").label, "Pepele");
+
+  // rarityGroup still wins when present (miner level only fills the gap).
+  assert.equal(
+    normalizeItemInfo(
+      { ...base, level: 1, rarityGroup: { title: { en: "Rare" }, baseHexColor: "2196f3" } },
+      "abc",
+      "miner"
+    ).label,
+    "Rare Pepele"
+  );
 });

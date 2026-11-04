@@ -4,6 +4,18 @@ const DEFAULT_TTL_MS = 10 * 60 * 1000;
 const FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 const ITEM_TYPE_CANDIDATES = ["mutation_component", "miner", "rack", "battery"];
 
+// Miner payloads carry no rarityGroup; rarity is encoded by data.level instead.
+const MINER_LEVEL_RARITIES = ["", "Uncommon", "Rare", "Epic", "Legendary", "Unreal"];
+
+// Color accent per miner rarity (same vibe as Rollercoin's title colors).
+const MINER_LEVEL_COLORS = {
+  Uncommon: "2bd600",
+  Rare: "2196f3",
+  Epic: "a52bff",
+  Legendary: "ffb800",
+  Unreal: "ff3b6b"
+};
+
 function isTypeMiss(result) {
   const message = String(result?.error || "").toLowerCase();
   return (
@@ -28,14 +40,27 @@ export function normalizeItemInfo(data, itemId, fallbackType) {
       : typeof data?.name === "string"
         ? data.name
         : "";
-  const rawRarity =
+  const itemType = String(data?.itemType || fallbackType || "mutation_component").toLowerCase();
+  let rawRarity =
     typeof data?.rarityGroup?.title?.en === "string" ? data.rarityGroup.title.en : "";
+  let rawColor = String(data?.rarityGroup?.baseHexColor ?? "").replace(/^#/, "");
+
+  // Fallback: derive rarity from level for miners (no rarityGroup).
+  if (!rawRarity && itemType === "miner") {
+    const level = Number(data?.level);
+    if (Number.isInteger(level) && level >= 0 && level < MINER_LEVEL_RARITIES.length) {
+      const derived = MINER_LEVEL_RARITIES[level];
+      if (derived) {
+        rawRarity = derived;
+        if (!/^[0-9a-fA-F]{6}$/.test(rawColor)) rawColor = MINER_LEVEL_COLORS[derived] || "";
+      }
+    }
+  }
+
   const name = clean(rawName);
   const rarity = clean(rawRarity);
   const label = [rarity, name].filter(Boolean).join(" ").slice(0, 48) || `ITEM ${shortId(itemId)}`;
-  const rawColor = String(data?.rarityGroup?.baseHexColor ?? "").replace(/^#/, "");
   const rarityColor = /^[0-9a-fA-F]{6}$/.test(rawColor) ? rawColor.toLowerCase() : null;
-  const itemType = String(data?.itemType || fallbackType || "mutation_component").toLowerCase();
 
   return {
     itemId: String(itemId),
