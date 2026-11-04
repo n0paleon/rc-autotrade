@@ -36,6 +36,31 @@ export function shortId(value) {
   return value ? `${String(value).slice(0, 6)}…${String(value).slice(-4)}` : "—";
 }
 
+export const ITEM_TYPE_LABELS = Object.freeze({
+  miner: "miners",
+  mutation_component: "parts",
+  battery: "batteries",
+  rack: "racks",
+  utility_item: "other"
+});
+
+export const ITEM_TYPE_ORDER = Object.freeze(Object.keys(ITEM_TYPE_LABELS));
+
+export function itemTypeOf(config) {
+  return String(config?.itemType || config?.runtime?.itemType || "").toLowerCase();
+}
+
+export function itemTypeLabel(itemType) {
+  const key = String(itemType || "").trim().toLowerCase();
+  if (!key) return ITEM_TYPE_LABELS.utility_item;
+  return ITEM_TYPE_LABELS[key] || key.replace(/_/g, " ");
+}
+
+export function marketplaceUrl(itemType, itemId) {
+  const type = String(itemType || "mutation_component").toLowerCase();
+  return `https://rollercoin.com/marketplace/buy/${encodeURIComponent(type)}/${encodeURIComponent(itemId)}`;
+}
+
 export function formatTime(ts) {
   const date = new Date(ts);
   if (Number.isNaN(date.getTime())) return "--:--:--";

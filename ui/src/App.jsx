@@ -21,7 +21,11 @@ import {
   formatTime,
   formatUptime,
   isRecent,
+  itemTypeLabel,
+  itemTypeOf,
+  ITEM_TYPE_ORDER,
   lastText,
+  marketplaceUrl,
   relTime,
   runtimeHot,
   shortId,
@@ -366,6 +370,7 @@ function TargetCard({ config, onEdit, onDelete, onToggle, notify }) {
   const state = cardState(config);
   const stats = successStats(config);
   const label = config.label || runtime.label || `ITEM ${shortId(config.itemId)}`;
+  const itemType = itemTypeOf(config);
   const hot = runtimeHot(config);
   const rate = stats.rate;
   const rangeMin = Number.isFinite(runtime.allowedPriceMin) ? trimPrice(runtime.allowedPriceMin) : null;
@@ -389,19 +394,34 @@ function TargetCard({ config, onEdit, onDelete, onToggle, notify }) {
       <div className="card-top">
         <canvas ref={canvasRef} className="avatar" width="8" height="8" aria-hidden="true" />
         <div className="card-ident">
-          <h3 className="card-name">{label}</h3>
-          <button
-            className="id-copy"
-            type="button"
-            title="Copy item ID"
-            onClick={async () => {
-              const ok = await copyText(config.itemId);
-              notify(ok ? "info" : "error", ok ? "ITEM ID COPIED" : "COPY FAILED", config.itemId);
-            }}
-          >
-            <code>{shortId(config.itemId)}</code>
-            <Icon name="i-copy" />
-          </button>
+          <div className="card-title">
+            <h3 className="card-name">{label}</h3>
+            <span className="type-badge" title="Marketplace item type">{itemTypeLabel(itemType)}</span>
+          </div>
+          <div className="id-row">
+            <button
+              className="id-copy"
+              type="button"
+              title="Copy item ID"
+              onClick={async () => {
+                const ok = await copyText(config.itemId);
+                notify(ok ? "info" : "error", ok ? "ITEM ID COPIED" : "COPY FAILED", config.itemId);
+              }}
+            >
+              <code>{shortId(config.itemId)}</code>
+              <Icon name="i-copy" />
+            </button>
+            <a
+              className="id-link"
+              href={marketplaceUrl(itemType, config.itemId)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="Open on Rollercoin marketplace"
+              aria-label={`Open ${label} on the Rollercoin marketplace`}
+            >
+              <Icon name="i-external" />
+            </a>
+          </div>
         </div>
         <div className="card-controls">
           <span className="state-chip" data-state={state}>{stateLabel(state)}</span>
@@ -504,15 +524,21 @@ function TargetCard({ config, onEdit, onDelete, onToggle, notify }) {
   );
 }
 
-function TargetsPanel({ configs, search, onSearch, onAdd, onEdit, onDelete, onToggle, notify }) {
+function TargetsPanel({ configs, search, typeFilter, onSearch, onTypeFilter, onAdd, onEdit, onDelete, onToggle, notify }) {
   const query = search.trim().toLowerCase();
-  const filtered = query
-    ? configs.filter(
-        (config) =>
-          (config.label || "").toLowerCase().includes(query) ||
-          config.itemId.toLowerCase().includes(query)
-      )
-    : configs;
+  const filtered = configs.filter((config) => {
+    if (typeFilter !== "all" && itemTypeOf(config) !== typeFilter) return false;
+    if (!query) return true;
+    return (
+      (config.label || "").toLowerCase().includes(query) ||
+      config.itemId.toLowerCase().includes(query)
+    );
+  });
+  const counts = configs.reduce((tally, config) => {
+    const type = itemTypeOf(config);
+    tally[type] = (tally[type] || 0) + 1;
+    return tally;
+  }, {});
 
   return (
     <section className="panel targets-panel">
@@ -535,6 +561,30 @@ function TargetsPanel({ configs, search, onSearch, onAdd, onEdit, onDelete, onTo
         </div>
       </div>
 
+      {configs.length > 0 ? (
+        <div className="type-filter" role="group" aria-label="Filter targets by item type">
+          <button
+            className={`type-chip${typeFilter === "all" ? " is-active" : ""}`}
+            type="button"
+            aria-pressed={typeFilter === "all"}
+            onClick={() => onTypeFilter("all")}
+          >
+            all <span className="type-chip-count">{configs.length}</span>
+          </button>
+          {ITEM_TYPE_ORDER.map((type) => (
+            <button
+              key={type}
+              className={`type-chip${typeFilter === type ? " is-active" : ""}`}
+              type="button"
+              aria-pressed={typeFilter === type}
+              onClick={() => onTypeFilter(typeFilter === type ? "all" : type)}
+            >
+              {itemTypeLabel(type)} <span className="type-chip-count">{counts[type] || 0}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
       {configs.length === 0 ? (
         <div className="empty">
           <Icon name="i-target" className="empty-icon" />
@@ -549,7 +599,11 @@ function TargetsPanel({ configs, search, onSearch, onAdd, onEdit, onDelete, onTo
           {filtered.length === 0 ? (
             <div className="empty" style={{ gridColumn: "1 / -1" }}>
               <p className="empty-title">NO MATCHES</p>
-              <p className="empty-text">Nothing matches “{search}”. Try another label or item ID.</p>
+              <p className="empty-text">
+                {query
+                  ? `Nothing matches “${search}”. Try another label or item ID.`
+                  : `No targets of type “${itemTypeLabel(typeFilter)}” are deployed.`}
+              </p>
             </div>
           ) : (
             filtered.map((config) => (
@@ -1140,6 +1194,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
   const { snapshot, logs, status, latency } = worker;
   const [tab, setTab] = useState("feed");
   const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState("all");
   const [modal, setModal] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
   const [soundOn, setSoundOn] = useState(sound.enabled);
@@ -1295,7 +1350,9 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           <TargetsPanel
             configs={snapshot.configs || []}
             search={search}
+            typeFilter={typeFilter}
             onSearch={setSearch}
+            onTypeFilter={setTypeFilter}
             onAdd={() => setModal({ type: "target", config: null })}
             onEdit={(config) => setModal({ type: "target", config })}
             onDelete={deleteTarget}

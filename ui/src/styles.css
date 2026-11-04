@@ -323,6 +323,8 @@ code {
 .icon-btn:focus-visible,
 .tab:focus-visible,
 .id-copy:focus-visible,
+.id-link:focus-visible,
+.type-chip:focus-visible,
 input:focus-visible,
 textarea:focus-visible {
   outline: 2px dashed var(--cyan);
@@ -1381,6 +1383,52 @@ textarea.input {
   width: 190px;
 }
 
+.type-filter {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 14px 0;
+}
+
+.type-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  background: rgba(8, 13, 26, 0.8);
+  font-family: var(--font-body);
+  font-size: 19px;
+  line-height: 1.2;
+  letter-spacing: 0.6px;
+  color: var(--muted-2);
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+
+.type-chip:hover {
+  color: var(--ink);
+  border-color: var(--line-bright);
+}
+
+.type-chip.is-active {
+  color: var(--lime);
+  border-color: var(--lime);
+  background: rgba(184, 255, 60, 0.12);
+}
+
+.type-chip-count {
+  font-size: 16px;
+  color: var(--muted);
+}
+
+.type-chip.is-active .type-chip-count {
+  color: var(--lime);
+}
+
 .targets-grid {
   position: relative;
   z-index: 1;
@@ -1463,7 +1511,16 @@ textarea.input {
   min-width: 0;
 }
 
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .card-name {
+  flex: 1;
+  min-width: 0;
   font-family: var(--font-display);
   font-size: 9px;
   line-height: 1.5;
@@ -1474,11 +1531,31 @@ textarea.input {
   white-space: nowrap;
 }
 
+.type-badge {
+  flex: none;
+  padding: 2px 7px;
+  border: 1px solid rgba(85, 230, 255, 0.45);
+  background: rgba(85, 230, 255, 0.08);
+  font-family: var(--font-body);
+  font-size: 17px;
+  line-height: 1.2;
+  letter-spacing: 0.8px;
+  color: var(--cyan);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.id-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 .id-copy {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  margin-top: 4px;
   padding: 1px 0;
   border: 0;
   background: transparent;
@@ -1495,6 +1572,23 @@ textarea.input {
 
 .id-copy:hover {
   color: var(--cyan);
+}
+
+.id-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 0;
+  color: var(--muted-2);
+  text-decoration: none;
+}
+
+.id-link .icon {
+  width: 11px;
+  height: 11px;
+}
+
+.id-link:hover {
+  color: var(--lime);
 }
 
 .card-controls {
