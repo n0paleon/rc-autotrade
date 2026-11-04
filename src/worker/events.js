@@ -39,6 +39,12 @@ function parseListing(raw) {
   };
 }
 
+function parseAllowedPrice(raw) {
+  const value = toNumber(raw);
+  if (!Number.isFinite(value) || value < 0) return null;
+  return value / 1_000_000;
+}
+
 /**
  * @param {unknown} frame parsed socket frame
  * @returns {null | {
@@ -47,6 +53,8 @@ function parseListing(raw) {
  *   currency: string | null,
  *   itemType: string | null,
  *   kind: "market" | "fill" | "other",
+ *   allowedPriceMin: number | null,
+ *   allowedPriceMax: number | null,
  *   listings: {priceRaw:number, quantity:number, unitPrice:number}[],
  *   fill: null | {orderId:string|null, count:number, priceRaw:number, unitPrice:number, status:number}
  * }}
@@ -76,6 +84,13 @@ export function normalizeUpstreamEvent(frame) {
   const listings = Array.isArray(rawList) ? rawList.map(parseListing).filter(Boolean) : [];
   if (listings.length > 0) listings.sort((a, b) => a.priceRaw - b.priceRaw || b.quantity - a.quantity);
 
+  const allowedPriceMin = parseAllowedPrice(
+    firstDefined(data.allowedPriceMin, value.allowedPriceMin, data.allowed_price_min, value.allowed_price_min)
+  );
+  const allowedPriceMax = parseAllowedPrice(
+    firstDefined(data.allowedPriceMax, value.allowedPriceMax, data.allowed_price_max, value.allowed_price_max)
+  );
+
   const orderIdRaw = firstDefined(value.order_id, value.orderId, data.order_id, data.orderId);
   const statusRaw = firstDefined(value.status, data.status);
   const status = toNumber(statusRaw);
@@ -93,6 +108,8 @@ export function normalizeUpstreamEvent(frame) {
     currency,
     itemType: itemTypeRaw === undefined ? null : String(itemTypeRaw),
     kind,
+    allowedPriceMin,
+    allowedPriceMax,
     listings,
     fill:
       kind === "fill"

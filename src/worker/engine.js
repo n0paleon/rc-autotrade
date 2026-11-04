@@ -97,6 +97,9 @@ export class Engine {
         lastPrice: null,
         lastStock: null,
         lastSeenAt: null,
+        allowedPriceMin: null,
+        allowedPriceMax: null,
+        allowedAt: null,
         lastOrderAt: null,
         lastInRangeAt: null,
         lastLogAt: 0,
@@ -175,6 +178,12 @@ export class Engine {
     runtime.lastSeenAt = now;
     runtime.itemType = event.itemType || runtime.itemType || config.itemType || null;
 
+    // Cache the marketplace price band per target: frames that omit it must not
+    // wipe the last known values, and the UI needs them after a page reload.
+    if (event.allowedPriceMin != null) runtime.allowedPriceMin = event.allowedPriceMin;
+    if (event.allowedPriceMax != null) runtime.allowedPriceMax = event.allowedPriceMax;
+    if (event.allowedPriceMin != null || event.allowedPriceMax != null) runtime.allowedAt = now;
+
     const bucket = Math.floor(now / 60_000) * 60_000;
     const history = runtime.history || (runtime.history = []);
     const lastPoint = history[history.length - 1];
@@ -202,6 +211,9 @@ export class Engine {
       stock: best.quantity,
       targetPrice: config.targetPrice,
       desiredQty: config.desiredQty,
+      allowedPriceMin: runtime.allowedPriceMin,
+      allowedPriceMax: runtime.allowedPriceMax,
+      allowedAt: runtime.allowedAt,
       currency: event.currency || "RLT",
       itemType: event.itemType || runtime.itemType || config.itemType || "mutation_component",
       bucket,

@@ -106,11 +106,17 @@ Mau mencoba tanpa akun? Jalankan simulator:
 npm run mock              # build React + worker dalam mode simulasi
 ```
 
-Untuk development UI, jalankan worker dan Vite di dua terminal:
+Satu perintah menyalakan worker dan Vite sekaligus:
+
+```bash
+npm run dev               # worker di 127.0.0.1:8787 + Vite di 127.0.0.1:5173
+```
+
+Butuh memisahkan prosesnya? Jalankan di dua terminal:
 
 ```bash
 npm run dev:worker        # worker di 127.0.0.1:8787
-npm run dev               # Vite di 5173, proxy /api dan /ws ke 8787
+npm run dev:ui            # Vite di 5173, proxy /api dan /ws ke 8787
 ```
 
 Mock mode mengisi dua target contoh, membuat harga naik-turun, dan mengirim fill palsu sehingga
@@ -240,6 +246,11 @@ Perilaku pembelian:
   menguranginya langsung; order gagal **tidak pernah** menambah atau mengubahnya. Angka ini tetap
   dipakai engine (dan ditampilkan di ticker), tetapi card target sekarang menampilkan success rate,
   bukan meter price/book.
+- **ALLOWED RANGE** — `allowedPriceMin` / `allowedPriceMax` dari setiap frame market dikonversi dari
+  micro-RLT ke RLT dan di-cache per target di runtime worker. Card menampilkan band tersebut, dan
+  snapshot `/api/state` tetap membawanya setelah halaman di-reload. Frame baru langsung memperbarui
+  nilai cache; frame yang tidak membawa band tidak menghapus nilai lama. Cache hilang saat worker
+  restart, sama seperti chart history.
 - **PURCHASE SUCCESS** di card = `fills / (fills + failures) × 100%` untuk target tersebut selama
   sesi worker. Order yang masih pending tidak dihitung sampai fill atau gagal terkonfirmasi.
   Reset lifetime stats juga mereset counter per target ini.
@@ -446,7 +457,8 @@ Error validasi memakai status `422` dan `fields`, misalnya:
 - Event server: `hello`, `snapshot`, `log`, `market`, `order`, `history`, `stats`, `session`,
   `gateway`, `settings`, `configs`, `latency`, `history-cleared`.
 - `order.phase`: `submitted`, `accepted`, `filled`, `failed`, `dry`.
-- `market` membawa `price`, `stock`, `targetPrice`, `hot`, `at`.
+- `market` membawa `price`, `stock`, `targetPrice`, `hot`, `at`, serta `allowedPriceMin`,
+  `allowedPriceMax`, `allowedAt` (cache band harga terakhir per target).
 
 ---
 

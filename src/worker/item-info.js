@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 
 const DEFAULT_TTL_MS = 10 * 60 * 1000;
 const FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
-const ITEM_TYPE_CANDIDATES = ["mutation_component", "miner", "rack", "battery"];
+const ITEM_TYPE_CANDIDATES = ["mutation_component", "miner", "rack", "battery", "utility_item"];
 
 // Miner payloads carry no rarityGroup; rarity is encoded by data.level instead.
 const MINER_LEVEL_RARITIES = ["", "Uncommon", "Rare", "Epic", "Legendary", "Unreal"];

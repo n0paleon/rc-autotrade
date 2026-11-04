@@ -58,14 +58,14 @@ function createHarness() {
     broadcast: (type, data) => events.push({ type, data }),
     clock: () => now
   });
-  const marketFrame = () => ({
+  const marketFrame = (data = {}) => ({
     raw: {
       cmd: "marketplace_orders_update",
       value: {
         item_id: ITEM_ID,
         currency: "RLT",
         item_type: "mutation_component",
-        data: { list: [{ price: 90_000, quantity: 10 }] }
+        data: { list: [{ price: 90_000, quantity: 10 }], ...data }
       }
     }
   });
@@ -85,6 +85,34 @@ function createHarness() {
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+test("caches the allowed price band per target and keeps it when a frame omits it", () => {
+  const harness = createHarness();
+  harness.engine.handleFrame(
+    harness.marketFrame({ allowedPriceMin: 50_000, allowedPriceMax: 250_000 })
+  );
+
+  let runtime = harness.engine.runtimeSnapshot()[ITEM_ID];
+  assert.equal(runtime.allowedPriceMin, 0.05);
+  assert.equal(runtime.allowedPriceMax, 0.25);
+  assert.equal(runtime.allowedAt, 1_000_000);
+
+  let market = harness.events.filter((event) => event.type === "market").at(-1);
+  assert.equal(market.data.allowedPriceMin, 0.05);
+  assert.equal(market.data.allowedPriceMax, 0.25);
+
+  harness.advance(1500);
+  harness.engine.handleFrame(harness.marketFrame());
+
+  runtime = harness.engine.runtimeSnapshot()[ITEM_ID];
+  assert.equal(runtime.allowedPriceMin, 0.05, "a frame without the band must not clear the cache");
+  assert.equal(runtime.allowedPriceMax, 0.25);
+  assert.equal(runtime.allowedAt, 1_000_000, "the band timestamp only moves when a new band arrives");
+
+  market = harness.events.filter((event) => event.type === "market").at(-1);
+  assert.equal(market.data.allowedPriceMin, 0.05, "broadcasts keep serving the cached band");
+  assert.equal(market.data.allowedPriceMax, 0.25);
+});
 
 test("a rejected purchase never increases the book stock", async () => {
   const harness = createHarness();

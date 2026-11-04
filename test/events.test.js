@@ -27,6 +27,40 @@ test("normalises a marketplace update and sorts listings", () => {
   assert.equal(event.listings[0].quantity, 7);
 });
 
+test("normalises the allowed price band from a marketplace update", () => {
+  const event = normalizeUpstreamEvent({
+    cmd: "marketplace_orders_update",
+    value: {
+      currency: "RLT",
+      item_type: "rack",
+      item_id: "64490fc1547cfab9a2759638",
+      data: {
+        allowedPriceMin: 367_500,
+        allowedPriceMax: 666_225_000,
+        list: [{ price: 735_000, quantity: 7 }]
+      }
+    }
+  });
+
+  assert.equal(event.kind, "market");
+  assert.equal(event.allowedPriceMin, 0.3675);
+  assert.equal(event.allowedPriceMax, 666.225);
+});
+
+test("leaves the allowed price band null when the frame omits it", () => {
+  const event = normalizeUpstreamEvent({
+    cmd: "marketplace_orders_update",
+    value: {
+      item_id: "64490fc1547cfab9a2759638",
+      currency: "RLT",
+      data: { list: [{ price: 735_000, quantity: 7 }] }
+    }
+  });
+
+  assert.equal(event.allowedPriceMin, null);
+  assert.equal(event.allowedPriceMax, null);
+});
+
 test("normalises a fill with a total price", () => {
   const event = normalizeUpstreamEvent({
     cmd: "marketplace_orders_filled",

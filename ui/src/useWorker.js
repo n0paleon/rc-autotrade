@@ -93,6 +93,13 @@ export function useWorker({ notify }) {
             lastStock: data.stock,
             lastSeenAt: data.at,
             itemType: data.itemType,
+            allowedPriceMin: Number.isFinite(data.allowedPriceMin)
+              ? data.allowedPriceMin
+              : runtime.allowedPriceMin,
+            allowedPriceMax: Number.isFinite(data.allowedPriceMax)
+              ? data.allowedPriceMax
+              : runtime.allowedPriceMax,
+            allowedAt: data.allowedAt ?? runtime.allowedAt,
             history: mergeHistory(runtime.history, data.price, bucket)
           }));
           break;
