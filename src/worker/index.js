@@ -149,7 +149,7 @@ async function main() {
 
   const itemInfo = new ItemInfoService({ store, api, logger });
 
-  // Worker/host health sampler (CPU, memory, event loop, load, GC, DB).
+  // Worker/host health sampler (CPU, memory, event loop, load, DB).
   // Runs even without connected clients so health transitions still reach the log.
   const system = new SystemMonitor({ intervalMs: config.systemSampleMs, db: dbMetrics });
   system.start();

@@ -455,16 +455,6 @@ test("system monitor exposes live worker and host metrics", async () => {
   assert.ok(["ok", "warn", "critical"].includes(system.health.level));
   assert.deepEqual(Object.keys(system.eventLoop).sort(), ["lag", "utilization"]);
 
-  assert.ok(system.gc, "GC view must be present");
-  assert.equal(system.gc.supported, true);
-  assert.equal(system.gc.observed, true, "the GC PerformanceObserver must be attached");
-  assert.ok(Array.isArray(system.gc.recent));
-  assert.ok(system.gc.totals.count >= 0);
-  assert.equal(typeof system.gc.window.pausedMs, "number");
-  assert.equal(typeof system.gc.window.maxMs, "number");
-  assert.equal(system.gc.thresholds.warnMs > 0, true);
-  assert.ok("gc" in system.history[0], "history must carry the per-sample GC pause");
-
   assert.ok(system.db, "DB view must be present");
   assert.equal(system.db.instrumented, true);
   assert.equal(system.db.sqlite.journalMode, "wal");

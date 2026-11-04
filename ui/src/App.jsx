@@ -1834,11 +1834,6 @@ function SystemPanel({ snapshot, worker }) {
   const loop = system?.eventLoop || {};
   const lag = loop.lag || {};
   const history = system?.history || [];
-  const gc = system?.gc || null;
-  const gcWindow = gc?.window || {};
-  const gcTotals = gc?.totals || {};
-  const gcWarn = Number(gc?.thresholds?.warnMs) || 120;
-  const gcCritical = Number(gc?.thresholds?.criticalMs) || 300;
   const db = system?.db || null;
   const dbFiles = db?.files || {};
   const dbStorage = db?.storage || {};
@@ -1949,60 +1944,6 @@ function SystemPanel({ snapshot, worker }) {
         <div className="border-2 border-line bg-night-950/60 p-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="label flex items-center gap-1.5">
-              <Icon name="i-bolt" className="h-3 w-3" /> Garbage collector · last 60s
-            </span>
-            <span
-              className={`font-mono text-[12px] uppercase tracking-[0.08em] ${
-                gc?.observed ? "text-signal" : gc?.supported === false ? "text-warn" : "text-faint"
-              }`}
-              title="V8 GC events captured through perf_hooks PerformanceObserver"
-            >
-              {gc?.observed ? "observing" : gc?.supported === false ? "unsupported" : "starting"}
-            </span>
-          </div>
-          <div className="mt-2 grid grid-cols-2 gap-1.5 @xs:grid-cols-4">
-            {[
-              ["GCs", formatInt(gcWindow.count || 0), "text-ink-dim"],
-              ["Paused", formatMs(gcWindow.pausedMs || 0), "text-ink-dim"],
-              ["Max", formatMs(gcWindow.maxMs || 0), thresholdClass(gcWindow.maxMs, gcWarn, gcCritical)],
-              [
-                "Last",
-                gcTotals.last ? formatMs(gcTotals.last.duration) : "—",
-                thresholdClass(gcTotals.last?.duration, gcWarn, gcCritical),
-                gcTotals.last ? relTime(gcTotals.last.at) : null
-              ]
-            ].map(([label, value, tone, meta]) => (
-              <StatTile key={label} label={label} value={value} tone={tone} meta={meta} />
-            ))}
-          </div>
-          <div className="mt-2 flex flex-wrap items-center gap-1">
-            <span className="whitespace-nowrap border border-line/70 bg-night-900/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
-              {formatInt(gcWindow.minor || 0)} minor
-            </span>
-            <span
-              className={`whitespace-nowrap border border-line/70 bg-night-900/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] ${
-                gcWindow.major > 0 ? "text-warn" : "text-faint"
-              }`}
-            >
-              {formatInt(gcWindow.major || 0)} major
-            </span>
-            {(gc?.recent || []).slice(0, 3).map((event, index) => (
-              <span
-                key={`${event.at}-${index}`}
-                className={`whitespace-nowrap border border-line/70 bg-night-900/60 px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] ${
-                  event.kind === "major" ? "text-warn" : "text-faint"
-                }`}
-                title={`${event.kind} GC · ${event.duration}ms · ${formatTime(event.at)}`}
-              >
-                {event.kind} {formatMs(event.duration)}
-              </span>
-            ))}
-          </div>
-        </div>
-
-        <div className="border-2 border-line bg-night-950/60 p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="label flex items-center gap-1.5">
               <Icon name="i-download" className="h-3 w-3" /> SQLite · {dbSqlite.driver || "—"} ·{" "}
               {dbSqlite.journalMode || "—"}
             </span>
@@ -2068,12 +2009,6 @@ function SystemPanel({ snapshot, worker }) {
             tone={() => "text-info"}
           />
           <HistoryStrip
-            label="GC pause"
-            bars={sparkBars(history.map((point) => point.gc ?? 0))}
-            format={(value) => formatMs(value)}
-            tone={(value) => thresholdClass(value, gcWarn, gcCritical)}
-          />
-          <HistoryStrip
             label="SQL"
             bars={sparkBars((db?.history || []).map((point) => point.qps ?? 0))}
             format={(value) => `${Number(value).toFixed(1)}/s`}
@@ -2084,11 +2019,10 @@ function SystemPanel({ snapshot, worker }) {
         <p className="text-[13px] leading-relaxed text-faint">
           Sampled every {formatInt(Math.round((system.intervalMs || 2000) / 1000)) || 1}s, pushed every
           5s. CPU is the worker process as a percentage of one core; system RAM uses MemAvailable on
-          Linux. Warnings trigger at 80% heap, 88% RAM, 100ms event-loop p95, a GC pause above{" "}
-          {formatInt(gcWarn)}ms in the last 15s, a DB p95 above {formatInt(dbWarn)}ms, or a WAL above{" "}
-          {formatBytes(db?.thresholds?.walWarnBytes || 64 * 1024 * 1024)}. GC pauses come straight from
-          V8 perf entries, so a spike in the ping panel can be matched to the major GC that caused it.
-          Query timings include only the SQL text, never bound values.
+          Linux. Warnings trigger at 80% heap, 88% RAM, 100ms event-loop p95, a DB p95 above{" "}
+          {formatInt(dbWarn)}ms, or a WAL above{" "}
+          {formatBytes(db?.thresholds?.walWarnBytes || 64 * 1024 * 1024)}. Query timings include only
+          the SQL text, never bound values.
         </p>
       </div>
     </section>

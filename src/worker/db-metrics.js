@@ -4,7 +4,7 @@
  * The worker's hot path writes order history, market snapshots and session
  * state to a local SQLite database. When a WAL checkpoint or a slow write
  * blocks the thread, market frames are delayed and the deck feels laggy, so
- * these metrics sit next to CPU/GC in the SYSTEM panel:
+ * these metrics sit next to CPU and heap metrics in the SYSTEM panel:
  *
  *   files        main db / -wal / -shm sizes on disk
  *   storage      page size, page count, freelist, payload vs free pages

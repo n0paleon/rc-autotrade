@@ -10,8 +10,6 @@
  *   memory      rss, heap used/limit, external, array buffers
  *   system      host RAM and swap (MemAvailable on Linux, not just MemFree)
  *   eventLoop   event-loop utilization and delay percentiles in milliseconds
- *   gc          every V8 garbage-collection pause (kind + duration) so a
- *               latency spike can be matched to a major GC
  *   db          SQLite file sizes, query latency, slow statements, WAL state
  *   health      ok / warn / critical derived from the metrics above
  *
@@ -22,12 +20,7 @@
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import v8 from "node:v8";
-import {
-  PerformanceObserver,
-  constants as perfConstants,
-  monitorEventLoopDelay,
-  performance
-} from "node:perf_hooks";
+import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { DB_THRESHOLDS } from "./db-metrics.js";
 
 const DEFAULT_INTERVAL_MS = 2_000;
@@ -36,7 +29,6 @@ const MAX_INTERVAL_MS = 60_000;
 const DEFAULT_HISTORY = 120;
 const MAX_HISTORY = 600;
 const BYTES_PER_MB = 1024 * 1024;
-const DEFAULT_GC_HISTORY = 200;
 
 /** Health thresholds. Percentages are 0..100, delays are milliseconds. */
 export const SYSTEM_THRESHOLDS = Object.freeze({
@@ -46,22 +38,8 @@ export const SYSTEM_THRESHOLDS = Object.freeze({
   systemCritical: 96,
   loopWarn: 100,
   loopCritical: 250,
-  gcWarn: 120,
-  gcCritical: 300,
   cpuWarn: 95
 });
-
-/** V8 GC kinds as reported by `entry.detail.kind`. */
-export const GC_KIND_LABELS = Object.freeze({
-  [perfConstants.NODE_PERFORMANCE_GC_MINOR]: "minor",
-  [perfConstants.NODE_PERFORMANCE_GC_MAJOR]: "major",
-  [perfConstants.NODE_PERFORMANCE_GC_INCREMENTAL]: "incremental",
-  [perfConstants.NODE_PERFORMANCE_GC_WEAKCB]: "weakcb"
-});
-
-export function gcKindLabel(kind) {
-  return GC_KIND_LABELS[kind] || "gc";
-}
 
 function round(value, digits = 1) {
   const number = Number(value);
@@ -194,179 +172,6 @@ function createHistogram() {
 }
 
 /**
- * Collects V8 GC events from the perf_hooks PerformanceObserver.
- *
- * Node emits a `gc` performance entry for every collection: a short scavenge
- * (minor) runs often, while a mark-sweep (major) can stall the event loop for
- * tens to hundreds of milliseconds. Those stalls are exactly what makes the
- * control link or WS ping appear to spike, so every event keeps its wall-clock
- * timestamp, kind and pause duration.
- *
- * Wire-format is deliberately small: a bounded list of events plus aggregates
- * for the last 60s (window) and the last 15s (spike).
- */
-export class GcTracker {
-  constructor({
-    capacity = DEFAULT_GC_HISTORY,
-    now = () => Date.now(),
-    observer = null,
-    timeOrigin = Date.now() - performance.now(),
-    pauseWarnMs = SYSTEM_THRESHOLDS.gcWarn,
-    pauseCriticalMs = SYSTEM_THRESHOLDS.gcCritical
-  } = {}) {
-    const limit = Math.floor(Number(capacity));
-    this.capacity = Number.isFinite(limit) ? clamp(limit, 2, 1_000) : DEFAULT_GC_HISTORY;
-    this.now = now;
-    this.observer = observer;
-    this.timeOrigin = Number.isFinite(Number(timeOrigin)) ? Number(timeOrigin) : 0;
-    this.pauseWarnMs = Number.isFinite(Number(pauseWarnMs)) ? Number(pauseWarnMs) : SYSTEM_THRESHOLDS.gcWarn;
-    this.pauseCriticalMs = Number.isFinite(Number(pauseCriticalMs))
-      ? Number(pauseCriticalMs)
-      : SYSTEM_THRESHOLDS.gcCritical;
-
-    this.events = [];
-    this.started = false;
-    this.observing = false;
-    this.totalCount = 0;
-    this.totalPausedMs = 0;
-    this.maxMs = 0;
-    this.last = null;
-  }
-
-  start() {
-    if (this.started) return this;
-    this.started = true;
-    if (!this.observer && typeof PerformanceObserver === "function") {
-      this.observer = safeCall(
-        () =>
-          new PerformanceObserver((list) => {
-            for (const entry of list.getEntries()) this.record(entry);
-          }),
-        null
-      );
-    }
-    if (this.observer) {
-      this.observing = safeCall(() => {
-        this.observer.observe({ entryTypes: ["gc"] });
-        return true;
-      }, false);
-    }
-    return this;
-  }
-
-  stop() {
-    if (this.observer) safeCall(() => this.observer.disconnect(), null);
-    this.observing = false;
-    this.started = false;
-  }
-
-  /** Record one PerformanceEntry (or a test double with the same fields). */
-  record(entry) {
-    if (!entry) return null;
-    const duration = Number(entry.duration);
-    if (!Number.isFinite(duration) || duration < 0) return null;
-
-    const kindCode = Number(entry.detail?.kind ?? entry.kind);
-    const startTime = Number(entry.startTime);
-    const at = Number.isFinite(startTime)
-      ? Math.round(this.timeOrigin + startTime)
-      : this.now();
-    const event = {
-      at,
-      kind: gcKindLabel(kindCode),
-      kindCode: Number.isFinite(kindCode) ? kindCode : null,
-      duration: round(duration, 2),
-      flags: Number(entry.detail?.flags) || 0
-    };
-
-    this.events.push(event);
-    if (this.events.length > this.capacity) {
-      this.events.splice(0, this.events.length - this.capacity);
-    }
-    this.totalCount += 1;
-    this.totalPausedMs = round(this.totalPausedMs + event.duration, 2);
-    this.maxMs = Math.max(this.maxMs, event.duration);
-    this.last = event;
-    return event;
-  }
-
-  /** Aggregate every recorded event in [sinceMs, untilMs]. */
-  window(sinceMs, untilMs = this.now()) {
-    const since = Number.isFinite(Number(sinceMs)) ? Number(sinceMs) : 0;
-    const until = Number.isFinite(Number(untilMs)) ? Number(untilMs) : this.now();
-    const events = this.events.filter((event) => event.at >= since && event.at <= until);
-
-    let pausedMs = 0;
-    let maxMs = 0;
-    let minor = 0;
-    let major = 0;
-    let incremental = 0;
-    let weakcb = 0;
-    let other = 0;
-    const durations = [];
-    for (const event of events) {
-      pausedMs += event.duration;
-      maxMs = Math.max(maxMs, event.duration);
-      durations.push(event.duration);
-      if (event.kind === "minor") minor += 1;
-      else if (event.kind === "major") major += 1;
-      else if (event.kind === "incremental") incremental += 1;
-      else if (event.kind === "weakcb") weakcb += 1;
-      else other += 1;
-    }
-
-    let p95Ms = 0;
-    if (durations.length > 0) {
-      const sorted = durations.sort((a, b) => a - b);
-      p95Ms = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))];
-    }
-
-    return {
-      since,
-      until,
-      count: events.length,
-      minor,
-      major,
-      incremental,
-      weakcb,
-      other,
-      pausedMs: round(pausedMs, 2),
-      maxMs: round(maxMs, 2),
-      p95Ms: round(p95Ms, 2)
-    };
-  }
-
-  snapshot({ windowMs = 60_000, spikeMs = 15_000 } = {}) {
-    const now = this.now();
-    return {
-      observed: Boolean(this.started && this.observing),
-      supported: typeof PerformanceObserver === "function",
-      windowMs,
-      spikeMs,
-      thresholds: { warnMs: this.pauseWarnMs, criticalMs: this.pauseCriticalMs },
-      window: this.window(now - windowMs, now),
-      spike: this.window(now - spikeMs, now),
-      totals: {
-        count: this.totalCount,
-        pausedMs: this.totalPausedMs,
-        maxMs: this.maxMs,
-        last: this.last ? { ...this.last } : null
-      },
-      // Newest first: the panel shows what just happened, not ancient history.
-      recent: this.events.slice(-10).reverse()
-    };
-  }
-
-  reset() {
-    this.events.length = 0;
-    this.totalCount = 0;
-    this.totalPausedMs = 0;
-    this.maxMs = 0;
-    this.last = null;
-  }
-}
-
-/**
  * Streaming health sampler. Call `start()` once and `snapshot()` whenever a
  * client needs the current view; the returned object is JSON-safe.
  */
@@ -387,7 +192,6 @@ export class SystemMonitor {
     activeHandles = () => readActiveHandles(),
     activeRequests = () => readActiveRequests(),
     histogram = undefined,
-    gc = undefined,
     db = null
   } = {}) {
     const interval = Math.floor(Number(intervalMs));
@@ -418,15 +222,11 @@ export class SystemMonitor {
     this.histogram = histogram === undefined ? createHistogram() : histogram;
     this.histogramEnabled = false;
 
-    // `gc: null` disables GC tracking (used by deterministic unit tests that
-    // do not care about it); otherwise the monitor owns the tracker.
-    this.gc = gc === undefined ? new GcTracker({ now }) : gc;
     // The DB probe is instrumented by the store; the monitor only samples it.
     this.db = db;
 
     this.previous = null;
     this.previousElu = null;
-    this.previousGcAt = null;
     this.latest = null;
     this.history = [];
     this.timer = null;
@@ -438,7 +238,6 @@ export class SystemMonitor {
       safeCall(() => this.histogram.enable(), null);
       this.histogramEnabled = true;
     }
-    this.gc?.start();
     this.sample(); // baseline for CPU deltas
     this.timer = setInterval(() => {
       try {
@@ -454,7 +253,6 @@ export class SystemMonitor {
   stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    this.gc?.stop();
     if (this.histogram && this.histogramEnabled) {
       safeCall(() => this.histogram.disable(), null);
       this.histogramEnabled = false;
@@ -547,21 +345,12 @@ export class SystemMonitor {
       lag: loop
     };
 
-    // GC pause inside this sample interval. Events are timestamped with the
-    // actual GC start time, so late PerformanceObserver delivery still lands
-    // in the right bucket.
-    const gcSince = this.previousGcAt ?? at - this.intervalMs;
-    const gcWindow = this.gc ? this.gc.window(gcSince, at) : null;
-    this.previousGcAt = at;
-
-    const gc = this.gc ? this.gc.snapshot() : null;
     const dbView = this.db ? this.db.sample() : null;
     const health = classifyHealth({
       cpu,
       memory: memoryView,
       system: systemView,
       eventLoop,
-      gc,
       db: dbView
     });
 
@@ -570,9 +359,7 @@ export class SystemMonitor {
       cpu: processPercent,
       rss: rssMb,
       heap: heapUsedMb,
-      loop: loop?.p95 ?? null,
-      gc: gcWindow ? gcWindow.pausedMs : null,
-      gcCount: gcWindow ? gcWindow.count : null
+      loop: loop?.p95 ?? null
     });
     if (this.history.length > this.historyLimit) {
       this.history.splice(0, this.history.length - this.historyLimit);
@@ -584,7 +371,6 @@ export class SystemMonitor {
       memory: memoryView,
       system: systemView,
       eventLoop,
-      gc,
       db: dbView,
       health
     };
@@ -622,18 +408,6 @@ export class SystemMonitor {
         utilization: this.latest.eventLoop.utilization,
         lag: this.latest.eventLoop.lag ? { ...this.latest.eventLoop.lag } : null
       },
-      gc: this.latest.gc
-        ? {
-            ...this.latest.gc,
-            window: { ...this.latest.gc.window },
-            spike: { ...this.latest.gc.spike },
-            totals: {
-              ...this.latest.gc.totals,
-              last: this.latest.gc.totals.last ? { ...this.latest.gc.totals.last } : null
-            },
-            recent: this.latest.gc.recent.map((event) => ({ ...event }))
-          }
-        : null,
       db: this.latest.db ? copyDbView(this.latest.db) : null,
       health: {
         level: this.latest.health.level,
@@ -681,10 +455,10 @@ export class SystemMonitor {
 /**
  * Maps raw metrics to a coarse health level. Only the metrics that actually
  * destabilise a Node process raise the alarm: heap pressure, host RAM
- * exhaustion, a long GC pause, event-loop stall, and slow SQLite queries or a
+ * exhaustion, event-loop stall, and slow SQLite queries or a
  * bloated WAL. CPU is advisory because bursts are normal for a purchase engine.
  */
-export function classifyHealth({ cpu, memory, system, eventLoop, gc, db } = {}) {
+export function classifyHealth({ cpu, memory, system, eventLoop, db } = {}) {
   const reasons = [];
   let level = "ok";
   const escalate = (next) => {
@@ -722,21 +496,6 @@ export function classifyHealth({ cpu, memory, system, eventLoop, gc, db } = {}) 
     } else if (lag >= SYSTEM_THRESHOLDS.loopWarn) {
       escalate("warn");
       reasons.push(`event loop p95 ${lag.toFixed(0)}ms`);
-    }
-  }
-
-  // Only the last ~15s of GC activity raises health, so a single big GC does
-  // not keep the worker "critical" for a whole minute after it recovered.
-  const gcWarn = Number(gc?.thresholds?.warnMs) || SYSTEM_THRESHOLDS.gcWarn;
-  const gcCritical = Number(gc?.thresholds?.criticalMs) || SYSTEM_THRESHOLDS.gcCritical;
-  const gcMax = Number(gc?.spike?.maxMs ?? gc?.maxMs);
-  if (Number.isFinite(gcMax) && gcMax > 0) {
-    if (gcMax >= gcCritical) {
-      escalate("critical");
-      reasons.push(`GC pause ${gcMax.toFixed(0)}ms`);
-    } else if (gcMax >= gcWarn) {
-      escalate("warn");
-      reasons.push(`GC pause ${gcMax.toFixed(0)}ms`);
     }
   }
 

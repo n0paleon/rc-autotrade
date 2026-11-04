@@ -2,16 +2,12 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 
 import {
-  GcTracker,
   SystemMonitor,
   classifyHealth,
-  gcKindLabel,
   readSystemMemory
 } from "../src/worker/system.js";
 
 const MB = 1024 * 1024;
-const GC_MAJOR = 4;
-const GC_MINOR = 1;
 
 /**
  * Builds a monitor with fully deterministic inputs plus a mutable `state`
@@ -58,9 +54,6 @@ function harness(overrides = {}) {
     activeRequests: () => 1,
     histogram: null,
     historyLimit: 3,
-    // GC tracking is exercised explicitly below; keep the shared fixture
-    // deterministic by disabling it by default.
-    gc: null,
     ...overrides
   });
 
@@ -109,10 +102,9 @@ test("first sample exposes process, memory and host shape without CPU deltas", (
   assert.equal(view.eventLoop.lag, null);
   assert.equal(view.health.level, "ok");
   assert.equal(view.history.length, 1);
-  assert.equal(view.gc, null, "GC tracking disabled by the fixture");
   assert.deepEqual(
     Object.keys(view.history[0]).sort(),
-    ["at", "cpu", "gc", "gcCount", "heap", "loop", "rss"]
+    ["at", "cpu", "heap", "loop", "rss"]
   );
 });
 
@@ -162,102 +154,6 @@ test("snapshot is a stable JSON-safe copy", () => {
   assert.doesNotThrow(() => JSON.stringify(first));
 });
 
-test("GcTracker records kinds, totals and windowed aggregates", () => {
-  const tracker = new GcTracker({
-    now: () => 10_000,
-    timeOrigin: 0,
-    capacity: 10,
-    observer: null
-  });
-
-  tracker.record({ duration: 1.234, detail: { kind: GC_MINOR, flags: 0 }, startTime: 9_000 });
-  tracker.record({ duration: 42.5, detail: { kind: GC_MAJOR, flags: 4 }, startTime: 9_500 });
-  assert.equal(tracker.record(null), null);
-  assert.equal(tracker.record({ duration: Number.NaN }), null);
-  assert.equal(tracker.record({ duration: -1 }), null);
-
-  const snapshot = tracker.snapshot({ windowMs: 60_000, spikeMs: 15_000 });
-  assert.equal(snapshot.window.count, 2);
-  assert.equal(snapshot.window.minor, 1);
-  assert.equal(snapshot.window.major, 1);
-  assert.equal(snapshot.window.pausedMs, 43.73);
-  assert.equal(snapshot.window.maxMs, 42.5);
-  assert.equal(snapshot.window.p95Ms, 42.5);
-  assert.equal(snapshot.totals.count, 2);
-  assert.equal(snapshot.totals.pausedMs, 43.73);
-  assert.equal(snapshot.totals.maxMs, 42.5);
-  assert.equal(snapshot.totals.last.kind, "major");
-  assert.equal(snapshot.totals.last.at, 9_500);
-  assert.equal(snapshot.recent.length, 2);
-  assert.equal(snapshot.recent[0].kind, "major", "recent is newest first");
-  assert.deepEqual(snapshot.thresholds, { warnMs: 120, criticalMs: 300 });
-
-  const narrow = tracker.window(9_400, 10_000);
-  assert.equal(narrow.count, 1);
-  assert.equal(narrow.maxMs, 42.5);
-  assert.equal(tracker.window(20_000, 30_000).count, 0);
-});
-
-test("GcTracker keeps a bounded ring buffer without losing totals", () => {
-  const tracker = new GcTracker({ now: () => 5_000, timeOrigin: 0, capacity: 2 });
-  for (let index = 0; index < 4; index += 1) {
-    tracker.record({ duration: index + 1, detail: { kind: GC_MINOR }, startTime: 1_000 + index });
-  }
-
-  assert.deepEqual(tracker.events.map((event) => event.duration), [3, 4]);
-  assert.equal(tracker.snapshot().totals.count, 4);
-  assert.equal(tracker.snapshot().totals.pausedMs, 10);
-});
-
-test("GcTracker observes perf entries and disconnects cleanly", () => {
-  const calls = [];
-  const observer = {
-    observe: (options) => calls.push(["observe", options]),
-    disconnect: () => calls.push(["disconnect"])
-  };
-  const tracker = new GcTracker({ now: () => 1_000, observer });
-
-  tracker.start();
-  tracker.start(); // idempotent: observe is called once
-  assert.equal(tracker.snapshot().observed, true);
-  tracker.stop();
-
-  assert.deepEqual(calls, [["observe", { entryTypes: ["gc"] }], ["disconnect"]]);
-  assert.equal(tracker.snapshot().observed, false);
-});
-
-test("gcKindLabel maps V8 kinds and falls back safely", () => {
-  assert.equal(gcKindLabel(GC_MINOR), "minor");
-  assert.equal(gcKindLabel(GC_MAJOR), "major");
-  assert.equal(gcKindLabel(8), "incremental");
-  assert.equal(gcKindLabel(16), "weakcb");
-  assert.equal(gcKindLabel(999), "gc");
-  assert.equal(gcKindLabel(undefined), "gc");
-});
-
-test("SystemMonitor attributes GC pauses to the sample that saw them", () => {
-  const observer = { observe: () => {}, disconnect: () => {} };
-  let gcNow = 1_000_000;
-  const gc = new GcTracker({ now: () => gcNow, timeOrigin: 0, observer });
-  gc.start();
-
-  const { monitor, state } = harness({ gc });
-  monitor.sample();
-  assert.equal(monitor.snapshot().history.at(-1).gc, 0);
-
-  advance(state, { ms: 2_000, user: 1_000, system: 1_000 });
-  gcNow = state.at;
-  gc.record({ duration: 30, detail: { kind: GC_MAJOR }, startTime: 1_001_000 });
-  const view = monitor.sample();
-
-  assert.equal(view.gc.observed, true);
-  assert.equal(view.gc.window.count, 1);
-  assert.equal(view.gc.spike.maxMs, 30);
-  assert.equal(view.history.at(-1).gc, 30);
-  assert.equal(view.history.at(-1).gcCount, 1);
-  assert.equal(view.health.level, "ok", "30ms is below the warning threshold");
-});
-
 test("SystemMonitor embeds the DB probe view", () => {
   let calls = 0;
   const dbView = {
@@ -288,7 +184,7 @@ test("SystemMonitor embeds the DB probe view", () => {
   assert.doesNotThrow(() => JSON.stringify(view));
 });
 
-test("classifyHealth escalates heap, host memory, loop lag, GC and CPU", () => {
+test("classifyHealth escalates heap, host memory, loop lag and CPU", () => {
   assert.equal(classifyHealth({}).level, "ok");
   assert.deepEqual(classifyHealth({}).reasons, []);
 
@@ -303,18 +199,6 @@ test("classifyHealth escalates heap, host memory, loop lag, GC and CPU", () => {
 
   assert.equal(classifyHealth({ eventLoop: { lag: { p95: 150 } } }).level, "warn");
   assert.equal(classifyHealth({ eventLoop: { lag: { p95: 300 } } }).level, "critical");
-
-  const gcWarn = classifyHealth({
-    gc: { spike: { maxMs: 150 }, thresholds: { warnMs: 120, criticalMs: 300 } }
-  });
-  assert.equal(gcWarn.level, "warn");
-  assert.match(gcWarn.reasons[0], /GC pause 150ms/);
-  assert.equal(classifyHealth({ gc: { spike: { maxMs: 350 } } }).level, "critical");
-  assert.equal(
-    classifyHealth({ gc: { window: { maxMs: 400 }, spike: { maxMs: 0 } } }).level,
-    "ok",
-    "an old GC pause must not pin health forever"
-  );
 
   const dbWarn = classifyHealth({
     db: { window: { p95Ms: 30 }, thresholds: { p95WarnMs: 25, p95CriticalMs: 100 } }

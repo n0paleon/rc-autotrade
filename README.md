@@ -71,9 +71,6 @@ untuk login, mengatur target, memantau market, dan melihat loot.
   V8) + batasnya, RSS, RAM sistem (MemAvailable, bukan MemFree), swap, load average, latency event
   loop (p50/p95/p99), active handles, plus sparkline historis. Status `HEALTHY / DEGRADED /
   CRITICAL` dihitung dari tekanan heap, RAM, dan event loop, dan setiap transisi ikut tercatat di log.
-- **GC event detection (opsional)** — `PerformanceObserver` menangkap garbage collection bila
-  runtime memancarkan entry `gc` (Node). Bun/JavaScriptCore belum memancarkannya, jadi panel GC
-  menampilkan status tidak didukung; metrik CPU, heap, event loop, dan SQLite tetap berjalan.
 - **DB performance metrics** — setiap statement SQLite di-timing (read/write, avg/p95/max, error,
   slow query), plus ukuran file DB/WAL/-shm, page/freelist, mode jurnal, cache, dan transaksi.
   Sparkline query rate membantu melihat lonjakan I/O yang menahan event loop.
@@ -746,44 +743,17 @@ Tab **SYSTEM** menampilkan:
 | `System RAM` | `MemTotal − MemAvailable` (bukan `MemFree`, agar page cache tidak dihitung) |
 | `Load 1m` | `os.loadavg()[0]`, dinormalisasi per core untuk indikator warna |
 | `Loop p95` | Histogram `monitorEventLoopDelay` — indikator event loop tersendat |
-| `GCs` | Jumlah event GC V8 dalam 60 detik terakhir (minor + major) |
-| `GC paused` | Total durasi pause GC dalam 60 detik terakhir |
-| `GC max` | Pause GC terpanjang dalam 60 detik — biasanya mark-sweep (major) |
-| `Last GC` | Event GC terakhir: tipe, durasi, dan umurnya |
 | `DB` / `WAL` | Ukuran file `rollercoin.db`, `-wal`, dan `-shm` di disk |
 | `Q/S` | Statement SQLite per detik sejak sampel terakhir |
 | `DB p95` | Persentil 95 durasi statement dalam 60 detik (lihat bagian performa database) |
 | `Handles` | `process.getActiveResourcesInfo().length` |
 
-Status health: `HEALTHY` → `DEGRADED` pada heap ≥ 80%, RAM ≥ 88%, event-loop p95 ≥ 100 ms, GC pause
-≥ 120 ms dalam 15 detik terakhir, DB p95 ≥ 25 ms, WAL ≥ 64 MB, ada error SQLite, atau CPU worker
-≥ 95%; `CRITICAL` pada heap ≥ 92%, RAM ≥ 96%, p95 ≥ 250 ms, GC pause ≥ 300 ms, DB p95 ≥ 100 ms,
-atau WAL ≥ 256 MB. Transisi ke `DEGRADED`/`CRITICAL` (dan pemulihannya) ditulis ke log scope
+Status health: `HEALTHY` → `DEGRADED` pada heap ≥ 80%, RAM ≥ 88%, event-loop p95 ≥ 100 ms, DB p95
+≥ 25 ms, WAL ≥ 64 MB, ada error SQLite, atau CPU worker ≥ 95%; `CRITICAL` pada heap ≥ 92%, RAM ≥
+96%, p95 ≥ 250 ms, DB p95 ≥ 100 ms, atau WAL ≥ 256 MB. Transisi ke `DEGRADED`/`CRITICAL` (dan
+pemulihannya) ditulis ke log scope
 `system`, jadi tetap terlihat walau tidak ada browser yang terbuka. Panel live lewat broadcast
 `system` tiap 5 detik dan juga mem-poll `GET /api/system` tiap 10 detik sebagai fallback.
-
-### Deteksi GC event
-
-Kalau ping control link atau market feed tiba-tiba melonjak, penyebab paling sering adalah **major
-GC** (mark-sweep) yang menghentikan event loop. Worker memasang
-`PerformanceObserver({ entryTypes: ["gc"] })` sejak boot dan mencatat **setiap** event ke ring
-buffer 200 entri:
-
-| Field | Arti |
-| --- | --- |
-| `kind` | `minor` (scavenge), `major` (mark-sweep), `incremental`, `weakcb` |
-| `duration` | Lama pause GC (ms) — inilah yang membekukan timer/socket |
-| `at` | Waktu mulai GC (dari `entry.startTime` + time origin), bukan saat entry diterima |
-| `flags` | Flag V8 (`4` = forced, mis. `--expose-gc`) |
-
-Panel menampilkan GC dalam tiga lapisan: agregat 60 detik (jumlah/paused/max), badge tipe dan 3 event
-terakhir, serta sparkline **GC PAUSE WINDOW** di samping CPU/RSS. Sparkline dibuat dari `history[]`
-per sampel (`gc` = total pause pada interval itu, `gcCount` = jumlah event), sehingga lonjakan bisa
-dibandingkan langsung dengan spike di tab **LATENCY** (WS ping) atau ping control link di header.
-Ambang warning/critical juga ikut dikirim di payload (`gc.thresholds`) supaya UI dan health tidak
-memakai angka yang berbeda. GC tracking memakai `perf_hooks`; Bun memakai JavaScriptCore dan belum
-memancarkan entry `gc`, jadi panel GC menampilkan status tidak didukung. Metrik CPU, heap, event
-loop, dan SQLite tetap berjalan.
 
 ### Performa database (SQLite)
 
@@ -1189,14 +1159,14 @@ Cakupan:
 - `engine.test.js` — order gagal tidak menambah book; fill sukses menguranginya.
 - `keepalive.test.js` — warm probe, idle timeout, dan suspend saat `403`/`429`.
 - `latency.test.js` — rolling sample per channel, percentile, dan jitter.
-- `system.test.js` — delta CPU/event loop, batas history, GC, DB view, dan klasifikasi health worker.
+- `system.test.js` — delta CPU/event loop, batas history, DB view, dan klasifikasi health worker.
 - `db-metrics.test.js` — instrumentasi statement/transaksi, window 60 detik, slow query, ukuran file.
 - `report.test.js` — agregat profit per produk melewati batas window in-memory loot log.
 - `format.test.js` — formatter UI (label itemType, URL marketplace, byte/percent/ms presisi).
 - `session.test.js` — jadwal refresh token dan fallback token opaque.
 - `integration.test.js` — spawn worker mock, auth, CRUD, settings, CORS, session push, item-info, WS, fill.
 
-Total 108 test; integration test memakai port acak dan data directory sementara.
+Total 112 test; integration test memakai port acak dan data directory sementara.
 
 ---
 
@@ -1234,7 +1204,7 @@ Total 108 test; integration test memakai port acak dan data directory sementara.
 │       ├── engine.js        # matching + order execution + 24h minute history
 │       ├── item-info.js     # auto label/rarity resolver
 │       ├── events.js        # upstream frame normalizer
-│       ├── system.js        # CPU/heap/event-loop/GC/host health sampler
+│       ├── system.js        # CPU/heap/event-loop/host health sampler
 │       ├── db.js            # bun:sqlite wrapper (pragma/transaction/named params)
 │       ├── db-metrics.js    # SQLite statement timing, file/WAL and slow-query probe
 │       ├── server.js        # control plane HTTP/WS + static UI
