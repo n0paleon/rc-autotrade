@@ -2860,6 +2860,24 @@ textarea.input {
   color: var(--muted-2);
 }
 
+.latency-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.latency-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 5px;
+  border: 1px solid var(--lime);
+  color: var(--lime);
+  font-family: var(--font-display);
+  font-size: 6.5px;
+  letter-spacing: 0.5px;
+}
+
 .latency-row {
   display: flex;
   flex-direction: column;

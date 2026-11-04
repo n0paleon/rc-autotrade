@@ -385,7 +385,9 @@ yang dikirim hanya untuk pengukuran:
 | `WS PING` | Ping/pong heartbeat socket market feed (~25 detik sekali) |
 
 Setiap channel menyimpan sampel berjalan (maks 120) dan diekspos sebagai last/avg/p50/p95/min/max/
-jitter + sparkline di tab **LATENCY** control deck (pratinjau ringkas juga ada di HUD). Call yang
+jitter + sparkline di tab **LATENCY** control deck (pratinjau ringkas juga ada di HUD). Panel ini
+live update: worker broadcast view latency terbaru tiap 5 detik lewat control socket, dan tab
+LATENCY juga mem-poll `GET /api/latency` tiap 10 detik sebagai fallback. Call yang
 gagal tetap dihitung karena tetap memakai waktu upstream. Tombol **UKUR SEKARANG** menjalankan
 warm probe on-demand via `POST /api/latency/probe`. `DELETE /api/history` menghapus sampel latency
 bersama statistik lainnya.

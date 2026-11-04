@@ -216,7 +216,14 @@ export class ControlServer {
     this.keepaliveTimer.unref?.();
 
     this.statsTimer = setInterval(() => {
-      if (this.clients.size > 0) this.broadcast("gateway", this.gateway.stats());
+      if (this.clients.size > 0) {
+        this.broadcast("gateway", this.gateway.stats());
+        // Keep the latency panel live: samples are recorded passively by the
+        // worker (API calls, warm probe, ws handshake/ping), so pushing the
+        // latest view here lets the deck update without a manual probe.
+        const latency = this.latencyView();
+        if (latency) this.broadcast("latency", latency);
+      }
     }, 5000);
     this.statsTimer.unref?.();
     return this;

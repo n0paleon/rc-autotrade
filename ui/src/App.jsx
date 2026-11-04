@@ -880,6 +880,21 @@ function ConfigPanel({ snapshot, worker, notify }) {
     wsPing: "WS PING"
   };
   const [probing, setProbing] = useState(false);
+  const { fetchLatency } = worker;
+
+  // Safety net: the worker pushes latency every 5s, but poll quietly too so
+  // the panel stays fresh even if the push stream is missed (e.g. an older
+  // worker binary that has not been restarted since this update).
+  useEffect(() => {
+    if (typeof fetchLatency !== "function") return undefined;
+    const timer = setInterval(() => {
+      fetchLatency().catch(() => {
+        /* the push stream or a reconnect will deliver it — stay silent */
+      });
+    }, 10_000);
+    return () => clearInterval(timer);
+  }, [fetchLatency]);
+
   const runProbe = async () => {
     setProbing(true);
     try {
@@ -907,9 +922,14 @@ function ConfigPanel({ snapshot, worker, notify }) {
             <span className="latency-panel-title">
               <Icon name="i-wifi" className="icon icon-xs" /> WORKER → UPSTREAM
             </span>
-            <button className="btn btn-sm" type="button" onClick={runProbe} disabled={probing}>
-              {probing ? "PROBING…" : "UKUR SEKARANG"}
-            </button>
+            <span className="latency-panel-actions">
+              <span className="latency-live" title="Panel refreshes automatically every 5 seconds">
+                <span className="led" /> AUTO · 5S
+              </span>
+              <button className="btn btn-sm" type="button" onClick={runProbe} disabled={probing}>
+                {probing ? "PROBING…" : "UKUR SEKARANG"}
+              </button>
+            </span>
           </div>
           <p className="latency-note">
             {fresh
