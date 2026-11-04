@@ -225,9 +225,12 @@ export class Store {
     this.migrated = false;
   }
 
-  load() {
+  load({ dbMetrics = null } = {}) {
     mkdirSync(this.dataDir, { recursive: true, mode: 0o700 });
     this.db = openDatabase({ dataDir: this.dataDir, logger: this.logger });
+    // Instrument the handle before the hot prepared statements exist so each
+    // run/get/all call is timed by the SYSTEM panel.
+    dbMetrics?.instrument(this.db);
     this.stmts = this.#prepareStatements();
 
     const bootstrapped = this.stmts.metaGet.get("bootstrapped")?.value === "1";

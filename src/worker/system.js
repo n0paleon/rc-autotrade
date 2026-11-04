@@ -12,6 +12,7 @@
  *   eventLoop   event-loop utilization and delay percentiles in milliseconds
  *   gc          every V8 garbage-collection pause (kind + duration) so a
  *               latency spike can be matched to a major GC
+ *   db          SQLite file sizes, query latency, slow statements, WAL state
  *   health      ok / warn / critical derived from the metrics above
  *
  * Every dependency can be injected so the sampler is deterministic in tests.
@@ -27,6 +28,7 @@ import {
   monitorEventLoopDelay,
   performance
 } from "node:perf_hooks";
+import { DB_THRESHOLDS } from "./db-metrics.js";
 
 const DEFAULT_INTERVAL_MS = 2_000;
 const MIN_INTERVAL_MS = 500;
@@ -88,6 +90,22 @@ function safeCall(fn, fallback) {
   } catch {
     return fallback;
   }
+}
+
+/** Deep-ish copy of a DbMetrics view so callers cannot mutate the sample. */
+function copyDbView(view) {
+  return {
+    ...view,
+    files: { ...view.files },
+    storage: { ...view.storage },
+    sqlite: { ...view.sqlite },
+    queries: { ...view.queries },
+    transactions: { ...view.transactions },
+    window: { ...view.window },
+    thresholds: { ...view.thresholds },
+    recentSlow: view.recentSlow.map((item) => ({ ...item })),
+    history: view.history.map((point) => ({ ...point }))
+  };
 }
 
 /**
@@ -369,7 +387,8 @@ export class SystemMonitor {
     activeHandles = () => readActiveHandles(),
     activeRequests = () => readActiveRequests(),
     histogram = undefined,
-    gc = undefined
+    gc = undefined,
+    db = null
   } = {}) {
     const interval = Math.floor(Number(intervalMs));
     this.intervalMs = Number.isFinite(interval)
@@ -402,6 +421,8 @@ export class SystemMonitor {
     // `gc: null` disables GC tracking (used by deterministic unit tests that
     // do not care about it); otherwise the monitor owns the tracker.
     this.gc = gc === undefined ? new GcTracker({ now }) : gc;
+    // The DB probe is instrumented by the store; the monitor only samples it.
+    this.db = db;
 
     this.previous = null;
     this.previousElu = null;
@@ -534,7 +555,15 @@ export class SystemMonitor {
     this.previousGcAt = at;
 
     const gc = this.gc ? this.gc.snapshot() : null;
-    const health = classifyHealth({ cpu, memory: memoryView, system: systemView, eventLoop, gc });
+    const dbView = this.db ? this.db.sample() : null;
+    const health = classifyHealth({
+      cpu,
+      memory: memoryView,
+      system: systemView,
+      eventLoop,
+      gc,
+      db: dbView
+    });
 
     this.history.push({
       at,
@@ -556,6 +585,7 @@ export class SystemMonitor {
       system: systemView,
       eventLoop,
       gc,
+      db: dbView,
       health
     };
 
@@ -600,6 +630,7 @@ export class SystemMonitor {
             recent: this.latest.gc.recent.map((event) => ({ ...event }))
           }
         : null,
+      db: this.latest.db ? copyDbView(this.latest.db) : null,
       health: {
         level: this.latest.health.level,
         reasons: [...this.latest.health.reasons]
@@ -646,10 +677,10 @@ export class SystemMonitor {
 /**
  * Maps raw metrics to a coarse health level. Only the metrics that actually
  * destabilise a Node process raise the alarm: heap pressure, host RAM
- * exhaustion, a long GC pause, and event-loop stall. CPU is advisory because
- * bursts are normal for a purchase engine.
+ * exhaustion, a long GC pause, event-loop stall, and slow SQLite queries or a
+ * bloated WAL. CPU is advisory because bursts are normal for a purchase engine.
  */
-export function classifyHealth({ cpu, memory, system, eventLoop, gc } = {}) {
+export function classifyHealth({ cpu, memory, system, eventLoop, gc, db } = {}) {
   const reasons = [];
   let level = "ok";
   const escalate = (next) => {
@@ -709,6 +740,40 @@ export function classifyHealth({ cpu, memory, system, eventLoop, gc } = {}) {
   if (Number.isFinite(cpuPercent) && cpuPercent >= SYSTEM_THRESHOLDS.cpuWarn) {
     escalate("warn");
     reasons.push(`worker cpu ${cpuPercent.toFixed(0)}%`);
+  }
+
+  // SQLite: only the rolling window raises health, so one old slow checkpoint
+  // does not pin the worker in a warning state forever.
+  const dbWarnMs = Number(db?.thresholds?.p95WarnMs) || DB_THRESHOLDS.p95WarnMs;
+  const dbCriticalMs = Number(db?.thresholds?.p95CriticalMs) || DB_THRESHOLDS.p95CriticalMs;
+  const dbP95 = Number(db?.window?.p95Ms);
+  if (Number.isFinite(dbP95) && dbP95 > 0) {
+    if (dbP95 >= dbCriticalMs) {
+      escalate("critical");
+      reasons.push(`db p95 ${dbP95.toFixed(0)}ms`);
+    } else if (dbP95 >= dbWarnMs) {
+      escalate("warn");
+      reasons.push(`db p95 ${dbP95.toFixed(0)}ms`);
+    }
+  }
+
+  const walBytes = Number(db?.files?.wal);
+  const walWarn = Number(db?.thresholds?.walWarnBytes) || DB_THRESHOLDS.walWarnBytes;
+  const walCritical = Number(db?.thresholds?.walCriticalBytes) || DB_THRESHOLDS.walCriticalBytes;
+  if (Number.isFinite(walBytes) && walBytes > 0) {
+    if (walBytes >= walCritical) {
+      escalate("critical");
+      reasons.push(`WAL ${(walBytes / (1024 * 1024)).toFixed(0)}MB`);
+    } else if (walBytes >= walWarn) {
+      escalate("warn");
+      reasons.push(`WAL ${(walBytes / (1024 * 1024)).toFixed(0)}MB`);
+    }
+  }
+
+  const dbErrors = (Number(db?.window?.errors) || 0) + (Number(db?.window?.busy) || 0);
+  if (dbErrors > 0) {
+    escalate("warn");
+    reasons.push(`db errors ${dbErrors}`);
   }
 
   return { level, reasons };

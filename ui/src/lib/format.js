@@ -234,6 +234,18 @@ export function formatMs(value) {
   return `${(number / 1000).toFixed(2)}s`;
 }
 
+/**
+ * Millisecond formatter for sub-millisecond work such as SQLite statements:
+ * 0.42ms stays visible instead of rounding to "0ms".
+ */
+export function formatPreciseMs(value) {
+  const number = Number(value);
+  if (value === null || value === undefined || !Number.isFinite(number) || number < 0) return "—";
+  if (number < 10) return `${number.toFixed(2)}ms`;
+  if (number < 1000) return `${number.toFixed(0)}ms`;
+  return `${(number / 1000).toFixed(2)}s`;
+}
+
 /** Color class for a latency value. */
 export function latencyClass(value) {
   if (value === null || value === undefined) return "";

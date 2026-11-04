@@ -72,6 +72,9 @@ untuk login, mengatur target, memantau market, dan melihat loot.
 - **GC event detection** — `PerformanceObserver` menangkap setiap garbage collection V8 (minor/
   major, durasi pause, timestamp asli). Panel menampilkan agregat 60 detik, tipe GC terakhir, dan
   sparkline pause per sampel, sehingga lonjakan ping bisa dicocokkan dengan major GC penyebabnya.
+- **DB performance metrics** — setiap statement SQLite di-timing (read/write, avg/p95/max, error,
+  slow query), plus ukuran file DB/WAL/-shm, page/freelist, mode jurnal, cache, dan transaksi.
+  Sparkline query rate membantu melihat lonjakan I/O yang menahan event loop.
 - **Mock mode** — simulator market bawaan untuk mencoba seluruh alur tanpa akun Rollercoin.
 - **Test suite** — unit test untuk rules/validation/event/store + integration test end-to-end.
 
@@ -716,13 +719,17 @@ Tab **SYSTEM** menampilkan:
 | `GC paused` | Total durasi pause GC dalam 60 detik terakhir |
 | `GC max` | Pause GC terpanjang dalam 60 detik — biasanya mark-sweep (major) |
 | `Last GC` | Event GC terakhir: tipe, durasi, dan umurnya |
+| `DB` / `WAL` | Ukuran file `rollercoin.db`, `-wal`, dan `-shm` di disk |
+| `Q/S` | Statement SQLite per detik sejak sampel terakhir |
+| `DB p95` | Persentil 95 durasi statement dalam 60 detik (lihat bagian performa database) |
 | `Handles` | `process.getActiveResourcesInfo().length` |
 
 Status health: `HEALTHY` → `DEGRADED` pada heap ≥ 80%, RAM ≥ 88%, event-loop p95 ≥ 100 ms, GC pause
-≥ 120 ms dalam 15 detik terakhir, atau CPU worker ≥ 95%; `CRITICAL` pada heap ≥ 92%, RAM ≥ 96%,
-p95 ≥ 250 ms, atau GC pause ≥ 300 ms. Transisi ke `DEGRADED`/`CRITICAL` (dan pemulihannya) ditulis
-ke log scope `system`, jadi tetap terlihat walau tidak ada browser yang terbuka. Panel live lewat
-broadcast `system` tiap 5 detik dan juga mem-poll `GET /api/system` tiap 10 detik sebagai fallback.
+≥ 120 ms dalam 15 detik terakhir, DB p95 ≥ 25 ms, WAL ≥ 64 MB, ada error SQLite, atau CPU worker
+≥ 95%; `CRITICAL` pada heap ≥ 92%, RAM ≥ 96%, p95 ≥ 250 ms, GC pause ≥ 300 ms, DB p95 ≥ 100 ms,
+atau WAL ≥ 256 MB. Transisi ke `DEGRADED`/`CRITICAL` (dan pemulihannya) ditulis ke log scope
+`system`, jadi tetap terlihat walau tidak ada browser yang terbuka. Panel live lewat broadcast
+`system` tiap 5 detik dan juga mem-poll `GET /api/system` tiap 10 detik sebagai fallback.
 
 ### Deteksi GC event
 
@@ -745,6 +752,30 @@ dibandingkan langsung dengan spike di tab **LATENCY** (WS ping) atau ping contro
 Ambang warning/critical juga ikut dikirim di payload (`gc.thresholds`) supaya UI dan health tidak
 memakai angka yang berbeda. GC tracking memakai `perf_hooks` bawaan Node; tidak ada dependency baru
 dan tidak ada overhead berarti.
+
+### Performa database (SQLite)
+
+Semua statement yang melewati `Store` diukur. `DbMetrics` membungkus `db.prepare()` dan
+`db.transaction()` **sebelum** prepared statement hot-path dibuat, lalu mencatat durasi setiap
+`run` / `get` / `all` dengan `performance.now()`. Yang dikumpulkan:
+
+| Blok | Isi |
+| --- | --- |
+| `files` | Ukuran `rollercoin.db`, `-wal`, `-shm`, dan totalnya |
+| `storage` | `page_size`, `page_count`, `freelist_count`, payload bytes, free bytes, utilisasi halaman |
+| `sqlite` | `sqlite_version`, `journal_mode`, `synchronous`, `cache_size`, `wal_autocheckpoint`, `busy_timeout` |
+| `queries` | Total statement, read/write/pragma/schema, error, `SQLITE_BUSY`, avg/max/last ms, rate per detik |
+| `window` | Agregat 60 detik terakhir: count per jenis, avg/max/p95 ms, error, slow |
+| `transactions` | Jumlah commit/rollback, total dan max wall time |
+| `recentSlow` | 10 statement terakhir di atas ambang lambat, berisi SQL snippet (bukan value) |
+| `history` | Titik per sampel: `qps`, `avgMs`, `p95Ms`, `dbBytes`, `walBytes` |
+
+Ambang: statement ≥ 20 ms masuk daftar **slow**; health naik ke `DEGRADED` saat DB p95 ≥ 25 ms,
+ada error/busy di window, atau WAL ≥ 64 MB; `CRITICAL` saat p95 ≥ 100 ms atau WAL ≥ 256 MB. Panel
+**SYSTEM** menampilkan blok SQLite (DB/WAL, Q/S, p95, avg, max, TX, ERR), dua slow query terbaru,
+dan sparkline **SQL WINDOW**. Instrumentasi hanya menyimpan teks SQL, tidak pernah nilai parameter;
+overhead-nya satu `performance.now()` per statement, dan `db.pragma()` untuk sampling tidak ikut
+dihitung sebagai query aplikasi.
 
 ---
 
@@ -1114,13 +1145,14 @@ Cakupan:
 - `engine.test.js` — order gagal tidak menambah book; fill sukses menguranginya.
 - `keepalive.test.js` — warm probe, idle timeout, dan suspend saat `403`/`429`.
 - `latency.test.js` — rolling sample per channel, percentile, dan jitter.
-- `system.test.js` — delta CPU/event loop, batas history, dan klasifikasi health worker.
+- `system.test.js` — delta CPU/event loop, batas history, GC, DB view, dan klasifikasi health worker.
+- `db-metrics.test.js` — instrumentasi statement/transaksi, window 60 detik, slow query, ukuran file.
 - `report.test.js` — agregat profit per produk bertahan setelah loot log berputar.
-- `format.test.js` — formatter UI (label itemType, URL marketplace, byte/percent).
+- `format.test.js` — formatter UI (label itemType, URL marketplace, byte/percent/ms presisi).
 - `session.test.js` — jadwal refresh token dan fallback token opaque.
 - `integration.test.js` — spawn worker mock, auth, CRUD, settings, CORS, session push, item-info, WS, fill.
 
-Total 98 test; integration test memakai port acak dan data directory sementara.
+Total 107 test; integration test memakai port acak dan data directory sementara.
 
 ---
 
@@ -1158,7 +1190,8 @@ Total 98 test; integration test memakai port acak dan data directory sementara.
 │       ├── engine.js        # matching + order execution + 24h minute history
 │       ├── item-info.js     # auto label/rarity resolver
 │       ├── events.js        # upstream frame normalizer
-│       ├── system.js        # CPU/heap/event-loop/host health sampler
+│       ├── system.js        # CPU/heap/event-loop/GC/host health sampler
+│       ├── db-metrics.js    # SQLite statement timing, file/WAL and slow-query probe
 │       ├── server.js        # control plane HTTP/WS + static UI
 │       └── reset-token.js
 ├── test/

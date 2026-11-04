@@ -258,6 +258,36 @@ test("SystemMonitor attributes GC pauses to the sample that saw them", () => {
   assert.equal(view.health.level, "ok", "30ms is below the warning threshold");
 });
 
+test("SystemMonitor embeds the DB probe view", () => {
+  let calls = 0;
+  const dbView = {
+    instrumented: true,
+    files: { db: 1, wal: 2, shm: 0, total: 3 },
+    storage: {},
+    sqlite: {},
+    queries: {},
+    transactions: {},
+    window: { p95Ms: 0, errors: 0, busy: 0 },
+    thresholds: {},
+    recentSlow: [],
+    history: []
+  };
+  const { monitor } = harness({
+    db: {
+      sample: () => {
+        calls += 1;
+        return dbView;
+      }
+    }
+  });
+
+  const view = monitor.sample();
+  assert.equal(calls, 1);
+  assert.equal(view.db.files.total, 3);
+  assert.equal(view.db.window.p95Ms, 0);
+  assert.doesNotThrow(() => JSON.stringify(view));
+});
+
 test("classifyHealth escalates heap, host memory, loop lag, GC and CPU", () => {
   assert.equal(classifyHealth({}).level, "ok");
   assert.deepEqual(classifyHealth({}).reasons, []);
@@ -285,6 +315,17 @@ test("classifyHealth escalates heap, host memory, loop lag, GC and CPU", () => {
     "ok",
     "an old GC pause must not pin health forever"
   );
+
+  const dbWarn = classifyHealth({
+    db: { window: { p95Ms: 30 }, thresholds: { p95WarnMs: 25, p95CriticalMs: 100 } }
+  });
+  assert.equal(dbWarn.level, "warn");
+  assert.match(dbWarn.reasons[0], /db p95 30ms/);
+  assert.equal(
+    classifyHealth({ db: { files: { wal: 300 * MB }, thresholds: { walCriticalBytes: 256 * MB } } }).level,
+    "critical"
+  );
+  assert.equal(classifyHealth({ db: { window: { errors: 1 } } }).level, "warn");
 
   const cpuOnly = classifyHealth({ cpu: { processPercent: 130 } });
   assert.equal(cpuOnly.level, "warn");

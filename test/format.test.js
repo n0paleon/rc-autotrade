@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   formatBytes,
   formatPercent,
+  formatPreciseMs,
   itemTypeLabel,
   itemTypeOf,
   ITEM_TYPE_ORDER,
@@ -73,4 +74,15 @@ test("formats percentages and colors utilization brackets", () => {
   assert.equal(thresholdClass(85, 80, 92), "text-warn");
   assert.equal(thresholdClass(95, 80, 92), "text-danger");
   assert.equal(thresholdClass(undefined, 80, 92), "text-muted");
+});
+
+test("formatPreciseMs keeps sub-millisecond SQLite timings visible", () => {
+  assert.equal(formatPreciseMs(0), "0.00ms");
+  assert.equal(formatPreciseMs(0.42), "0.42ms");
+  assert.equal(formatPreciseMs(9.876), "9.88ms");
+  assert.equal(formatPreciseMs(42.4), "42ms");
+  assert.equal(formatPreciseMs(1200), "1.20s");
+  assert.equal(formatPreciseMs(null), "—");
+  assert.equal(formatPreciseMs(Number.NaN), "—");
+  assert.equal(formatPreciseMs(-1), "—");
 });

@@ -394,6 +394,17 @@ test("system monitor exposes live worker and host metrics", { timeout: TIMEOUT }
   assert.equal(system.gc.thresholds.warnMs > 0, true);
   assert.ok("gc" in system.history[0], "history must carry the per-sample GC pause");
 
+  assert.ok(system.db, "DB view must be present");
+  assert.equal(system.db.instrumented, true);
+  assert.equal(system.db.sqlite.journalMode, "wal");
+  assert.ok(system.db.storage.pageSize > 0);
+  assert.ok(system.db.storage.dataBytes > 0);
+  assert.ok(system.db.files.db > 0, "the SQLite file must be measured");
+  assert.equal(system.db.queries.statements >= 0, true);
+  assert.equal(typeof system.db.window.p95Ms, "number");
+  assert.ok(Array.isArray(system.db.recentSlow));
+  assert.ok(Array.isArray(system.db.history));
+
   const state = await (await fetch(`${baseUrl}/api/state`, { headers: authHeaders() })).json();
   assert.ok(state.system, "snapshot must embed the system view");
   assert.ok(state.system.memory.rss > 0);

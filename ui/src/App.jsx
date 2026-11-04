@@ -35,6 +35,7 @@ import {
   trimPrice,
   drawPixelAvatar,
   formatMs,
+  formatPreciseMs,
   formatBytes,
   formatPercent,
   latencyClass,
@@ -1626,6 +1627,15 @@ function SystemPanel({ snapshot, worker }) {
   const gcTotals = gc?.totals || {};
   const gcWarn = Number(gc?.thresholds?.warnMs) || 120;
   const gcCritical = Number(gc?.thresholds?.criticalMs) || 300;
+  const db = system?.db || null;
+  const dbFiles = db?.files || {};
+  const dbStorage = db?.storage || {};
+  const dbSqlite = db?.sqlite || {};
+  const dbQueries = db?.queries || {};
+  const dbWindow = db?.window || {};
+  const dbTransactions = db?.transactions || {};
+  const dbWarn = Number(db?.thresholds?.p95WarnMs) || 25;
+  const dbCritical = Number(db?.thresholds?.p95CriticalMs) || 100;
 
   // Safety net: the worker pushes `system` alongside gateway/latency every 5s.
   // Quietly poll as well so the panel survives a missed push after a reconnect.
@@ -1789,6 +1799,65 @@ function SystemPanel({ snapshot, worker }) {
           </div>
         </div>
 
+        <div className="border-2 border-line bg-night-950/60 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="label flex items-center gap-1.5">
+              <Icon name="i-download" className="h-3 w-3" /> SQLite · {dbSqlite.journalMode || "—"}
+            </span>
+            <span
+              className={`font-mono text-[12px] uppercase tracking-[0.08em] ${
+                db?.instrumented ? "text-signal" : "text-faint"
+              }`}
+              title="Statements are timed through wrapped prepare/transaction calls"
+            >
+              {db?.instrumented ? "instrumented" : "not instrumented"}
+            </span>
+          </div>
+          <div className="mt-2 grid grid-cols-4 gap-1.5">
+            {[
+              ["DB", formatBytes(dbFiles.db), "text-ink-dim"],
+              ["WAL", formatBytes(dbFiles.wal), thresholdClass(dbFiles.wal, db?.thresholds?.walWarnBytes, db?.thresholds?.walCriticalBytes)],
+              ["Q/S", Number(dbQueries.rate).toFixed(1), "text-violet"],
+              ["P95", formatPreciseMs(dbWindow.p95Ms), thresholdClass(dbWindow.p95Ms, dbWarn, dbCritical)],
+              ["AVG", formatPreciseMs(dbWindow.avgMs), "text-ink-dim"],
+              ["MAX", formatPreciseMs(dbWindow.maxMs), thresholdClass(dbWindow.maxMs, dbWarn * 4, dbCritical)],
+              ["TX", formatInt(dbTransactions.count || 0), "text-ink-dim"],
+              [
+                "ERR",
+                formatInt((dbWindow.errors || 0) + (dbWindow.busy || 0)),
+                dbWindow.errors + dbWindow.busy > 0 ? "text-danger" : "text-ink-dim"
+              ]
+            ].map(([key, value, tone]) => (
+              <span
+                key={key}
+                className="flex flex-col gap-0.5 border border-line/70 bg-night-900/60 px-1.5 py-1 font-mono text-[12px] uppercase tracking-[0.08em] text-faint"
+              >
+                {key}
+                <b className={`text-[12px] font-semibold tabular-nums ${tone || "text-ink-dim"}`}>{value}</b>
+              </span>
+            ))}
+          </div>
+          {db?.recentSlow?.length ? (
+            <div className="mt-2 space-y-1">
+              {db.recentSlow.slice(0, 2).map((item, index) => (
+                <div
+                  key={`${item.at}-${index}`}
+                  className="flex items-baseline gap-2 font-mono text-[11px] uppercase tracking-[0.06em]"
+                >
+                  <b className="shrink-0 text-warn">{formatPreciseMs(item.ms)}</b>
+                  <code className="truncate text-faint" title={item.sql}>
+                    {item.sql}
+                  </code>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <span className="mt-1.5 block font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+              {formatInt(dbWindow.count || 0)} statements · no slow queries in the last 60s
+            </span>
+          )}
+        </div>
+
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           <HistoryStrip
             label="CPU window"
@@ -1808,15 +1877,22 @@ function SystemPanel({ snapshot, worker }) {
             format={(value) => formatMs(value)}
             tone={(value) => thresholdClass(value, gcWarn, gcCritical)}
           />
+          <HistoryStrip
+            label="SQL window"
+            bars={sparkBars((db?.history || []).map((point) => point.qps ?? 0))}
+            format={(value) => `${Number(value).toFixed(1)}/s`}
+            tone={() => "text-violet"}
+          />
         </div>
 
         <p className="text-[13px] leading-relaxed text-faint">
           Sampled every {formatInt(Math.round((system.intervalMs || 2000) / 1000)) || 1}s, pushed every
           5s. CPU is the worker process as a percentage of one core; system RAM uses MemAvailable on
-          Linux. Warnings trigger at 80% heap, 88% RAM, 100ms event-loop p95, or a GC pause above{" "}
-          {formatInt(gcWarn)}ms in the last 15s (critical at {formatInt(gcCritical)}ms). GC pauses
-          come straight from V8 perf entries, so a spike in the ping panel can be matched to the
-          major GC that caused it.
+          Linux. Warnings trigger at 80% heap, 88% RAM, 100ms event-loop p95, a GC pause above{" "}
+          {formatInt(gcWarn)}ms in the last 15s, a DB p95 above {formatInt(dbWarn)}ms, or a WAL above{" "}
+          {formatBytes(db?.thresholds?.walWarnBytes || 64 * 1024 * 1024)}. GC pauses come straight from
+          V8 perf entries, so a spike in the ping panel can be matched to the major GC that caused it.
+          Query timings include only the SQL text, never bound values.
         </p>
       </div>
     </section>

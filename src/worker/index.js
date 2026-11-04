@@ -12,6 +12,7 @@ import { ItemInfoService } from "./item-info.js";
 import { ControlServer } from "./server.js";
 import { LatencyTracker } from "./latency.js";
 import { SystemMonitor } from "./system.js";
+import { DbMetrics } from "./db-metrics.js";
 import { APP_NAME, APP_VERSION } from "../shared/constants.js";
 
 const MOCK_TARGETS = [
@@ -80,7 +81,17 @@ async function main() {
   const logger = createLogger({ level: config.logLevel });
   const startedAt = Date.now();
 
-  const store = new Store({ dataDir: config.dataDir, logger }).load();
+  const store = new Store({ dataDir: config.dataDir, logger });
+  // The DB probe must be attached before Store.load() prepares its statements,
+  // otherwise the hot queries would bypass the timing wrappers.
+  const dbMetrics = new DbMetrics({
+    files: {
+      db: store.dbFile,
+      wal: `${store.dbFile}-wal`,
+      shm: `${store.dbFile}-shm`
+    }
+  });
+  store.load({ dbMetrics });
   const tokenInfo = store.ensureWorkerToken(config.workerToken);
   if (tokenInfo.source === "generated") {
     store.flush();
@@ -152,9 +163,9 @@ async function main() {
 
   const itemInfo = new ItemInfoService({ store, api, logger });
 
-  // Worker/host health sampler (CPU, memory, event loop, load). Runs even
-  // without connected clients so health transitions still reach the log.
-  const system = new SystemMonitor({ intervalMs: config.systemSampleMs });
+  // Worker/host health sampler (CPU, memory, event loop, load, GC, DB).
+  // Runs even without connected clients so health transitions still reach the log.
+  const system = new SystemMonitor({ intervalMs: config.systemSampleMs, db: dbMetrics });
   system.start();
 
   let broadcast = () => {};
