@@ -1,6 +1,6 @@
 # TURU.RC // MARKET SNIPER
 
-Headless **Rollercoin marketplace sniper** dengan control deck bergaya pixel arcade.
+Headless **Rollercoin marketplace sniper** dengan control deck bergaya night cabinet, dibangun dengan React 19 + Tailwind CSS v4.
 Dulu `trade.js` harus ditempel di console browser dan ikut melambat saat tab inactive.
 Sekarang engine berjalan sebagai proses Node.js terpisah; browser hanya menjadi **data plane**
 untuk login, mengatur target, memantau market, dan melihat loot.
@@ -776,7 +776,7 @@ Total 54 test; integration test memakai port acak dan data directory sementara.
 │       ├── useToasts.js
 │       ├── components/      # PriceChart (Recharts), modals
 │       ├── lib/             # client, format, sound
-│       └── styles.css       # tema pixel arcade
+│       └── styles.css       # entry Tailwind v4 + token desain
 ├── public/                  # aset statis (bridge.js, favicon, fallback)
 ├── dist/                    # hasil build Vite yang disajikan worker
 ├── src/
@@ -844,4 +844,4 @@ Total 54 test; integration test memakai port acak dan data directory sementara.
 
 ---
 
-Original bot by **@nopaleon.log** / **@n0paleon** · arcade edition. Not affiliated with Rollercoin.
+Original bot by **@nopaleon.log** / **@n0paleon**. Not affiliated with Rollercoin.
