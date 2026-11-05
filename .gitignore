@@ -36,3 +36,5 @@ legacy/
 # others
 opencode.jsonc
 .dsh
+package-lock.json
+bun.lock
