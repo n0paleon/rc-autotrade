@@ -12,10 +12,16 @@
  *      excursions in log space before any average sees them.
  *   3. Confidence must be explicit. Few samples, long gaps, or a frozen feed
  *      lower a score the UI can show instead of pretending the line is solid.
+ *   4. Uncertainty must be a number, not a vibe. The model publishes how far
+ *      the level may sit from the live market (`errorBandPct`) and the target is
+ *      classified against that band, so a ±2% label is never printed while the
+ *      level itself can be 8% off.
  *
  * Everything here is pure: no clock, no store, no config mutation. The engine
  * decides when to call it; the UI only renders the result.
  */
+
+import { TREND_CALIBRATION } from "./trend-calibration.js";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -25,13 +31,19 @@ export const TREND = Object.freeze({
   lookbackMs: 24 * HOUR,
   /** Fast leg of the oscillator — tracks the last few frames. */
   fastTauMs: 15 * MINUTE,
-  /** Slow leg — the trend level itself. */
+  /** Slow leg of the oscillator, and the dispersion baseline for `noisePct`. */
   slowTauMs: 60 * MINUTE,
-  /** Signal line: an EMA of the oscillator, like MACD's signal. */
-  signalTauMs: 20 * MINUTE,
+  /** Window the reference level is taken from; wide enough to smooth, short enough not to lag. */
+  levelWindowMs: 2 * HOUR,
+  /** Used when the primary window holds fewer than `levelMinPoints` observations. */
+  levelFallbackMs: 6 * HOUR,
+  /** Below this the median is not a median, it is one or two quotes. */
+  levelMinPoints: 3,
   /** Window for the independent regression slope (%/hour). */
   slopeWindowMs: 3 * HOUR,
-  /** Longest gap treated as continuous; larger gaps still move the EMA but count against confidence. */
+  /** |t| the slope must clear before the model is willing to call a direction. */
+  slopeTStat: 2,
+  /** A hole this large counts against confidence and makes the depth series ineligible. */
   maxGapMs: 30 * MINUTE,
   /** A feed with no frame for this long is stale and must not drive a suggestion. */
   staleMs: 30 * MINUTE,
@@ -50,7 +62,43 @@ export const TREND = Object.freeze({
   /** Wider band used to *leave* NEAR, so the label does not flap on a rounding edge. */
   nearExitPct: 3,
   /** A target this far under the trend may never fill. */
-  farBelowPct: 20
+  farBelowPct: 20,
+  /**
+   * Confidence weights. They sum to 1 and are scaled by a source-quality
+   * factor, so the score can be audited and recalibrated term by term instead
+   * of being a pile of magic numbers.
+   */
+  weight: Object.freeze({
+    fresh: 0.34,
+    span: 0.28,
+    count: 0.22,
+    gap: 0.16
+  }),
+  /** Penalties for a reference the model itself considers weaker than a depth VWAP. */
+  topSourceQuality: 0.85,
+  thinBookQuality: 0.7,
+  approxFillQuality: 0.9,
+  /** Coverage (fraction of the 1-minute grid) that already counts as a dense series. */
+  fullCoveragePct: 25,
+  /**
+   * Uncertainty band: how far the smoothed level may sit from the price the
+   * market actually trades at. Dispersion and lag are the two terms a replay
+   * over the stored series showed to matter; the clamps keep one wild frame
+   * from declaring a whole series unknowable.
+   */
+  errorBandNoiseFactor: 0.9,
+  errorBandLagFactor: 1.2,
+  errorBandMinPct: 2,
+  /** Wide enough that a calibrated factor is not clipped back to the formula. */
+  errorBandMaxPct: 20,
+  /** Classification band, clamped to the same section as the uncertainty itself. */
+  bandMaxPct: 10,
+  /**
+   * At or above this width the middle zone reads UNSURE instead of NEAR: the
+   * level is too loose for "at trend" to say anything the error bars do not.
+   * Sits near the median band measured on the stored series (~5%).
+   */
+  unsureBandPct: 5
 });
 
 function clamp(value, min, max) {
@@ -115,16 +163,48 @@ function hampel(values, window, sigma) {
   return { values: out, outliers };
 }
 
-/** Time-aware EMA; a gap is clamped so one late frame cannot reset the leg. */
-function ema(values, times, tauMs, capMs) {
+/**
+ * Time-aware EMA. `dt` is used as-is, with no cap: after a six-hour hole the
+ * old average carries no information about the new price, and `alpha → 1` says
+ * so on its own. Clamping `dt` at `maxGapMs` made the leg crawl toward the new
+ * level (39% of the jump for the 60-minute tau), which left the oscillator
+ * reporting momentum for hours after the move had already happened. On the
+ * stored series dropping the cap narrowed the calibrated band (p50 7.8% → 7.3%
+ * at equal coverage) and improved the rank correlation between the published
+ * band and the realised error (0.21 → 0.26).
+ */
+function ema(values, times, tauMs) {
   const out = new Array(values.length);
   out[0] = values[0];
   for (let i = 1; i < values.length; i += 1) {
-    const dt = clamp(times[i] - times[i - 1], 0, capMs);
+    const dt = Math.max(times[i] - times[i - 1], 0);
     const alpha = dt > 0 ? 1 - Math.exp(-dt / tauMs) : 0;
     out[i] = out[i - 1] + alpha * (values[i] - out[i - 1]);
   }
   return out;
+}
+
+/**
+ * The level the target is compared against: a geometric median of the recent
+ * window, not the EMA endpoint.
+ *
+ * The EMA is an exponential blend, so a 60-minute tau trails a move by roughly
+ * a full tau; on the stored series its endpoint sat a median 4.2% from the
+ * live price and 8.7% at p75, which is exactly the width of the classification
+ * band it was being used to judge. A median ignores the shape of the decay and
+ * tolerates a single wild quote, so it tracks the traded level far better
+ * (3.4% / 7.5% on the same replay) while staying as smooth as the EMA.
+ *
+ * When the window is too empty to take a median — a quiet item, a long hole —
+ * the next window up is tried, and only then does the caller's fallback win.
+ */
+function robustLevel(points, now, fallback) {
+  const logsOf = (window) => Math.exp(median(window.map((point) => Math.log(point.p))));
+  const recent = points.filter((point) => point.t >= now - TREND.levelWindowMs);
+  if (recent.length >= TREND.levelMinPoints) return logsOf(recent);
+  const wide = points.filter((point) => point.t >= now - TREND.levelFallbackMs);
+  if (wide.length >= TREND.levelMinPoints) return logsOf(wide);
+  return fallback;
 }
 
 /**
@@ -165,8 +245,33 @@ function weightedSlope(values, times, windowMs) {
     denominator += ws[i] * dx * dx;
   }
   if (denominator <= 1e-12) return null;
-  // log slope × 100 ≈ percent change per hour for the small moves seen here.
-  return (numerator / denominator) * 100;
+  const rawSlope = numerator / denominator;
+  // Weighted residual variance gives the slope a standard error, so "up" can
+  // mean "the regression can tell it apart from noise" instead of "the sign of
+  // a number that is mostly noise".
+  let sse = 0;
+  for (let i = 0; i < xs.length; i += 1) {
+    const fitted = yMean + rawSlope * (xs[i] - xMean);
+    sse += ws[i] * (ys[i] - fitted) ** 2;
+  }
+  const dof = xs.length - 2;
+  const se = dof > 0 && sse > 0 ? Math.sqrt(sse / dof / denominator) : 0;
+  return {
+    // log slope × 100 ≈ percent change per hour for the small moves seen here.
+    value: rawSlope * 100,
+    tStat: se > 0 ? rawSlope / se : 0
+  };
+}
+
+/**
+ * Scale factor measured by `scripts/calibrate-trend.js`: how much the built-in
+ * estimate under-states the error this worker actually observes. 1 when the
+ * worker has never been calibrated, so the model degrades to its own estimate.
+ */
+export function calibrationFactor(source = "top") {
+  const factors = TREND_CALIBRATION?.factors ?? {};
+  const value = factors[source] ?? factors.pooled;
+  return Number.isFinite(value) && value > 0 ? value : 1;
 }
 
 /**
@@ -180,22 +285,28 @@ export function computeTrendModel(history, options = {}) {
   const bookQty = Number.isFinite(options.bookQty) ? options.bookQty : null;
   const minQty = Number.isFinite(options.minQty) ? options.minQty : null;
 
+  const source = options.source === "depth" ? "depth" : "top";
+  const fillApprox = Boolean(options.fill?.approx);
+
   const base = {
     status: "no_data",
     reason: "not enough samples",
-    source: options.source === "depth" ? "depth" : "top",
+    source,
     fillPrice: Number.isFinite(options.fill?.price) ? options.fill.price : null,
     fillQty: Number.isFinite(options.fill?.filled) ? options.fill.filled : null,
     fillPartial: Boolean(options.fill?.partial),
-    fillApprox: Boolean(options.fill?.approx),
+    fillApprox,
     trend: null,
     fast: null,
     momentumPct: null,
-    signalPct: null,
-    histPct: null,
     slopePctPerHour: null,
+    slopeTStat: null,
     noisePct: null,
     confidence: 0,
+    /** How far the level may sit from the live market; null until the model runs. */
+    errorBandPct: null,
+    /** "calibrated" when the band came from the measured history, else "formula". */
+    bandSource: null,
     points: points.length,
     spanMs: 0,
     maxGapMs: null,
@@ -232,39 +343,90 @@ export function computeTrendModel(history, options = {}) {
   const logs = points.map((point) => Math.log(point.p));
   const cleaned = hampel(logs, TREND.hampelWindow, TREND.hampelSigma);
 
-  const fast = ema(cleaned.values, times, TREND.fastTauMs, TREND.maxGapMs);
-  const slow = ema(cleaned.values, times, TREND.slowTauMs, TREND.maxGapMs);
-  const momentum = fast.map((value, index) => (value - slow[index]) * 100);
-  const signal = ema(momentum, times, TREND.signalTauMs, TREND.maxGapMs);
+  const fast = ema(cleaned.values, times, TREND.fastTauMs);
+  const slow = ema(cleaned.values, times, TREND.slowTauMs);
 
   const last = logs.length - 1;
-  const trend = Math.exp(slow[last]);
+  // The reference level is the robust median; the EMA legs stay because
+  // `momentumPct` and the dispersion baseline still need a fast/slow pair.
+  const trend = robustLevel(points, now, Math.exp(slow[last]));
   const fastPrice = Math.exp(fast[last]);
   const momentumPct = (fast[last] - slow[last]) * 100;
-  const signalPct = signal[last];
-  const histPct = momentumPct - signalPct;
-  const slopePctPerHour = weightedSlope(cleaned.values, times, TREND.slopeWindowMs);
+  const slope = weightedSlope(cleaned.values, times, TREND.slopeWindowMs);
+  const slopePctPerHour = slope == null ? null : slope.value;
+  const slopeTStat = slope == null ? null : slope.tStat;
   const noisePct =
     median(cleaned.values.map((value, index) => Math.abs(value - slow[index]))) *
     1.4826 *
     100;
 
-  // Confidence is a product of how much data exists, how fresh it is, and how
-  // noisy it is — not of how strong the signal looks. A dramatic move on two
-  // frames must still read as unreliable.
+  // Confidence answers one question: how much evidence is there? Freshness,
+  // window, sample count, holes and coverage. Precision is a different question
+  // and has its own number (`errorBandPct`): folding dispersion and lag in here
+  // as well meant a noisy series was punished twice and the score stopped being
+  // explainable. `reliable` is the verdict that combines both.
   const fresh = clamp(1 - age / TREND.staleMs, 0, 1);
+  // Coverage gates the whole score, not one term: a window that is 2% populated
+  // cannot support *any* of the readings, no matter how fresh the last frame is
+  // or how calm the quotes look. Twelve hours with 17 points used to score in
+  // the fifties because "no noise" and "no lag" paid out regardless of evidence.
+  // The percentage is measured against a perfect 1-minute grid, which the feed
+  // never actually delivers, so 25% (a point every ~4 minutes) already counts as
+  // dense for a 15/60-minute EMA.
+  const density = clamp((coveragePct / 100) / (TREND.fullCoveragePct / 100), 0, 1);
   const spanScore = clamp(spanMs / (6 * HOUR), 0, 1);
   const countScore = clamp(points.length / 120, 0, 1);
-  const gapScore = clamp(1 - maxGap / (TREND.maxGapMs * 2), 0, 1);
-  const noiseScore = clamp(1 - noisePct / 4, 0, 1);
+  const gapScore = 1 / (1 + maxGap / (TREND.maxGapMs * 1.5));
+  // A top-ask series (depth history still warming up) and a thin book are
+  // weaker references than a depth VWAP for the configured order size.
+  const quality =
+    (source === "depth" ? 1 : TREND.topSourceQuality) *
+    (base.thinBook ? TREND.thinBookQuality : 1) *
+    (fillApprox ? TREND.approxFillQuality : 1);
+  const weight = TREND.weight;
   let confidence =
     100 *
-    (0.3 * fresh + 0.25 * spanScore + 0.2 * countScore + 0.15 * gapScore + 0.1 * noiseScore);
+    quality *
+    (0.4 + 0.6 * density) *
+    (weight.fresh * fresh +
+      weight.span * spanScore +
+      weight.count * countScore +
+      weight.gap * gapScore);
   if (stale) confidence = Math.min(confidence, 20);
 
+  // How far the level may sit from where the market actually trades. The raw
+  // estimate comes from dispersion (how widely quotes scatter around the trend)
+  // and lag (the fast/slow gap, which is how far the smoothed level trails a
+  // move). `calibrationFactor` rescales it by what the replay actually observed
+  // — 1.00 when the worker has never been calibrated.
+  const rawBandPct = clamp(
+    TREND.errorBandNoiseFactor * noisePct +
+      TREND.errorBandLagFactor * Math.abs(momentumPct),
+    TREND.errorBandMinPct,
+    TREND.errorBandMaxPct
+  );
+  const factor = calibrationFactor(source);
+  const errorBandPct = clamp(
+    rawBandPct * factor,
+    TREND.errorBandMinPct,
+    TREND.errorBandMaxPct
+  );
+
+  // A direction is only published when the regression clears its own noise
+  // floor; otherwise the honest label is "flat", not a coin flip dressed as a
+  // reading. Scored against the next hour on the stored series, the slope sign
+  // was right about half the time — so the field describes the last three hours
+  // and is never a forecast. `bun run calibrate:trend` re-measures it every run.
+  const directionSignificant =
+    slopeTStat != null && Math.abs(slopeTStat) >= TREND.slopeTStat;
   const directionValue = slopePctPerHour ?? momentumPct;
-  const direction =
-    directionValue > 0.3 ? "up" : directionValue < -0.3 ? "down" : "flat";
+  const direction = !directionSignificant
+    ? "flat"
+    : directionValue > 0.3
+      ? "up"
+      : directionValue < -0.3
+        ? "down"
+        : "flat";
 
   return {
     ...base,
@@ -273,11 +435,12 @@ export function computeTrendModel(history, options = {}) {
     trend: round(trend, 6),
     fast: round(fastPrice, 6),
     momentumPct: round(momentumPct, 3),
-    signalPct: round(signalPct, 3),
-    histPct: round(histPct, 3),
     slopePctPerHour: slopePctPerHour == null ? null : round(slopePctPerHour, 3),
+    slopeTStat: slopeTStat == null ? null : round(slopeTStat, 2),
     noisePct: round(noisePct, 3),
     confidence: Math.round(confidence),
+    errorBandPct: round(errorBandPct, 2),
+    bandSource: TREND_CALIBRATION?.version > 0 ? "calibrated" : "formula",
     points: points.length,
     spanMs,
     maxGapMs: maxGap,
@@ -293,9 +456,11 @@ export function computeTrendModel(history, options = {}) {
 /**
  * Adds the target-relative reading on top of the market model.
  *
- * `previousState` implements hysteresis: entering NEAR happens at ±2%, leaving
- * it needs ±3%, so a target parked on the boundary does not alternate between
- * "at trend" and "below trend" on every frame.
+ * The middle band is not a constant: it is derived from the model's own
+ * uncertainty, because a ±2% label is meaningless when the level it is measured
+ * against can sit 8% away from the live market. `previousState` still drives
+ * hysteresis, so a target parked on the boundary does not alternate between
+ * "at trend" and "above trend" on every frame.
  */
 export function buildTrend(history, options = {}) {
   const model = computeTrendModel(history, options);
@@ -308,8 +473,11 @@ export function buildTrend(history, options = {}) {
       target: validTarget ? target : null,
       proximityPct: null,
       gapPct: null,
+      bandPct: null,
+      uncertain: false,
       state: model.status === "stale" ? "STALE" : "NO_DATA",
-      reliable: false
+      reliable: false,
+      reliableReason: model.status === "stale" ? "stale" : "no-data"
     };
   }
 
@@ -319,31 +487,65 @@ export function buildTrend(history, options = {}) {
       target: null,
       proximityPct: null,
       gapPct: null,
+      // The band is about the market series, not the target: keep publishing it
+      // so the UI can still say how loose the level is while no ceiling is set.
+      bandPct: round(classificationBandPct(model.errorBandPct), 2),
+      uncertain: false,
       state: "NO_TARGET",
-      reliable: false
+      reliable: false,
+      reliableReason: "no-target"
     };
   }
 
   const proximityPct = (target / model.trend - 1) * 100;
+  const bandPct = classificationBandPct(model.errorBandPct);
+  const enoughEvidence = model.confidence >= TREND.reliableConfidence;
+  const trustworthyBand = model.errorBandPct <= TREND.bandMaxPct;
+  const state = classifyState(proximityPct, options.previousState, bandPct);
   return {
     ...model,
     target,
     proximityPct: round(proximityPct, 3),
     gapPct: round(-proximityPct, 3),
-    state: classifyState(proximityPct, options.previousState),
-    reliable: model.confidence >= TREND.reliableConfidence
+    bandPct: round(bandPct, 2),
+    uncertain: state === "UNSURE",
+    state,
+    // A reading is actionable when there is enough evidence *and* the level is
+    // tight enough for the proximity to mean something; `reliableReason` says
+    // which half failed, so the UI can explain instead of just dimming the row.
+    reliable: enoughEvidence && trustworthyBand,
+    reliableReason:
+      enoughEvidence && trustworthyBand
+        ? null
+        : enoughEvidence
+          ? "wide-band"
+          : "low-confidence",
   };
+}
+
+/** Widens the entry band with the model's uncertainty, inside hard limits. */
+export function classificationBandPct(errorBandPct) {
+  const band = Number.isFinite(errorBandPct) ? errorBandPct : TREND.nearBandPct;
+  return clamp(band, TREND.nearBandPct, TREND.bandMaxPct);
 }
 
 /**
  * Positive proximity = target above the trend (the bot would buy at market);
  * negative = target below it (waiting for a dip).
+ *
+ * `bandPct` defaults to the fixed 2% entry band so callers that only compare
+ * numbers keep the old reading; the model passes a band derived from its own
+ * uncertainty. A band wide enough that "near" and "far" stop being
+ * distinguishable yields UNSURE instead of a false NEAR.
  */
-export function classifyState(proximityPct, previousState = null) {
-  const band = previousState === "NEAR" ? TREND.nearExitPct : TREND.nearBandPct;
-  if (proximityPct > band) return "ABOVE";
-  if (proximityPct < -band) {
+export function classifyState(proximityPct, previousState = null, bandPct = TREND.nearBandPct) {
+  const band = Number.isFinite(bandPct) && bandPct > 0 ? bandPct : TREND.nearBandPct;
+  const held = previousState === "NEAR" || previousState === "UNSURE";
+  const exit = held ? Math.max(band * 1.5, TREND.nearExitPct) : band;
+  if (proximityPct > exit) return "ABOVE";
+  if (proximityPct < -exit) {
     return proximityPct <= -TREND.farBelowPct ? "FAR_BELOW" : "BELOW";
   }
-  return "NEAR";
+  if (held) return previousState;
+  return band >= TREND.unsureBandPct ? "UNSURE" : "NEAR";
 }

@@ -30,6 +30,11 @@ export const SIGNAL_META = Object.freeze({
     tone: "signal",
     hint: "Target is under the trend: the bot is waiting for a dip."
   },
+  UNSURE: {
+    label: "UNSURE",
+    tone: "muted",
+    hint: "The gap is smaller than the model's own uncertainty, so above/below cannot be resolved from the data on hand."
+  },
   FAR_BELOW: {
     label: "FAR BELOW",
     tone: "info",
@@ -55,6 +60,20 @@ export const SIGNAL_META = Object.freeze({
 export function signalMeta(state) {
   return SIGNAL_META[state] || SIGNAL_META.NO_DATA;
 }
+
+/**
+ * Why a row is not actionable. The model decides (`reliableReason`); the panel
+ * only names it, and naming it matters because "low confidence" is the wrong
+ * story when six hours of dense history sits behind a level that is simply too
+ * loose to classify.
+ */
+const UNRELIABLE_NOTE = Object.freeze({
+  "low-confidence": "low conf",
+  "wide-band": "wide band",
+  stale: "stale",
+  "no-data": "no data",
+  "no-target": "no target"
+});
 
 /** Tailwind needs literal class names, so tone → utility is an explicit map. */
 const TONE_TEXT = Object.freeze({
@@ -89,13 +108,15 @@ function momentumTone(value) {
 
 /** Explains which series produced the trend, since the two are not equivalent. */
 function trendSourceNote(trend) {
+  const band = Number(trend.bandPct);
+  const uncertainty = Number.isFinite(trend.bandPct) ? ` · level ±${band.toFixed(1)}%` : "";
   if (trend.source === "depth") {
     const units = Number.isFinite(trend.fillQty) ? formatInt(trend.fillQty) : null;
     return `Depth-weighted VWAP${units ? ` for ${units} units` : ""}${
       trend.fillApprox ? " (tail approximate)" : ""
-    }`;
+    }${uncertainty}`;
   }
-  return "Top ask — depth history is still warming up";
+  return `Top ask — depth history is still warming up${uncertainty}`;
 }
 
 /**
@@ -124,7 +145,11 @@ export function TrendChip({ trend }) {
       <span className="trend-signal">{meta.label}</span>
       <span
         className="trend-conf"
-        title={`${formatInt(trend.points)} samples · ${trend.confidence}% confidence`}
+        title={`${formatInt(trend.points)} samples · ${trend.confidence}% confidence${
+          Number.isFinite(trend.bandPct)
+            ? ` · level ±${Number(trend.bandPct).toFixed(1)}%`
+            : ""
+        }`}
       >
         {trend.confidence}%
       </span>
@@ -153,7 +178,17 @@ function TrendRow({ row, onEdit }) {
         </div>
       </td>
       <td className="numeric">{fixedPrice(target)}</td>
-      <td className="numeric" title={trendSourceNote(trend)}>{fixedPrice(market)}</td>
+      <td className="numeric" title={trendSourceNote(trend)}>
+        <span className="block">{fixedPrice(market)}</span>
+        {Number.isFinite(trend.bandPct) ? (
+          <span
+            className="block font-mono text-[10px] font-normal leading-tight text-faint"
+            title={`The smoothed level may sit up to ±${Number(trend.bandPct).toFixed(1)}% from the live market; the signal band is drawn from that`}
+          >
+            ±{Number(trend.bandPct).toFixed(1)}%
+          </span>
+        ) : null}
+      </td>
       <td
         className="numeric"
         title={
@@ -181,7 +216,14 @@ function TrendRow({ row, onEdit }) {
           "—"
         )}
       </td>
-      <td className={`numeric trend-conf-cell ${trend.reliable ? "" : "text-faint"}`}>
+      <td
+        className={`numeric trend-conf-cell ${trend.reliable ? "" : "text-faint"}`}
+        title={`${formatInt(trend.points)} samples · ${trend.confidence}% confidence${
+          Number.isFinite(trend.bandPct)
+            ? ` · level ±${Number(trend.bandPct).toFixed(1)}%`
+            : ""
+        }`}
+      >
         {trend.confidence}%
       </td>
       <td>
@@ -189,8 +231,15 @@ function TrendRow({ row, onEdit }) {
           {meta.label}
         </span>
         {trend.reliable ? null : (
-          <span className="ml-1 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
-            low conf
+          <span
+            className="ml-1 font-mono text-[10px] uppercase tracking-[0.08em] text-faint"
+            title={
+              trend.reliableReason === "wide-band"
+                ? "There is enough history, but the level is too loose for the gap to mean much"
+                : "Not enough history for the reading to be actionable"
+            }
+          >
+            {UNRELIABLE_NOTE[trend.reliableReason] ?? "unreliable"}
           </span>
         )}
       </td>
@@ -381,14 +430,14 @@ export default function TrendPanel({ configs, onEdit }) {
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2">
         {Object.entries(SIGNAL_META)
-          .filter(([key]) => ["ABOVE", "NEAR", "BELOW", "FAR_BELOW"].includes(key))
+          .filter(([key]) => ["ABOVE", "NEAR", "UNSURE", "BELOW", "FAR_BELOW"].includes(key))
           .map(([key, meta]) => (
             <span key={key} className="signal-chip" data-tone={meta.tone} title={meta.hint}>
               {meta.label}
             </span>
           ))}
         <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
-          gap = target vs trend · mom = 15m/60m momentum
+          gap = target vs trend · mom = 15m/60m momentum · ± = level uncertainty
         </span>
       </div>
     </section>

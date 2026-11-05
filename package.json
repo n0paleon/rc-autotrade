@@ -15,6 +15,7 @@
     "dev:worker": "bun --watch src/worker/index.js",
     "mock": "bun run build && MOCK=1 bun src/worker/index.js",
     "diagnose:ws": "bun scripts/diagnose-ws.js",
+    "calibrate:trend": "bun scripts/calibrate-trend.js",
     "pretest": "bun run build",
     "test": "bun test",
     "key:reset": "bun src/worker/reset-token.js",

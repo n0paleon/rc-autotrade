@@ -394,31 +394,129 @@ melainkan depth-weighted fill price:
 1. Harga diubah ke log space, lalu **Hampel filter** (±2 titik, 3σ, lantai 0,5%) membuang spike
    satu-dua frame sebelum smoothing melihatnya. Pergeseran harga yang bertahan tetap lolos setelah
    ~2 titik.
-2. **EMA sadar-waktu** (`1 − exp(−dt/τ)`) untuk kaki cepat (15 mnt) dan lambat (60 mnt), sehingga
-   celah antar-frame tidak dihitung sebagai satu bar besar.
-3. **Momentum** = `(fast − slow) × 100`, **signal** = EMA momentum (20 mnt), **hist** = momentum −
-   signal — komponen MACD-like, tetapi pada harga log dan waktu nyata, bukan bar tetap.
-4. **Slope** regresi berbobot durasi 3 jam (%/jam) memberi arah independen, dan **noise** (MAD
-   residual) dipakai untuk menurunkan kepercayaan.
+2. **EMA sadar-waktu** (`1 − exp(−dt/τ)`) untuk kaki cepat (15 mnt), lambat (60 mnt), dan sinyal
+   (20 mnt). `dt` dipakai apa adanya, tanpa cap: setelah lubang 6 jam rata-rata lama tidak lagi
+   membawa informasi, jadi `α → 1` dan kaki langsung menyesuaikan. Sebelumnya `dt` di-clamp 30 menit
+   dan kaki 60 menit hanya bergerak 39% menuju harga baru — osilator masih melaporkan momentum
+   berjam-jam setelah pergerakan selesai. Pada data tersimpan, melepas cap mempersempit band
+   terkalibrasi (p50 7,8% → 7,3% pada coverage yang sama) dan menaikkan korelasi peringkat antara
+   band dan error nyata (0,21 → 0,26).
+3. **Level acuan** yang dibandingkan dengan `targetPrice` adalah **median geometrik 2 jam terakhir**,
+   bukan ujung EMA. EMA adalah campuran eksponensial, jadi τ 60 menit tertinggal kira-kira satu τ
+   penuh saat harga bergerak; pada replay data tersimpan ujung EMA berjarak median 4,2% (p75 8,7%)
+   dari harga live, sedangkan median 2 jam 3,4% (p75 7,5%). Bila jendela 2 jam berisi kurang dari 3
+   titik, model melebar ke 6 jam, lalu baru jatuh ke EMA. Kaki cepat/lambat tetap dipakai untuk
+   osilator.
+4. **Momentum** = `(fast − slow) × 100` — satu-satunya keluaran osilator yang dipakai (`signal` dan
+   `hist` ala MACD sudah dibuang karena tidak ada yang mengonsumsinya; `momentumPct` tetap dipakai
+   panel dan band).
+5. **Slope** regresi berbobot durasi 3 jam (%/jam) memberi arah independen beserta `slopeTStat`,
+   dan **noise** (MAD residual) menjadi salah satu masukan band ketidakpastian.
 
 Saat depth history belum mencapai window minimum (instalasi baru, atau ~30 menit pertama setelah
 upgrade), model jatuh ke seri ask termurah dan menandai `source: "top"`; setelah itu `source:
 "depth"`. Tooltip pada panel dan chip menyebut sumber serta ukuran order yang dipakai.
 
-Klasifikasi memakai `proximity = targetPrice / trend − 1`:
+Klasifikasi memakai `proximity = targetPrice / trend − 1`, tetapi **lebarnya band tidak lagi
+konstan**. Model menerbitkan `errorBandPct` — perkiraan seberapa jauh level acuan itu bisa meleset
+dari harga pasar saat ini — dari dispersi (`noisePct`) dan lag (`|momentumPct|`, jarak fast/slow yang
+persis merupakan lag level terhadap pergerakan), lalu dikalikan faktor hasil kalibrasi:
+
+```
+rawBandPct   = clamp(0.9 × noisePct + 1.2 × |momentumPct|, 2%, 20%)
+errorBandPct = clamp(rawBandPct × factor, 2%, 20%)
+bandPct      = clamp(errorBandPct, 2%, 10%)
+```
+
+`factor` dibaca dari `src/shared/trend-calibration.js` (lihat bagian kalibrasi di bawah); nilainya 1
+bila worker belum pernah dikalibrasi. Field `bandSource` menyebut mana yang dipakai (`calibrated`
+atau `formula`).
 
 | State | Syarat | Arti |
 | --- | --- | --- |
-| `ABOVE` | proximity > +2% | Target di atas trend: bot membeli di harga pasar, bukan saat diskon |
-| `NEAR` | −2% … +2% (keluar di ±3%) | Target menempel di trend; margin tipis |
-| `BELOW` | < −2% | Target di bawah trend; menunggu dip |
+| `ABOVE` | proximity > +`bandPct` | Target di atas trend: bot membeli di harga pasar, bukan saat diskon |
+| `NEAR` | \|proximity\| ≤ `bandPct`, band < 5% | Target menempel di trend; margin tipis |
+| `UNSURE` | \|proximity\| ≤ `bandPct`, band ≥ 5% | Jarak lebih kecil dari ketidakpastian model: arah tidak bisa dibaca |
+| `BELOW` | < −`bandPct` | Target di bawah trend; menunggu dip |
 | `FAR_BELOW` | ≤ −20% | Terlalu jauh di bawah trend; fill bisa langka |
 | `STALE` | tidak ada frame > 30 mnt | Sinyal dibekukan, tidak dipakai sebagai saran |
 | `NO_DATA` | < 12 titik atau span < 30 mnt | Belum cukup history |
 
-Hysteresis ±2% → ±3% mencegah label berkedip di batas. **Confidence** 0–100 dihitung dari
-kesegaran, panjang window, jumlah sampel, celah terbesar, dan noise; `reliable` bila ≥ 50. Panel
-menampilkan tab **at/above trend** (target ≥ trend, gap terbesar di atas — yang paling perlu
+Hysteresis keluar di 1,5 × `bandPct` (minimum 3%) mencegah label berkedip di batas. `UNSURE`
+dipertahankan selama masih di dalam band, jadi label tidak bolak-balik ke `NEAR` hanya karena
+dispersi bergeser sedikit. Panel menampilkan nilai band sebagai `±x%` di bawah harga trend, dan
+tooltip kolom confidence menyebutnya juga.
+
+**Confidence** 0–100 menjawab satu pertanyaan saja: **seberapa banyak bukti yang dimiliki model?**
+Presisi adalah pertanyaan lain dan punya angkanya sendiri (`errorBandPct`). Sebelumnya dispersi dan
+lag ikut dihitung di confidence *dan* di band, jadi seri berisik dihukum dua kali dan skornya sulit
+dijelaskan.
+
+```
+confidence = 100 × quality × (0.4 + 0.6 × density) × Σ wᵢ · sᵢ
+w = { fresh 0.34, span 0.28, count 0.22, gap 0.16 }
+quality = 0.85 bila source "top" · 0.7 bila thinBook · 0.9 bila fillApprox
+density = clamp(coveragePct / 25, 0, 1)
+```
+
+`density` mengalikan **seluruh** skor: window 12 jam berisi 17 titik (coverage 2%) tidak boleh
+memperoleh nilai tinggi hanya karena frame terakhir segar. Ambang 25% bukan 100% karena
+`coveragePct` diukur terhadap grid 1 menit yang tidak pernah dipenuhi feed event-driven — satu
+titik per ~4 menit sudah dianggap padat untuk EMA 15/60 menit. `stale` tetap memotong skor ke ≤ 20.
+
+`reliable` adalah verdict yang menggabungkan kedua sumbu:
+
+```
+reliable = confidence ≥ 50  &&  errorBandPct ≤ 10%
+```
+
+`reliableReason` menyebut mana yang gagal — `low-confidence` atau `wide-band` — dan panel
+menampilkannya sebagai `low conf` / `wide band`, bukan satu label generik.
+
+### Kalibrasi band (`bun run calibrate:trend`)
+
+`errorBandPct` punya dua sumber. Yang pertama rumus di atas, selalu tersedia dan hanya kira-kira
+benar. Yang kedua hasil pengukuran: `scripts/calibrate-trend.js` me-replay `price_points` yang
+tersimpan, membandingkan tiap estimasi dengan error yang benar-benar terjadi, lalu menulis faktor
+koreksi ke `src/shared/trend-calibration.js`:
+
+```
+factor = kuantil_target(error / rawBandPct)      // default target 0.80
+```
+
+Faktornya satu untuk semua bucket, bukan kurva. Kurva per bucket terlihat lebih rapi di atas kertas,
+tetapi butuh ribuan sampel sebelum batas bucket berhenti menjadi noise — pada database 12 jam ia
+menghasilkan band 24% untuk bucket paling tenang karena dua lonjakan kebetulan masuk ke sana. Satu
+faktor membawa informasi yang sama dengan varians jauh lebih kecil, dan tidak bisa terbalik. Faktor
+per sumber (`top` / `depth`) hanya dipakai bila sumber itu punya ≥ 200 sampel; kalau tidak, ia
+mewarisi `pooled`.
+
+```bash
+bun run calibrate:trend                       # 14 hari terakhir, kuantil 80%
+bun run calibrate:trend --days=7 --target=0.9
+```
+
+Skrip menolak menulis bila replay menghasilkan < 200 sampel (tabel dari beberapa lusin titik lebih
+buruk daripada rumus), mencetak coverage rumus vs hasil kalibrasi, dan menghitung **holdout**: faktor
+diukur pada 70% data tertua lalu diuji pada 30% terbaru, supaya angka in-sample yang bagus tidak
+menipu. Contoh pada replay terakhir: rumus menutup 76,1% error, setelah kalibrasi (faktor 1,20 untuk
+`top`, 1,13 untuk `depth`) 81,8%, holdout 89,1%. Jalankan ulang setelah beberapa hari data terkumpul
+— angkanya akan membaik dengan sendirinya.
+
+Skrip yang sama juga menguji klaim arah. Setiap kali dijalankan ia mencetak hit rate label
+`direction` pada horizon 60 menit dan base rate-nya, supaya kalimat "ini bukan ramalan" di bawah
+bisa diverifikasi ulang, bukan diwarisi.
+
+### Arah slope (`direction`)
+
+`direction` hanya `up`/`down` bila regresi slope 3 jam punya `|slopeTStat| ≥ 2`; kalau tidak, `flat`.
+Label ini **deskripsi tiga jam terakhir, bukan ramalan**. Pada replay terakhir: sign
+`slopePctPerHour` benar 51,6% pada horizon 60 menit dan label non-flat 48,5%, sementara base rate
+30,6% naik / 69,4% turun — selalu menebak "turun" justru lebih akurat. Panel tidak memakainya untuk
+keputusan apa pun; angka ini dicetak setiap kali `bun run calibrate:trend` dijalankan, jadi klaimnya
+bisa diverifikasi ulang.
+
+Panel menampilkan tab **at/above trend** (target ≥ trend, gap terbesar di atas — yang paling perlu
 diturunkan), **below trend** (sisi sehat, menunggu dip), dan **all**, dengan tombol edit serta tautan
 marketplace. Daftar default sengaja hanya target ≥ trend: itulah yang perlu di-follow up. Card target
 menampilkan chip trend yang sama.
@@ -426,10 +524,11 @@ menampilkan chip trend yang sama.
 Model dihitung di engine saat frame market (throttle 10 detik), saat hydrate setelah restart, dan
 langsung dihitung ulang lewat `engine.refreshTrend()` ketika target ditambah/diedit. Hasilnya ikut di
 `runtime.trend` pada `/api/state` dan pada event `market`. Field-nya: `status`, `source` (`depth` /
-`top`), `trend`, `fast`, `momentumPct`, `signalPct`, `histPct`, `slopePctPerHour`, `noisePct`,
-`confidence`, `points`, `spanMs`, `maxGapMs`, `coveragePct`, `direction`, `lastSampleAt`,
-`computedAt`, `target`, `proximityPct`, `gapPct`, `state`, `reliable`, `stale`, `bookQty`,
-`thinBook`, `fillPrice`, `fillQty`, `fillPartial`, `fillApprox`.
+`top`), `trend`, `fast`, `momentumPct`, `slopePctPerHour`, `noisePct`,
+`confidence`, `reliableReason`, `slopeTStat`, `errorBandPct`, `bandPct`, `bandSource`, `uncertain`, `points`, `spanMs`,
+`maxGapMs`, `coveragePct`, `direction`, `lastSampleAt`, `computedAt`, `target`, `proximityPct`, `gapPct`,
+`state`, `reliable`, `stale`, `bookQty`, `thinBook`, `fillPrice`, `fillQty`, `fillPartial`,
+`fillApprox`.
 
 Batasannya: `rest` hanya mengungkap harga lantai tail, bukan bentuk lengkapnya (karena itu
 `approx`); window efektif 24 jam; dan butuh sekitar 30 menit depth history sebelum sinyal pindah
