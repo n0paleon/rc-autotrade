@@ -1010,7 +1010,7 @@ function ReportPanel({ report, notify }) {
             </div>
           </div>
 
-          <ul className="divide-y divide-line/40 md:hidden">
+          <ul className="report-scroll divide-y divide-line/40 md:hidden">
             {items.map((item) => (
               <li className="px-4 py-3" key={item.itemId || item.label}>
                 <div className="flex items-start justify-between gap-3">
@@ -1039,9 +1039,9 @@ function ReportPanel({ report, notify }) {
             ))}
           </ul>
 
-          <div className="hidden overflow-x-auto overscroll-contain md:block">
+          <div className="report-scroll hidden min-w-0 md:block">
             <table className="w-full min-w-[880px] border-collapse text-left font-mono text-[13px] tabular-nums">
-              <thead>
+              <thead className="sticky top-0 z-10 bg-night-900">
                 <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
                   <th scope="col" className="px-4 py-2 font-medium">Product</th>
                   <th scope="col" className="px-3 py-2 font-medium">Fills</th>

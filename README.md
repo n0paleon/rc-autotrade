@@ -97,7 +97,9 @@ tercatat dua kali walau sudah keluar dari window.
 Agregat per produk tampil di bawah loot log: total profit, spend, margin, lalu tabel per produk
 dengan fills/missed, qty, spend, avg buy, profit, margin, success rate, dan aktivitas terakhir.
 Setiap product card juga menampilkan **PROFIT · ALL TIME** (dengan fills, qty, dan margin) untuk
-item tersebut. Tombol **CSV** mengekspor seluruh baris untuk analisis lanjutan.
+item tersebut. Tombol **CSV** mengekspor seluruh baris untuk analisis lanjutan. Tabelnya dibatasi
+sekitar sembilan baris di desktop (empat baris di layar sempit) dengan scroll internal dan header
+sticky, jadi katalog yang terus tumbuh tidak memanjangkan panel.
 
 ![Profit by product](docs/preview-report.png)
 
