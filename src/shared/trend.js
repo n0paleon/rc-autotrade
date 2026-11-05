@@ -477,7 +477,8 @@ export function buildTrend(history, options = {}) {
       uncertain: false,
       state: model.status === "stale" ? "STALE" : "NO_DATA",
       reliable: false,
-      reliableReason: model.status === "stale" ? "stale" : "no-data"
+      reliableReason: model.status === "stale" ? "stale" : "no-data",
+      ...recommendAction({ state: model.status === "stale" ? "STALE" : "NO_DATA" })
     };
   }
 
@@ -493,7 +494,8 @@ export function buildTrend(history, options = {}) {
       uncertain: false,
       state: "NO_TARGET",
       reliable: false,
-      reliableReason: "no-target"
+      reliableReason: "no-target",
+      ...recommendAction({ state: "NO_TARGET" })
     };
   }
 
@@ -502,6 +504,15 @@ export function buildTrend(history, options = {}) {
   const enoughEvidence = model.confidence >= TREND.reliableConfidence;
   const trustworthyBand = model.errorBandPct <= TREND.bandMaxPct;
   const state = classifyState(proximityPct, options.previousState, bandPct);
+  // A reading is actionable when there is enough evidence *and* the level is
+  // tight enough for the proximity to mean something; `reliableReason` says
+  // which half failed, so the UI can explain instead of just dimming the row.
+  const reliable = enoughEvidence && trustworthyBand;
+  const reliableReason = reliable
+    ? null
+    : enoughEvidence
+      ? "wide-band"
+      : "low-confidence";
   return {
     ...model,
     target,
@@ -510,17 +521,37 @@ export function buildTrend(history, options = {}) {
     bandPct: round(bandPct, 2),
     uncertain: state === "UNSURE",
     state,
-    // A reading is actionable when there is enough evidence *and* the level is
-    // tight enough for the proximity to mean something; `reliableReason` says
-    // which half failed, so the UI can explain instead of just dimming the row.
-    reliable: enoughEvidence && trustworthyBand,
-    reliableReason:
-      enoughEvidence && trustworthyBand
-        ? null
-        : enoughEvidence
-          ? "wide-band"
-          : "low-confidence",
+    reliable,
+    reliableReason,
+    ...recommendAction({ state, reliable, reliableReason })
   };
+}
+
+/**
+ * The one step a human should take next, if any.
+ *
+ * Deliberately tiny vocabulary: the model compares a ceiling with a level, so it
+ * can say "lower it", "leave it", "look at it", or "not yet" — never "buy", and
+ * never a price. `planOrder()` stays the only thing that can place an order.
+ */
+export function recommendAction(trend) {
+  const state = trend?.state;
+  if (state === "STALE") return { action: "wait", actionReason: "stale" };
+  if (state === "NO_DATA") return { action: "wait", actionReason: "no-data" };
+  if (state === "NO_TARGET") return { action: "set-target", actionReason: "no-target" };
+  // The gap is not resolvable at all: the target sits inside the model's own
+  // error bars, so neither "lower" nor "hold" would mean anything.
+  if (state === "UNSURE") return { action: "wait", actionReason: "unresolved" };
+  // Only a *price change* has to clear the evidence bar. Holding a ceiling or
+  // being told to look at one keeps the status quo, so those survive a thin
+  // reading; lowering a ceiling on one would be a guess with money attached.
+  if (state === "ABOVE" && !trend.reliable) {
+    return { action: "wait", actionReason: trend.reliableReason ?? "low-confidence" };
+  }
+  if (state === "ABOVE") return { action: "lower", actionReason: "above-trend" };
+  if (state === "FAR_BELOW") return { action: "review", actionReason: "far-below" };
+  if (state === "NEAR") return { action: "hold", actionReason: "at-trend" };
+  return { action: "hold", actionReason: "below-trend" };
 }
 
 /** Widens the entry band with the model's uncertainty, inside hard limits. */

@@ -473,6 +473,28 @@ reliable = confidence ≥ 50  &&  errorBandPct ≤ 10%
 `reliableReason` menyebut mana yang gagal — `low-confidence` atau `wide-band` — dan panel
 menampilkannya sebagai `low conf` / `wide band`, bukan satu label generik.
 
+### Next step (`action`)
+
+Panel punya satu kolom **Next step**, diturunkan dari state dan verdict `reliable`:
+
+| Action | Kapan | Arti |
+| --- | --- | --- |
+| `LOWER` | state `ABOVE` **dan** reliable | Turunkan ceiling: target di atas level, bot akan beli di pasar |
+| `HOLD` | state `BELOW` atau `NEAR` | Biarkan; sisi sehat, bot menunggu dip |
+| `REVIEW` | state `FAR_BELOW` | Tinjau: target > 20% di bawah level, fill bisa langka |
+| `WAIT` | `UNSURE`, `STALE`, `NO_DATA`, atau `ABOVE` yang belum reliable | Belum bisa diputuskan |
+| `SET` | `NO_TARGET` | Belum ada ceiling |
+
+`actionReason` menyebut sebabnya (`above-trend`, `below-trend`, `at-trend`, `far-below`,
+`unresolved`, `low-confidence`, `wide-band`, `stale`, `no-data`, `no-target`) dan dipakai sebagai
+tooltip.
+
+Aturannya asimetris dengan sengaja: **hanya perubahan harga** yang menuntut bacaan terpercaya.
+`LOWER` baru muncul kalau `reliable` (bukti cukup **dan** band ≤ 10%); `HOLD` dan `REVIEW` menjaga
+status quo, jadi tetap boleh walau datanya tipis — target yang 50% di bawah level tetap layak
+ditinjau meski confidence-nya rendah. Model tidak pernah mengusulkan "beli" dan tidak pernah
+menyebut angka; `planOrder()` tetap satu-satunya yang bisa mengirim order.
+
 ### Kalibrasi band (`bun run calibrate:trend`)
 
 `errorBandPct` punya dua sumber. Yang pertama rumus di atas, selalu tersedia dan hanya kira-kira
@@ -516,7 +538,8 @@ Label ini **deskripsi tiga jam terakhir, bukan ramalan**. Pada replay terakhir: 
 keputusan apa pun; angka ini dicetak setiap kali `bun run calibrate:trend` dijalankan, jadi klaimnya
 bisa diverifikasi ulang.
 
-Panel menampilkan tab **at/above trend** (target ≥ trend, gap terbesar di atas — yang paling perlu
+Kolom **Signal** (state) dan **Next step** (`action`) sengaja dipisah: yang pertama menjawab "di
+mana posisi target", yang kedua "apa yang harus dilakukan". Panel menampilkan tab **at/above trend** (target ≥ trend, gap terbesar di atas — yang paling perlu
 diturunkan), **below trend** (sisi sehat, menunggu dip), dan **all**, dengan tombol edit serta tautan
 marketplace. Daftar default sengaja hanya target ≥ trend: itulah yang perlu di-follow up. Card target
 menampilkan chip trend yang sama.
@@ -525,7 +548,7 @@ Model dihitung di engine saat frame market (throttle 10 detik), saat hydrate set
 langsung dihitung ulang lewat `engine.refreshTrend()` ketika target ditambah/diedit. Hasilnya ikut di
 `runtime.trend` pada `/api/state` dan pada event `market`. Field-nya: `status`, `source` (`depth` /
 `top`), `trend`, `fast`, `momentumPct`, `slopePctPerHour`, `noisePct`,
-`confidence`, `reliableReason`, `slopeTStat`, `errorBandPct`, `bandPct`, `bandSource`, `uncertain`, `points`, `spanMs`,
+`confidence`, `reliableReason`, `action`, `actionReason`, `slopeTStat`, `errorBandPct`, `bandPct`, `bandSource`, `uncertain`, `points`, `spanMs`,
 `maxGapMs`, `coveragePct`, `direction`, `lastSampleAt`, `computedAt`, `target`, `proximityPct`, `gapPct`,
 `state`, `reliable`, `stale`, `bookQty`, `thinBook`, `fillPrice`, `fillQty`, `fillPartial`,
 `fillApprox`.

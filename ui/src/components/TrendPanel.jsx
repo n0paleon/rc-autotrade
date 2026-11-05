@@ -75,6 +75,62 @@ const UNRELIABLE_NOTE = Object.freeze({
   "no-target": "no target"
 });
 
+/**
+ * The model's recommendation, rendered as one word. The advice is deliberately
+ * narrow — lower a ceiling, leave it, look at it, or wait — because the only
+ * thing the panel may never say is "buy".
+ */
+const ACTION_META = Object.freeze({
+  lower: {
+    label: "LOWER",
+    tone: "danger",
+    hint: "Target sits above the market level: a lower ceiling buys the same item on a dip."
+  },
+  hold: {
+    label: "HOLD",
+    tone: "signal",
+    hint: "Nothing to change: the ceiling is on the healthy side of the level."
+  },
+  review: {
+    label: "REVIEW",
+    tone: "info",
+    hint: "Target is far below the level, so fills may be rare; decide whether that is intended."
+  },
+  wait: {
+    label: "WAIT",
+    tone: "muted",
+    hint: "The model will not stand behind this reading yet, so changing the target now would be guessing."
+  },
+  "set-target": {
+    label: "SET",
+    tone: "muted",
+    hint: "This target has no usable price ceiling."
+  }
+});
+
+/** Why the model said what it said; appended to the action chip tooltip. */
+const ACTION_REASON = Object.freeze({
+  "above-trend": "target is above the level",
+  "below-trend": "target is under the level; waiting for a dip",
+  "at-trend": "target is at the level, so the margin is thin",
+  "far-below": "target is more than 20% under the level",
+  unresolved: "the gap is smaller than the model's own uncertainty",
+  "low-confidence": "too little price history to act on",
+  "wide-band": "the level is too loose to act on",
+  stale: "the feed has gone quiet",
+  "no-data": "not enough history yet",
+  "no-target": "no usable ceiling"
+});
+
+export function actionMeta(action) {
+  return ACTION_META[action] || ACTION_META.wait;
+}
+
+export function actionNote(trend) {
+  const reason = ACTION_REASON[trend?.actionReason];
+  return reason ? `${actionMeta(trend?.action).hint} (${reason})` : actionMeta(trend?.action).hint;
+}
+
 /** Tailwind needs literal class names, so tone → utility is an explicit map. */
 const TONE_TEXT = Object.freeze({
   danger: "text-danger",
@@ -164,6 +220,7 @@ function TrendRow({ row, onEdit }) {
   const momentum = Number(trend.momentumPct);
   const type = itemTypeOf(config);
   const gapTone = gapToneOf(proximity);
+  const action = actionMeta(trend.action);
 
   return (
     <tr data-tone={meta.tone} data-reliable={trend.reliable ? "yes" : "no"}>
@@ -242,6 +299,11 @@ function TrendRow({ row, onEdit }) {
             {UNRELIABLE_NOTE[trend.reliableReason] ?? "unreliable"}
           </span>
         )}
+      </td>
+      <td>
+        <span className="signal-chip" data-tone={action.tone} title={actionNote(trend)}>
+          {action.label}
+        </span>
       </td>
       <td>
         <div className="flex items-center justify-end gap-1">
@@ -416,6 +478,7 @@ export default function TrendPanel({ configs, onEdit }) {
                 <th scope="col" className="text-right trend-mom">Mom</th>
                 <th scope="col" className="text-right trend-conf-cell">Confidence</th>
                 <th scope="col">Signal</th>
+                <th scope="col">Next step</th>
                 <th scope="col" className="text-right">Action</th>
               </tr>
             </thead>
@@ -438,6 +501,21 @@ export default function TrendPanel({ configs, onEdit }) {
           ))}
         <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
           gap = target vs trend · mom = 15m/60m momentum · ± = level uncertainty
+        </span>
+        <span className="ml-auto flex flex-wrap items-center gap-1.5">
+          {["lower", "hold", "review", "wait"].map((key) => (
+            <span
+              key={key}
+              className="signal-chip"
+              data-tone={ACTION_META[key].tone}
+              title={ACTION_META[key].hint}
+            >
+              {ACTION_META[key].label}
+            </span>
+          ))}
+          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
+            next step
+          </span>
         </span>
       </div>
     </section>

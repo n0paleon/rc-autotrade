@@ -260,6 +260,74 @@ test("the entry band never shrinks below the flat two percent", () => {
   assert.equal(classificationBandPct(20), TREND.bandMaxPct);
 });
 
+test("the next step follows the reading, not the mood", () => {
+  const flat = series(6, () => 2.0);
+
+  const above = buildTrend(flat, { now: NOW, targetPrice: 2.2 });
+  assert.equal(above.state, "ABOVE");
+  assert.equal(above.action, "lower");
+  assert.equal(above.actionReason, "above-trend");
+
+  const below = buildTrend(flat, { now: NOW, targetPrice: 1.9 });
+  assert.equal(below.action, "hold");
+  assert.equal(below.actionReason, "below-trend");
+
+  const atTrend = buildTrend(flat, { now: NOW, targetPrice: 2.01 });
+  assert.equal(atTrend.state, "NEAR");
+  assert.equal(atTrend.action, "hold");
+  assert.equal(atTrend.actionReason, "at-trend");
+
+  const far = buildTrend(flat, { now: NOW, targetPrice: 1.5 });
+  assert.equal(far.state, "FAR_BELOW");
+  assert.equal(far.action, "review");
+});
+
+test("a price change waits for evidence, a review does not", () => {
+  const sparse = series(12, () => 2.0, { stepMinutes: 60 });
+
+  const raise = buildTrend(sparse, { now: NOW, targetPrice: 2.2, source: "depth" });
+  assert.equal(raise.state, "ABOVE");
+  assert.equal(raise.reliable, false);
+  assert.equal(raise.action, "wait", "lowering a ceiling on thin evidence would be a guess");
+  assert.equal(raise.actionReason, "low-confidence");
+
+  const unreachable = buildTrend(sparse, { now: NOW, targetPrice: 1.5, source: "depth" });
+  assert.equal(unreachable.state, "FAR_BELOW");
+  assert.equal(unreachable.action, "review", "noticing an unreachable target needs no precision");
+
+  const wild = buildTrend(series(6, (t) => 2 * (1 + 0.1 * Math.sin(t / (10 * MINUTE)))), {
+    now: NOW,
+    targetPrice: 2.3
+  });
+  assert.equal(wild.action, "wait");
+  assert.equal(wild.actionReason, "wide-band");
+
+  const unsure = buildTrend(series(6, (t) => 2 * (1 + 0.05 * Math.sin(t / (10 * MINUTE)))), {
+    now: NOW,
+    targetPrice: 2.0
+  });
+  assert.equal(unsure.state, "UNSURE");
+  assert.equal(unsure.reliable, true, "the data is fine, the comparison is not");
+  assert.equal(unsure.action, "wait");
+  assert.equal(unsure.actionReason, "unresolved");
+});
+
+test("a frozen or empty series waits for data instead of guessing", () => {
+  const stale = buildTrend(series(6, () => 2.0, { end: NOW - 2 * HOUR }), {
+    now: NOW,
+    targetPrice: 1.9
+  });
+  assert.equal(stale.action, "wait");
+  assert.equal(stale.actionReason, "stale");
+
+  const empty = buildTrend([], { now: NOW, targetPrice: 1.9 });
+  assert.equal(empty.action, "wait");
+  assert.equal(empty.actionReason, "no-data");
+
+  const noTarget = buildTrend(series(6, () => 2.0), { now: NOW });
+  assert.equal(noTarget.action, "set-target");
+});
+
 test("a direction needs a slope that clears its own noise", () => {
   const ramp = buildTrend(series(6, (t) => 2.5 - (1.5 * (t - (NOW - 6 * HOUR))) / (6 * HOUR)), {
     now: NOW,
