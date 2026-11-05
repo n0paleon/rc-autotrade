@@ -201,6 +201,11 @@ bun run dev:ui            # Vite di 5173, proxy /api dan /ws ke 8787
 - `dev:worker` memakai `--watch`, jadi perubahan `src/worker/**` otomatis restart. Perubahan UI
   **tidak** ikut ter-build; jalankan `bun run build` lalu refresh 8787.
 - `dev:ui` hanya menyalakan Vite. Kalau worker belum jalan di 8787, login/API akan gagal.
+- Vite **wajib** dijalankan dengan Node, bukan Bun (karena itu `dev` men-spawn Vite via `node`).
+  Proxy WS milik Vite memanggil `socket.destroySoon()`, API `net.Socket` yang tidak ada di socket
+  upgrade Bun, sehingga `/ws` yang gagal (worker belum listen, atau balasan HTTP biasa atas upgrade)
+  mematikan dev server dengan `TypeError: socket.destroySoon is not a function`. Karena itu juga
+  `dev` menunggu port 8787 terbuka dulu sebelum menyalakan Vite.
 - Jangan menjalankan `dev` dan `dev:worker` bersamaan: keduanya berebut port 8787.
 - Kalau salah satu child di `dev` mati, `scripts/dev.js` mematikan pasangannya; Ctrl+C kini
   menutup keduanya dengan cepat.

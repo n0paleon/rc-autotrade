@@ -11,7 +11,7 @@
     "build": "bunx --bun vite build",
     "start": "bun run build && bun src/worker/index.js",
     "dev": "bun scripts/dev.js",
-    "dev:ui": "bunx --bun vite",
+    "dev:ui": "node node_modules/vite/bin/vite.js",
     "dev:worker": "bun --watch src/worker/index.js",
     "mock": "bun run build && MOCK=1 bun src/worker/index.js",
     "diagnose:ws": "bun scripts/diagnose-ws.js",
