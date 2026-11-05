@@ -661,6 +661,11 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
             </strong>
             <span className="font-mono text-[12px] text-faint">RLT</span>
           </div>
+          {autoEnabled ? (
+            <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
+              base {fixedPrice(config.targetPrice)} · margin {autoLabel}
+            </p>
+          ) : null}
         </div>
         <div
           className="col-span-2 flex items-center justify-between gap-3 bg-gold/5 px-2.5 py-2 sm:px-3"
