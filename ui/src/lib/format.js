@@ -246,6 +246,18 @@ export function formatPreciseMs(value) {
   return `${(number / 1000).toFixed(2)}s`;
 }
 
+const LATENCY_CHANNEL_LABELS = {
+  http: "HTTP",
+  keepalive: "Warm probe",
+  wsHandshake: "WS handshake",
+  wsPing: "WS ping"
+};
+
+/** Human-readable name for a latency channel key. */
+export function latencyChannelLabel(channel) {
+  return LATENCY_CHANNEL_LABELS[channel] || "—";
+}
+
 /** Color class for a latency value. */
 export function latencyClass(value) {
   if (value === null || value === undefined) return "";

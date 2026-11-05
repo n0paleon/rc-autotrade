@@ -776,6 +776,35 @@
     @apply truncate font-mono text-[13px] tabular-nums text-ink-dim;
   }
 
+  /* ── upstream latency ─────────────────────────────────────────── */
+  .lat-card {
+    @apply flex min-w-0 flex-col border-2 border-line bg-night-950/60 p-3;
+  }
+
+  .lat-spark {
+    @apply flex h-12 items-end justify-end gap-[2px] overflow-hidden border-b border-line/60;
+  }
+
+  .lat-spark > i {
+    @apply min-w-[2px] max-w-[24px] flex-1 bg-current;
+  }
+
+  .lat-spark-empty {
+    @apply flex h-full w-full items-center justify-center font-mono text-[11px] uppercase tracking-[0.08em] text-faint;
+  }
+
+  .lat-metric {
+    @apply flex min-w-0 flex-col gap-0.5 border border-line/70 bg-night-900/60 px-2 py-1.5;
+  }
+
+  .lat-metric > dt {
+    @apply truncate font-mono text-[11px] uppercase tracking-[0.08em] text-faint;
+  }
+
+  .lat-metric > dd {
+    @apply whitespace-nowrap font-mono text-[13px] font-semibold leading-none tabular-nums text-ink-dim;
+  }
+
   .auto-label {
     @apply px-3 py-2.5;
     border: 2px solid var(--color-line);

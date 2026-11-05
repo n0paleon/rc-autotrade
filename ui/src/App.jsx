@@ -38,6 +38,7 @@ import {
   formatPreciseMs,
   formatBytes,
   formatPercent,
+  latencyChannelLabel,
   latencyClass,
   sparkBars,
   thresholdClass,
@@ -482,8 +483,12 @@ function Hud({ snapshot, now, eps }) {
         <div className={`mt-1.5 font-mono text-[20px] font-bold leading-none tabular-nums ${fresh ? latencyClass(fresh.last) : "text-muted"}`} id="stat-upstream">
           {fresh ? formatMs(fresh.last) : "—"}
         </div>
-        <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint" id="stat-upstream-sub">
-          {fresh ? `${fresh.channel.toUpperCase()} · ${relTime(fresh.lastAt)}` : "No samples yet"}
+        <div
+          className="mt-2 truncate font-mono text-[12px] uppercase tracking-[0.08em] text-faint"
+          id="stat-upstream-sub"
+          title={fresh ? `${latencyChannelLabel(fresh.channel)} · ${relTime(fresh.lastAt)}` : "No samples yet"}
+        >
+          {fresh ? `${latencyChannelLabel(fresh.channel)} · ${relTime(fresh.lastAt)}` : "No samples yet"}
         </div>
       </article>
     </section>
@@ -1632,48 +1637,59 @@ function LinkPanel({ snapshot, now, worker, notify, onEditSession, onBridge, onC
 function LatencyChannel({ label, stats }) {
   const bars = sparkBars(stats?.recent || []);
   const count = stats?.count || 0;
+  const errors = stats?.errors || 0;
+  const metrics = [
+    ["Avg", stats?.avg],
+    ["P50", stats?.p50],
+    ["P95", stats?.p95, latencyClass(stats?.p95)],
+    ["Min", stats?.min],
+    ["Max", stats?.max],
+    ["Jitter", stats?.jitter]
+  ];
+
   return (
-    <div className="border-2 border-line bg-night-950/60 p-3">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="label">{label}</span>
-        <span className={`font-mono text-[14px] font-semibold tabular-nums ${latencyClass(stats?.last)}`}>{formatMs(stats?.last)}</span>
-        <span className="ml-auto font-mono text-[13px] uppercase tracking-[0.08em] text-faint">{formatInt(count)} samples</span>
-      </div>
-      <div className="mt-2 grid grid-cols-3 gap-1.5 sm:grid-cols-6">
-        {[
-          ["Avg", stats?.avg],
-          ["P50", stats?.p50],
-          ["P95", stats?.p95, latencyClass(stats?.p95)],
-          ["Min", stats?.min],
-          ["Max", stats?.max],
-          ["Jitter", stats?.jitter]
-        ].map(([key, value, tone]) => (
-          <span key={key} className="flex flex-col gap-0.5 border border-line/70 bg-night-900/60 px-1.5 py-1 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
-            {key}
-            <b className={`text-[12px] font-semibold tabular-nums ${tone || "text-ink-dim"}`}>{formatMs(value)}</b>
+    <article className="lat-card @container" aria-label={`${label} latency`}>
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="label truncate">{label}</h3>
+          <span className="mt-1 block font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+            {formatInt(count)} {count === 1 ? "sample" : "samples"}
+            {errors > 0 ? <b className="text-danger"> · {formatInt(errors)} err</b> : null}
           </span>
-        ))}
+        </div>
+        <b className={`shrink-0 font-mono text-[20px] font-bold leading-none tabular-nums ${latencyClass(stats?.last) || "text-muted"}`}>
+          {formatMs(stats?.last)}
+        </b>
       </div>
-      <div className="mt-2 flex h-10 items-end gap-[2px]" aria-hidden="true">
+      <div className="lat-spark mt-2.5" aria-hidden="true">
         {bars.length === 0 ? (
-          <span className="font-mono text-[13px] uppercase tracking-wide text-faint">No samples yet. Buy something or run a probe.</span>
+          <span className="lat-spark-empty">No samples yet</span>
         ) : (
           bars.map((bar, index) => (
             <i
               key={index}
-              className={`max-w-[10px] min-w-[2px] flex-1 bg-current ${latencyClass(bar.value)}`}
+              className={latencyClass(bar.value)}
               style={{ height: `${bar.height}%` }}
-              title={`${formatMs(bar.value)}`}
+              title={formatMs(bar.value)}
             />
           ))
         )}
       </div>
-      {stats?.errors > 0 ? (
-        <span className="mt-1.5 block font-mono text-[13px] uppercase tracking-wide text-danger">
-          {formatInt(stats.errors)} errors · {stats.lastError || "—"}
-        </span>
+      <dl className="mt-2.5 grid grid-cols-3 gap-1.5 @[27rem]:grid-cols-6">
+        {metrics.map(([key, value, tone]) => (
+          <div key={key} className="lat-metric">
+            <dt>{key}</dt>
+            <dd className={tone || ""}>{formatMs(value)}</dd>
+          </div>
+        ))}
+      </dl>
+      {errors > 0 ? (
+        <p className="mt-2 flex items-start gap-1.5 font-mono text-[11px] leading-snug text-danger">
+          <Icon name="i-alert" className="mt-px h-3 w-3 shrink-0" />
+          <span className="break-words">{stats.lastError || "Upstream call failed"}</span>
+        </p>
       ) : null}
-    </div>
+    </article>
   );
 }
 
@@ -1682,12 +1698,6 @@ function ConfigPanel({ snapshot, worker, notify }) {
   const channels = latency.channels || {};
   const fresh = latency.freshest || null;
   const channelOrder = ["http", "keepalive", "wsHandshake", "wsPing"];
-  const channelLabels = {
-    http: "HTTP",
-    keepalive: "WARM PROBE",
-    wsHandshake: "WS HANDSHAKE",
-    wsPing: "WS PING"
-  };
   const [probing, setProbing] = useState(false);
   const { fetchLatency } = worker;
 
@@ -1723,30 +1733,36 @@ function ConfigPanel({ snapshot, worker, notify }) {
   };
 
   return (
-    <section className="panel" data-accent="cyan">
+    <section className="panel @container" data-accent="cyan">
       <div className="panel-head">
         <h2 className="panel-title"><Icon name="i-wifi" className="h-4 w-4 text-info" /> Upstream latency</h2>
+        <span
+          className="tag hidden shrink-0 gap-1.5 text-info @[19rem]:inline-flex"
+          title="The worker pushes latency every 5 seconds; this panel polls it as a fallback"
+        >
+          <span className="led led-pulse" aria-hidden="true" /> Auto · 5s
+        </span>
       </div>
       <div className="panel-body">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="label flex items-center gap-1.5"><Icon name="i-wifi" className="h-3 w-3" /> Worker → upstream</span>
-          <span className="flex items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 font-mono text-[13px] uppercase tracking-wide text-signal" title="Panel refreshes automatically every 5 seconds">
-              <span className="led led-pulse" /> Auto · 5s
-            </span>
-            <button className="btn btn-sm" type="button" onClick={runProbe} disabled={probing} data-busy={probing ? "true" : undefined} aria-busy={probing}>
-              {probing ? "Probing…" : "Probe now"}
-            </button>
-          </span>
+        <div className="flex flex-wrap items-end justify-between gap-3 border-2 border-line bg-night-950/70 p-3">
+          <div className="min-w-0">
+            <span className="label flex items-center gap-1.5"><Icon name="i-wifi" className="h-3 w-3" /> Worker → upstream</span>
+            <div className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+              <b className={`font-mono text-[28px] font-bold leading-none tabular-nums ${fresh ? latencyClass(fresh.last) : "text-muted"}`}>
+                {fresh ? formatMs(fresh.last) : "—"}
+              </b>
+              <span className="min-w-0 truncate font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+                {fresh ? `${latencyChannelLabel(fresh.channel)} · ${relTime(fresh.lastAt)}` : "Waiting for the first sample"}
+              </span>
+            </div>
+          </div>
+          <button className="btn btn-sm" type="button" onClick={runProbe} disabled={probing} data-busy={probing ? "true" : undefined} aria-busy={probing}>
+            {probing ? "Probing…" : "Probe now"}
+          </button>
         </div>
-        <p className="text-[13px] leading-snug text-faint">
-          {fresh
-            ? `Freshest: ${fresh.channel.toUpperCase()} ${formatMs(fresh.last)} · ${relTime(fresh.lastAt)}`
-            : "Passive. Samples appear as the worker talks to Rollercoin."}
-        </p>
-        <div className="space-y-2">
+        <div className="grid grid-cols-1 gap-2 @[37rem]:grid-cols-2">
           {channelOrder.map((key) => (
-            <LatencyChannel key={key} label={channelLabels[key]} stats={channels[key] || { count: 0, recent: [] }} />
+            <LatencyChannel key={key} label={latencyChannelLabel(key)} stats={channels[key] || { count: 0, recent: [] }} />
           ))}
         </div>
         <p className="text-[13px] leading-relaxed text-faint">
