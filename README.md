@@ -30,6 +30,7 @@ untuk login, mengatur target, memantau market, dan melihat loot.
 - [Worker API](#worker-api)
 - [HTTPS dan mixed content](#https-dan-mixed-content)
 - [Caddy tutorial](#caddy-tutorial-debianubuntu-vps)
+- [Backup dan migrasi](#backup-dan-migrasi)
 - [Data dan keamanan](#data-dan-keamanan)
 - [Mock mode](#mock-mode)
 - [Testing](#testing)
@@ -65,6 +66,11 @@ untuk login, mengatur target, memantau market, dan melihat loot.
   Log yang sama diagregasi per produk (fills, qty, spend, avg buy, profit, margin, success rate,
   last activity). Profit all-time juga tampil langsung di tiap product card. Panel
   **PROFIT BY PRODUCT** bisa diekspor ke CSV; angkanya tetap utuh setelah worker restart.
+- **Backup & migrasi** — panel **CONFIG → Backup & migrate** mengunduh data sebagai `.json`
+  portable (target, settings, counter, loot log, profit per produk) atau salinan `.db`
+  byte-complete, dan me-restore `.json` itu ke worker lain. Import bersifat atomik, selalu menulis
+  snapshot pengaman lebih dulu, opsional membawa sesi Rollercoin, dan tidak pernah memindahkan
+  access key worker. Lihat [Backup dan migrasi](#backup-dan-migrasi).
 - **Live data plane** — HUD, target cards + chart, market wire, terminal event, loot log, profit
   report, health token, runtime config, sound effect, dan tampilan mobile.
 - **Worker health monitor** — tab **SYSTEM** menampilkan CPU worker dan host, heap (kompatibilitas
@@ -1027,6 +1033,9 @@ Authorization: Bearer <access-key>
 | `POST` | `/api/latency/probe` | Jalankan warm probe sekarang dan balas sampel baru |
 | `GET` | `/api/system` | Snapshot health worker/host: CPU, memory, event loop, load, history |
 | `DELETE` | `/api/history` | Reset profit, counter, loot log, dan sampel latency |
+| `GET` | `/api/backup` | Unduh backup portable `.json`; `?credentials=1` ikut menyertakan sesi Rollercoin |
+| `GET` | `/api/backup?format=sqlite` | Unduh salinan `.db` konsisten (byte-complete) untuk disaster recovery |
+| `POST` | `/api/backup` | Restore backup `.json` (replace total); `?credentials=0` pertahankan sesi yang ada |
 
 Error validasi memakai status `422` dan `fields`, misalnya:
 
@@ -1299,6 +1308,51 @@ pm2 restart rc-autotrade --update-env
 
 ---
 
+## Backup dan migrasi
+
+Tab **CONFIG → Backup & migrate** membuka panel dengan dua tab:
+
+- **Export** — mengunduh data dalam salah satu dari dua bentuk:
+  - **Portable `.json`** (`GET /api/backup`) — target, settings, lifetime counter, agregat profit
+    per produk, dan seluruh loot log. Bentuk inilah yang bisa di-restore dari UI, termasuk ke worker
+    lain dengan versi build berbeda.
+  - **Raw `.db`** (`GET /api/backup?format=sqlite`) — salinan **byte-complete** seluruh database
+    (termasuk sesi Rollercoin dan cache pasar) lewat `VACUUM INTO`. Dipakai untuk disaster recovery
+    dan **hanya bisa di-restore dengan worker berhenti**.
+- **Import** — memilih file `.json`, menampilkan pratinjau (jumlah target/loot/produk, versi worker,
+  versi skema) beserta peringatan, lalu menimpa data worker setelah kamu mencentang konfirmasi.
+
+### Pindah mesin (migrasi)
+
+1. Di worker lama: buka **CONFIG → Backup & migrate → Export**, unduh `.json`. Centang
+   *Include Rollercoin session* kalau ingin sesi Rollercoin ikut pindah (lihat catatan keamanan).
+2. Nyalakan worker baru, buka deck-nya, login dengan access key worker baru tersebut.
+3. Buka **Import**, pilih file tadi, lalu **Restore this backup**.
+
+Yang perlu diketahui tentang proses ini:
+
+- **Access key worker tidak ikut pindah.** Backup tidak pernah memuat key material, dan worker tujuan
+  tetap memakai key-nya sendiri. Tab yang sudah terbuka dan snippet bridge di worker baru tetap valid.
+- **Sesi Rollercoin opsional.** Tanpa blok credentials, sesi yang sedang tersimpan di worker tujuan
+  dipertahankan. Dengan blok credentials, kamu bisa memilih untuk tidak menimpanya saat restore.
+- **Selalu ada jalan kembali.** Sebelum menulis apa pun, worker membuat snapshot `.db` ke
+  `data/backups/pre-import-<timestamp>.db`. Kalau snapshot itu gagal dibuat, import dibatalkan.
+- **Import bersifat atomik.** Seluruh penulisan berjalan dalam satu transaksi SQLite, jadi kegagalan
+  di tengah proses tidak meninggalkan data setengah jadi.
+- **Cache pasar tidak ikut** dan dibuang saat import; deck akan mengisinya lagi dari frame live.
+- **Skema lebih baru ditolak.** Backup dari build dengan `schemaVersion` lebih tinggi dari yang
+  dipahami build ini akan ditolak dengan pesan agar worker di-upgrade, bukan data yang di-downgrade.
+- Backup ditulis dengan validasi yang sama seperti API HTTP, jadi file dari build lama tetap bisa
+  di-restore selama `formatVersion` dan `schemaVersion`-nya didukung; baris yang rusak dilewati
+  dengan peringatan, bukan menggagalkan seluruh import.
+
+> Backup `.json` **tanpa** credentials relatif aman disimpan di cloud drive. Begitu kamu mencentang
+> *Include Rollercoin session*, file itu memuat access/refresh token dan cookie Cloudflare dalam
+> bentuk plaintext — siapa pun yang memegangnya bisa bertindak sebagai kamu di Rollercoin sampai
+> token kedaluwarsa. Simpan di tempat privat dan hapus setelah migrasi selesai.
+
+---
+
 ## Data dan keamanan
 
 - `data/rollercoin.db` adalah database SQLite (mode WAL) berisi token sesi Rollercoin (plaintext),
@@ -1322,7 +1376,9 @@ pm2 restart rc-autotrade --update-env
 - Database lama dari versi JSON dimigrasikan otomatis saat boot pertama: `state.json` dan
   `loot-log.json` diimpor lalu di-rename menjadi `*.migrated-<timestamp>` (tidak dihapus).
   Jangan commit atau backup isi `data/` ke tempat publik.
-- Backup: `sqlite3 data/rollercoin.db ".backup 'backup.db'"` saat worker berjalan, atau copy
+- Backup: pakai panel **CONFIG → Backup & migrate** (lihat [Backup dan migrasi](#backup-dan-migrasi))
+  untuk backup portable `.json` atau salinan `.db` tanpa menghentikan worker. Alternatif manual:
+  `sqlite3 data/rollercoin.db ".backup 'backup.db'"` saat worker berjalan, atau copy
   `rollercoin.db` setelah worker berhenti. Jangan menaruh `DATA_DIR` di NFS/folder sync (Dropbox,
   OneDrive) karena WAL butuh locking lokal.
 - Access key worker **tidak** disimpan plaintext; hanya hash SHA-256 + preview.
@@ -1422,6 +1478,7 @@ Total 112 test; integration test memakai port acak dan data directory sementara.
 │       ├── system.js        # CPU/heap/event-loop/host health sampler
 │       ├── db.js            # bun:sqlite wrapper (pragma/transaction/named params)
 │       ├── db-metrics.js    # SQLite statement timing, file/WAL and slow-query probe
+│       ├── backup.js        # export/import portable + raw snapshot (VACUUM INTO)
 │       ├── server.js        # control plane HTTP/WS + static UI
 │       └── reset-token.js
 ├── test/
