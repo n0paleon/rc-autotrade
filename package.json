@@ -14,6 +14,7 @@
     "dev:ui": "bunx --bun vite",
     "dev:worker": "bun --watch src/worker/index.js",
     "mock": "bun run build && MOCK=1 bun src/worker/index.js",
+    "diagnose:ws": "bun scripts/diagnose-ws.js",
     "pretest": "bun run build",
     "test": "bun test",
     "key:reset": "bun src/worker/reset-token.js",
