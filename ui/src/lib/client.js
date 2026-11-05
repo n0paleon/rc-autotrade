@@ -33,7 +33,12 @@ function wsUrlFor(baseUrl) {
   return url.toString();
 }
 
-async function rawRequest(base, token, path, { method = "GET", body, timeout = 12_000 } = {}) {
+async function rawRequest(
+  base,
+  token,
+  path,
+  { method = "GET", body, timeout = 12_000, responseType = "json" } = {}
+) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
@@ -46,7 +51,24 @@ async function rawRequest(base, token, path, { method = "GET", body, timeout = 1
       signal: controller.signal,
       cache: "no-store"
     });
+    if (!response.ok) {
+      const text = await response.text();
+      let data = {};
+      if (text) {
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = {};
+        }
+      }
+      throw new ApiError(data.error || `Request failed (HTTP ${response.status}).`, {
+        status: response.status,
+        fields: data.fields || {}
+      });
+    }
+    if (responseType === "blob") return await response.blob();
     const text = await response.text();
+    if (responseType === "text") return text;
     let data = {};
     if (text) {
       try {
@@ -54,12 +76,6 @@ async function rawRequest(base, token, path, { method = "GET", body, timeout = 1
       } catch {
         data = {};
       }
-    }
-    if (!response.ok) {
-      throw new ApiError(data.error || `Request failed (HTTP ${response.status}).`, {
-        status: response.status,
-        fields: data.fields || {}
-      });
     }
     return data;
   } catch (error) {
@@ -126,8 +142,22 @@ export class WorkerClient {
   }
 
   async request(path, options = {}) {
+    return this.#requestTyped(path, "json", options);
+  }
+
+  /** Fetches a non-JSON download (backup file) as text. */
+  async requestText(path, options = {}) {
+    return this.#requestTyped(path, "text", options);
+  }
+
+  /** Fetches a binary download (SQLite snapshot) as a Blob. */
+  async requestBlob(path, options = {}) {
+    return this.#requestTyped(path, "blob", options);
+  }
+
+  async #requestTyped(path, responseType, options) {
     try {
-      return await rawRequest(this.baseUrl, this.token, path, options);
+      return await rawRequest(this.baseUrl, this.token, path, { ...options, responseType });
     } catch (error) {
       if (error.status === 401) {
         this.onAuthFailure?.("ACCESS KEY REJECTED — it may have been rotated. Paste the current key.");

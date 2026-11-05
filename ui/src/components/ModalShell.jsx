@@ -14,6 +14,26 @@ export function useModalClose() {
   return { closeRef, close };
 }
 
+/** Shared pixel switch row used by the modal forms. */
+export function ToggleRow({ checked, onChange, title, hint, disabled = false }) {
+  return (
+    <label className="toggle-row">
+      <span>
+        {title}
+        <small>{hint}</small>
+      </span>
+      <input
+        type="checkbox"
+        className="sr-only"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        disabled={disabled}
+      />
+      <span className="switch" aria-hidden="true" />
+    </label>
+  );
+}
+
 export function ModalShell({
   title,
   onClose,

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Icon, ModalShell, useModalClose } from "./ModalShell.jsx";
+import { Icon, ModalShell, ToggleRow, useModalClose } from "./ModalShell.jsx";
 import { fixedPrice, shortId } from "../lib/format.js";
 
 export async function copyText(text) {
@@ -27,19 +27,6 @@ export async function copyText(text) {
 function FieldError({ id, message }) {
   if (!message) return null;
   return <em id={id} className="field-error" role="alert">{message}</em>;
-}
-
-function ToggleRow({ checked, onChange, title, hint, disabled = false }) {
-  return (
-    <label className="toggle-row">
-      <span>
-        {title}
-        <small>{hint}</small>
-      </span>
-      <input type="checkbox" className="sr-only" checked={checked} onChange={(event) => onChange(event.target.checked)} disabled={disabled} />
-      <span className="switch" aria-hidden="true" />
-    </label>
-  );
 }
 
 function validateTargetLocally(target) {

@@ -346,6 +346,8 @@ export function useWorker({ notify }) {
   }, []);
 
   const request = useCallback((path, options) => clientRef.current.request(path, options), []);
+  const requestText = useCallback((path, options) => clientRef.current.requestText(path, options), []);
+  const requestBlob = useCallback((path, options) => clientRef.current.requestBlob(path, options), []);
   const resync = useCallback(() => clientRef.current?.resync(), []);
   const getConnection = useCallback(
     () => ({
@@ -472,6 +474,36 @@ export function useWorker({ notify }) {
     return result;
   }, [request]);
 
+  /** Downloads the portable JSON backup exactly as the worker wrote it. */
+  const exportBackup = useCallback(
+    ({ credentials = false } = {}) => {
+      const query = credentials ? "?credentials=1" : "";
+      return requestText(`/api/backup${query}`, { timeout: 120_000 });
+    },
+    [requestText]
+  );
+
+  /** Downloads a consistent `.db` copy for offline disaster recovery. */
+  const exportDatabase = useCallback(
+    () => requestBlob("/api/backup?format=sqlite", { timeout: 120_000 }),
+    [requestBlob]
+  );
+
+  const importBackup = useCallback(
+    async (backup, { restoreCredentials = true } = {}) => {
+      const result = await request(`/api/backup?credentials=${restoreCredentials ? 1 : 0}`, {
+        method: "POST",
+        body: backup,
+        timeout: 300_000
+      });
+      // The worker broadcasts a fresh snapshot, but resyncing here makes the
+      // modal's own counts correct even if a socket frame is missed.
+      await clientRef.current?.resync();
+      return result;
+    },
+    [request]
+  );
+
   const control = useCallback(
     async (action) => {
       const result = await request("/api/control", { method: "POST", body: { action } });
@@ -539,6 +571,9 @@ export function useWorker({ notify }) {
     clearSession,
     rotateAccessKey,
     resetStats,
+    exportBackup,
+    exportDatabase,
+    importBackup,
     control,
     previewItem,
     refreshLatency,

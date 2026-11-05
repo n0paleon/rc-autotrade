@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PriceChart from "./components/PriceChart.jsx";
 import TrendPanel, { TrendChip } from "./components/TrendPanel.jsx";
 import { Icon, ModalShell } from "./components/ModalShell.jsx";
+import { BackupModal } from "./components/BackupModal.jsx";
 import {
   BridgeModal,
   ConfirmModal,
@@ -2083,7 +2084,7 @@ function SystemPanel({ snapshot, worker }) {
   );
 }
 
-function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, baseUrl }) {
+function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, onBackup, baseUrl }) {
   const settings = snapshot.settings || {};
   const [delay, setDelay] = useState(String(settings.delayPerOrder ?? 200));
   const [maxOrders, setMaxOrders] = useState(String(settings.maxOrdersPerMinute ?? 60));
@@ -2171,6 +2172,19 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, ba
           <Icon name="i-refresh" className="h-3 w-3" /> Reconnect feed
         </button>
 
+        <div className="space-y-2 border-2 border-line bg-night-950/60 p-3">
+          <h3 className="flex items-center gap-1.5 font-mono text-[12px] font-semibold uppercase tracking-[0.14em] text-gold">
+            <Icon name="i-database" className="h-3.5 w-3.5" /> Backup &amp; migrate
+          </h3>
+          <p className="text-[13px] leading-snug text-muted">
+            Export targets, settings, counters and the whole loot log to one portable file — or restore it
+            onto another worker.
+          </p>
+          <button className="btn btn-ghost btn-sm btn-block" type="button" onClick={onBackup}>
+            <Icon name="i-database" className="h-3.5 w-3.5" /> Open backup panel
+          </button>
+        </div>
+
         <div className="space-y-2 border-2 border-danger/50 bg-danger/5 p-3">
           <h3 className="flex items-center gap-1.5 font-mono text-[12px] font-semibold uppercase tracking-[0.14em] text-danger">
             <Icon name="i-alert" className="h-3.5 w-3.5" /> Danger zone
@@ -2185,7 +2199,7 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, ba
   );
 }
 
-function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSession, onBridge, onClearSession, onRotate, onReset, onReconnect, baseUrl }) {
+function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSession, onBridge, onClearSession, onRotate, onReset, onReconnect, onBackup, baseUrl }) {
   const tabs = [
     { id: "feed", label: "FEED" },
     { id: "link", label: "LINK" },
@@ -2230,6 +2244,7 @@ function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSes
             notify={notify}
             onReset={onReset}
             onReconnect={onReconnect}
+            onBackup={onBackup}
             baseUrl={baseUrl}
           />
         ) : null}
@@ -2484,6 +2499,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           onRotate={rotateKey}
           onReset={resetStats}
           onReconnect={reconnect}
+          onBackup={() => setModal({ type: "backup" })}
           baseUrl={baseUrl}
         />
       </main>
@@ -2524,6 +2540,14 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       ) : null}
       {modal?.type === "key" ? (
         <KeyModal token={modal.token} onClose={() => setModal(null)} notify={notify} />
+      ) : null}
+      {modal?.type === "backup" ? (
+        <BackupModal
+          snapshot={snapshot}
+          worker={worker}
+          notify={notify}
+          onClose={() => setModal(null)}
+        />
       ) : null}
       {confirmState ? (
         <ConfirmModal
