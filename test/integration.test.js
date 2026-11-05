@@ -360,6 +360,78 @@ test("bridge CORS headers survive preflight and auth errors", async () => {
   assert.equal(invalid.headers.get("access-control-allow-origin"), "*");
 });
 
+test("preflight is answered for any API path, including authenticated ones", async () => {
+  // A separately served UI (Vite dev server on another origin) sends a
+  // preflight before every authenticated call. Answering it with 401 and no
+  // CORS headers made the browser block the real request, so login from the
+  // dev server failed with "cannot reach the worker".
+  for (const path of ["/api/state", "/api/settings", "/api/configs", "/api/history"]) {
+    const preflight = await fetch(`${baseUrl}${path}`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "http://127.0.0.1:5173",
+        "access-control-request-method": "GET",
+        "access-control-request-headers": "authorization,content-type"
+      }
+    });
+    assert.equal(preflight.status, 204, `preflight for ${path}`);
+    assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+    assert.match(preflight.headers.get("access-control-allow-headers"), /authorization/);
+  }
+
+  // The methods the UI actually uses must be advertised, or the browser
+  // refuses PATCH/DELETE before it even leaves the page.
+  const methods = (
+    await fetch(`${baseUrl}/api/settings`, {
+      method: "OPTIONS",
+      headers: { origin: "http://127.0.0.1:5173", "access-control-request-method": "PATCH" }
+    })
+  ).headers.get("access-control-allow-methods");
+  for (const verb of ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
+    assert.match(methods, new RegExp(verb));
+  }
+});
+
+test("every API response carries CORS headers, not just the bridge endpoints", async () => {
+  // A cross-origin UI gets a 200 that the browser still discards unless the
+  // real response carries the allow-origin header — the preflight alone is not
+  // enough. This covered /api/state, which returned no CORS headers at all.
+  const get = await fetch(`${baseUrl}/api/state`, {
+    headers: authHeaders({ origin: "http://127.0.0.1:5173" })
+  });
+  assert.equal(get.status, 200);
+  assert.equal(get.headers.get("access-control-allow-origin"), "*");
+
+  // Mutating verbs the UI uses must carry them too.
+  const patched = await fetch(`${baseUrl}/api/settings`, {
+    method: "PATCH",
+    headers: authHeaders({ origin: "http://127.0.0.1:5173", "content-type": "application/json" }),
+    body: JSON.stringify({})
+  });
+  assert.ok(patched.status < 500);
+  assert.equal(patched.headers.get("access-control-allow-origin"), "*");
+
+  // Non-API static files must NOT be advertised cross-origin.
+  const staticRes = await fetch(`${baseUrl}/`, {
+    headers: { origin: "http://127.0.0.1:5173" }
+  });
+  assert.equal(staticRes.headers.get("access-control-allow-origin"), null);
+});
+
+test("a wrong key still fails with a readable cross-origin error", async () => {
+  // CORS headers must ride along on the 401 too, otherwise the UI reports an
+  // opaque network failure instead of "ACCESS DENIED — this key was rejected".
+  const denied = await fetch(`${baseUrl}/api/state`, {
+    headers: { origin: "http://127.0.0.1:5173", authorization: "Bearer definitely-wrong-key" }
+  });
+  assert.equal(denied.status, 401);
+  assert.equal(denied.headers.get("access-control-allow-origin"), "*");
+
+  // The preflight itself must never leak data or bypass the key check.
+  const stillGated = await fetch(`${baseUrl}/api/state`);
+  assert.equal(stillGated.status, 401);
+});
+
 test("session push accepts a newer JWT and CORS is enabled", async () => {
   const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
   const payload = Buffer.from(

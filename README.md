@@ -1083,6 +1083,31 @@ Error validasi memakai status `422` dan `fields`, misalnya:
   (estimasi `{price, filled, requested, partial, approx}` untuk `desiredQty`), serta
   `allowedPriceMin`, `allowedPriceMax`, `allowedAt` (cache band harga terakhir per target).
 
+### CORS
+
+Semua respons di bawah `/api/*` membawa header CORS (`access-control-allow-origin: *`), termasuk
+preflight `OPTIONS`. Ini yang membuat UI bisa dilayani dari origin lain — misalnya Vite dev server
+di `127.0.0.1:5173` yang memanggil worker di `127.0.0.1:8787`:
+
+```bash
+bun run dev        # UI 5173, worker 8787 — login lintas origin jalan
+```
+
+Preflight dijawab `204` **sebelum** gerbang auth, karena browser tidak mengirim Bearer key di
+preflight. Yang tetap dijaga:
+
+- Request sebenarnya **selalu** butuh `Authorization: Bearer <access-key>`; preflight bukan bypass.
+- Salah key tetap `401`, dan karena header CORS ikut terkirim, UI menampilkan pesan aslinya
+  ("ACCESS DENIED — this key was rejected"), bukan error jaringan yang tidak jelas.
+- Pembatasan 20 percobaan gagal/menit per IP tetap berlaku.
+- File statis (`/`, `/assets/*`) **tidak** diberi header CORS — hanya `/api/*`.
+
+> `access-control-allow-origin: *` berarti halaman web mana pun yang Anda buka boleh *mengirim*
+> request ke worker di localhost. Tanpa access key yang benar, request itu tetap ditolak `401`,
+> jadi tidak ada data yang bocor. Untuk paparan publik, tetap ikuti
+> [HTTPS dan mixed content](#https-dan-mixed-content) dan
+> [Caddy tutorial](#caddy-tutorial-debianubuntu-vps) supaya worker tidak terbuka mentah.
+
 ---
 
 ## HTTPS dan mixed content
@@ -1404,6 +1429,8 @@ Yang perlu diketahui tentang proses ini:
 - Token Rollercoin tidak pernah dikirim ke UI dalam bentuk penuh; UI hanya menampilkan preview.
   Pengecualian: `/api/session/push` membalas token penuh ke snippet bridge yang sudah terautentikasi.
 - Semua percobaan auth yang gagal dibatasi 20/menit per IP.
+- Endpoint `/api/*` membalas header CORS ke origin mana pun (lihat [CORS](#cors)), tetapi setiap
+  request tetap wajib memakai access key yang benar. Jangan buka port worker mentah ke internet.
 - Default bind loopback. Untuk akses remote, pakai reverse proxy HTTPS + firewall; jangan buka
   port mentah ke internet.
 - Tidak ada telemetry, analytics, atau koneksi ke server pihak ketiga selain Rollercoin.

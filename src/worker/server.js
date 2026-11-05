@@ -85,7 +85,7 @@ function intParam(params, name, fallback, max = Number.MAX_SAFE_INTEGER) {
 function corsHeaders() {
   return {
     "access-control-allow-origin": "*",
-    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
     "access-control-allow-headers": "authorization, content-type, cache-control, pragma",
     "access-control-allow-private-network": "true",
     "access-control-max-age": "600"
@@ -488,10 +488,31 @@ export class ControlServer {
   #isCorsPath(rawUrl) {
     try {
       const path = new URL(rawUrl || "/", "http://localhost").pathname;
-      return path === "/api/session/push" || path === "/api/health";
+      return path.startsWith("/api/");
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Adds the CORS headers to every API reply without touching the ~20 places
+   * that write responses. `writeHead` is wrapped once per response, so existing
+   * `json()`/`writeHead()` calls keep working and cannot forget the headers.
+   */
+  #attachCors(res) {
+    const writeHead = res.writeHead.bind(res);
+    res.writeHead = (status, ...rest) => {
+      const headers = typeof rest[0] === "string" ? { ...rest[1] } : { ...(rest[0] || {}) };
+      // A caller that already set its own CORS headers (the preflight handler)
+      // keeps them; anything else inherits the defaults.
+      for (const [key, value] of Object.entries(corsHeaders())) {
+        if (!Object.keys(headers).some((name) => name.toLowerCase() === key)) headers[key] = value;
+      }
+      const vary = headers.vary ? `${headers.vary}, access-control-request-headers` : "access-control-request-headers";
+      headers.vary = vary;
+      return typeof rest[0] === "string" ? writeHead(status, rest[0], headers) : writeHead(status, headers);
+    };
+    return res;
   }
 
   #authorized(req, res, { cors = false } = {}) {
@@ -523,7 +544,12 @@ export class ControlServer {
     const path = url.pathname;
     const isApi = path.startsWith("/api/");
 
-    if (method === "OPTIONS" && (path === "/api/session/push" || path === "/api/health")) {
+    // CORS preflight is a browser permission check, not an authenticated call:
+    // it never carries the Bearer key, so it has to be answered before the auth
+    // gate below. Leaving it to the gate answered 401 without any CORS headers,
+    // and the browser then blocked the real request — which broke logging in
+    // from a separately served UI (Vite dev server on another origin).
+    if (method === "OPTIONS" && isApi) {
       const cors = corsHeaders();
       const requestedHeaders = req.headers["access-control-request-headers"];
       if (typeof requestedHeaders === "string" && requestedHeaders.trim()) {
@@ -555,6 +581,12 @@ export class ControlServer {
       );
       return;
     }
+
+    // Every API response needs CORS headers, not just the hand-written
+    // preflight and the two bridge endpoints: a separately served UI (Vite dev
+    // server on another origin) calls the whole /api surface, and without these
+    // headers the browser discards an otherwise successful 200.
+    if (isApi) this.#attachCors(res);
 
     if (isApi && !this.#authorized(req, res, { cors: this.#isCorsPath(path) })) return;
 
