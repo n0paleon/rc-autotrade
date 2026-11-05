@@ -11,7 +11,7 @@ import {
   TargetModal,
   copyText
 } from "./components/Modals.jsx";
-import { useWorker, URL_KEY, TOKEN_KEY } from "./useWorker.js";
+import { useWorker, URL_KEY, readStoredToken, isRemembered } from "./useWorker.js";
 import { useToasts } from "./useToasts.js";
 import {
   cardState,
@@ -116,17 +116,18 @@ function sessionSummary(session = {}, settings = {}, worker = {}, now = Date.now
 
 function BootScreen({ onLogin, busy, error }) {
   const [url, setUrl] = useState(() => localStorage.getItem(URL_KEY) || window.location.origin);
-  const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY) || "");
+  const [token, setToken] = useState(readStoredToken);
+  const [remember, setRemember] = useState(isRemembered);
   const [showToken, setShowToken] = useState(false);
 
   const submit = (event) => {
     event.preventDefault();
     sound.ensure();
-    onLogin(url, token.trim());
+    onLogin(url, token.trim(), remember);
   };
 
   const perks = [
-    { icon: "i-shield", tone: "border-signal/50 bg-signal/10 text-signal", text: "Session keys stay on this machine" },
+    { icon: "i-shield", tone: "border-signal/50 bg-signal/10 text-signal", text: "Nothing leaves this browser — local worker only" },
     { icon: "i-wifi", tone: "border-info/50 bg-info/10 text-info", text: "Live market feed, even when buying is paused" },
     { icon: "i-bolt", tone: "border-gold/50 bg-gold/10 text-gold", text: "Price ceilings and burst protection per target" }
   ];
@@ -215,6 +216,16 @@ function BootScreen({ onLogin, busy, error }) {
                 </button>
               </div>
             </label>
+            <label className="toggle-row">
+              <span>Remember on this device<small>Stay signed in after the tab is closed</small></span>
+              <input
+                type="checkbox"
+                className="sr-only"
+                checked={remember}
+                onChange={(event) => setRemember(event.target.checked)}
+              />
+              <span className="switch" aria-hidden="true" />
+            </label>
             {error ? (
               <div className="border-2 border-danger/60 bg-danger/10 px-3 py-2 font-mono text-[12px] uppercase tracking-[0.08em] text-danger shadow-[3px_3px_0_#05030f]" role="alert">
                 {error}
@@ -225,13 +236,18 @@ function BootScreen({ onLogin, busy, error }) {
             </button>
           </form>
           <div className="flex flex-wrap items-center justify-between gap-2 border-t-2 border-line bg-night-950/50 px-4 py-2.5 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
-            <span className="flex items-center gap-1.5"><Icon name="i-shield" className="h-3 w-3 text-signal" /> Keys stay on this machine</span>
+            <span className="flex items-center gap-1.5">
+              <Icon name="i-shield" className="h-3 w-3 text-signal" />
+              {remember ? "Key saved in this browser" : "Key kept for this tab only"}
+            </span>
             <span className="text-violet">Worker v1.0</span>
           </div>
         </div>
 
         <p className="text-center text-[13px] text-faint lg:col-span-2">
-          First run? The access key is printed in the worker terminal.
+          {remember
+            ? "First run? The access key is printed in the worker terminal. Lock the deck to forget it."
+            : "First run? The access key is printed in the worker terminal. It is dropped when this tab closes."}
         </p>
       </div>
     </section>

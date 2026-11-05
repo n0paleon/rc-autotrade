@@ -174,7 +174,9 @@ Saat pertama kali berjalan, worker mencetak access key satu kali:
   └─────────────────────────────────────────────────────────┘
 ```
 
-Buka `http://127.0.0.1:8787`, tempel key tersebut, lalu tekan **PRESS START**.
+Buka `http://127.0.0.1:8787`, tempel key tersebut, lalu tekan **PRESS START**. Biarkan
+**Remember on this device** menyala (default) supaya tab dan browser boleh ditutup tanpa login
+ulang. Lihat [Key tersimpan di browser](#key-tersimpan-di-browser) untuk detail penyimpanannya.
 
 Mau mencoba tanpa akun? Jalankan simulator:
 
@@ -309,6 +311,23 @@ Catatan:
 
 > `bun run key:reset` harus dijalankan saat worker berhenti. Kalau worker masih hidup, state
 > in-memory-nya bisa menimpa key baru saat shutdown.
+
+#### Key tersimpan di browser
+
+Form login punya toggle **Remember on this device** (aktif secara default). Perilakunya:
+
+| Kondisi | Tempat simpan | Tab ditutup | Browser ditutup |
+| --- | --- | --- | --- |
+| Remember **aktif** | `localStorage` (`turuc.key`, `turuc.remember`) | tetap login | tetap login |
+| Remember **mati** | `sessionStorage` (`turuc.key`) | harus login ulang | harus login ulang |
+
+- Key hanya tersimpan di satu tempat: menyalakan atau mematikan toggle memindahkannya dan
+  menghapus salinan yang lama, jadi tidak ada key "tertinggal" di storage lain.
+- **LOCK** di header menghapus key tersimpan dan kembali ke layar login. Pakai ini kalau deck
+  dibuka di komputer bersama.
+- Key yang dirotasi lewat **ROTATE KEY** mewarisi mode penyimpanan yang sedang aktif.
+- URL worker sudah lebih dulu persist di `localStorage` (`turuc.url`), jadi menutup tab tidak
+  pernah menghapus alamatnya.
 
 ---
 
