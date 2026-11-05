@@ -492,6 +492,101 @@ test("system monitor exposes live worker and host metrics", async () => {
   assert.ok(state.system.memory.rss > 0);
 });
 
+test("backup export, raw snapshot and restore work over HTTP", async () => {
+  // Freeze fills so the counts exported and the counts asserted cannot drift.
+  const paused = await fetch(`${baseUrl}/api/control`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ action: "pause" })
+  });
+  assert.equal(paused.status, 200);
+
+  const savedSession = await fetch(`${baseUrl}/api/session`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({
+      accessToken: "integration-access-token-123",
+      refreshToken: "integration-refresh-token-123",
+      cookie: "cf_clearance=integration"
+    })
+  });
+  assert.equal(savedSession.status, 200);
+
+  const stateBefore = await (await fetch(`${baseUrl}/api/state`, { headers: authHeaders() })).json();
+  assert.equal(stateBefore.database.schemaVersion >= 1, true);
+
+  const portable = await fetch(`${baseUrl}/api/backup`, { headers: authHeaders() });
+  assert.equal(portable.status, 200);
+  assert.match(portable.headers.get("content-disposition"), /attachment; filename="turu-rc-backup-\d{8}T\d{6}Z\.json"/);
+  const backup = await portable.json();
+  assert.equal(backup.kind, "turu-rc-backup");
+  assert.equal(backup.formatVersion, 1);
+  assert.equal(backup.credentials, undefined);
+  assert.equal(backup.counts.targets, stateBefore.configs.length);
+  assert.equal(backup.counts.orders, stateBefore.historyTotal);
+  assert.equal(backup.data.settings.dryRun, stateBefore.settings.dryRun);
+
+  const withCredentials = await (
+    await fetch(`${baseUrl}/api/backup?credentials=1`, { headers: authHeaders() })
+  ).json();
+  assert.equal(withCredentials.credentials.session.accessToken, "integration-access-token-123");
+  assert.equal(withCredentials.credentials.session.cookie, "cf_clearance=integration");
+
+  const sqlite = await fetch(`${baseUrl}/api/backup?format=sqlite`, { headers: authHeaders() });
+  assert.equal(sqlite.status, 200);
+  assert.match(sqlite.headers.get("content-type"), /sqlite/);
+  assert.match(sqlite.headers.get("content-disposition"), /attachment; filename="turu-rc-db-\d{8}T\d{6}Z\.db"/);
+  const bytes = Buffer.from(await sqlite.arrayBuffer());
+  assert.equal(bytes.subarray(0, 16).toString("utf8"), "SQLite format 3\u0000");
+
+  const invalid = await fetch(`${baseUrl}/api/backup`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ kind: "something-else" })
+  });
+  assert.equal(invalid.status, 422);
+  const invalidBody = await invalid.json();
+  assert.equal(invalidBody.ok, false);
+  assert.ok(invalidBody.fields.kind);
+
+  // Add a marker target, then restore the earlier snapshot: the marker must
+  // disappear and the safety file must exist on the server.
+  const markerId = "66ffee0011223344556677";
+  const marker = await fetch(`${baseUrl}/api/configs`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({
+      itemId: markerId,
+      label: "MARKER TARGET",
+      targetPrice: 0.02,
+      desiredQty: 1,
+      highStockThreshold: 1,
+      minAcceptableQty: 1
+    })
+  });
+  assert.equal(marker.status, 201);
+
+  const restored = await fetch(`${baseUrl}/api/backup`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify(withCredentials)
+  });
+  assert.equal(restored.status, 200);
+  const restoredBody = await restored.json();
+  assert.equal(restoredBody.ok, true);
+  assert.deepEqual(restoredBody.restored.counts, backup.counts);
+  assert.equal(restoredBody.restored.credentialsRestored, true);
+  assert.match(restoredBody.restored.safetyBackup, /^backups\/pre-import-\d{8}T\d{6}Z\.db$/);
+  assert.deepEqual(restoredBody.warnings, []);
+
+  const stateAfter = await (await fetch(`${baseUrl}/api/state`, { headers: authHeaders() })).json();
+  assert.equal(stateAfter.configs.some((config) => config.itemId === markerId), false);
+  assert.equal(stateAfter.configs.length, backup.counts.targets);
+  assert.equal(stateAfter.historyTotal, backup.counts.orders);
+  assert.equal(stateAfter.session.hasAccessToken, true);
+  assert.equal(stateAfter.settings.dryRun, stateBefore.settings.dryRun);
+});
+
 test("key rotation is refused when WORKER_TOKEN pins the key", async () => {
   const response = await fetch(`${baseUrl}/api/auth/rotate`, { method: "POST", headers: authHeaders() });
   assert.equal(response.status, 409);

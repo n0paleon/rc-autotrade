@@ -38,6 +38,15 @@ export const PRICE_POINT_WRITE_INTERVAL_MS = 15_000;
 /** How many upstream events we keep as a rolling sample for the feed. */
 export const EVENT_SAMPLE_SIZE = 60;
 
+/** Runtime defaults, used when the database has no settings row yet and when a backup omits them. */
+export const DEFAULT_SETTINGS = Object.freeze({
+  delayPerOrder: 200,
+  maxOrdersPerMinute: 60,
+  dryRun: false,
+  autoRefresh: true,
+  paused: false
+});
+
 export const LIMITS = Object.freeze({
   targetPriceMax: 1_000_000,
   qtyMax: 10_000,
