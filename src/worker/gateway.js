@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { redactSecrets } from "../shared/redact.js";
 
 const MAX_BACKOFF_MS = 30_000;
 const HEARTBEAT_MS = 25_000;
@@ -155,7 +156,7 @@ export class RollercoinGateway extends EventEmitter {
       socket = new WebSocket(withToken(this.url, token), { headers });
       socket.binaryType = "arraybuffer";
     } catch (error) {
-      this.lastError = error?.message || String(error);
+      this.lastError = redactSecrets(error?.message || String(error));
       this.logger.error("gateway", `could not create socket: ${this.lastError}`);
       if (this.latency) {
         this.latency.record("wsHandshake", this.now() - this.connectStartedAt, {
@@ -267,7 +268,7 @@ export class RollercoinGateway extends EventEmitter {
         return;
       }
 
-      this.lastError = reason ? `socket closed (${code}: ${reason})` : `socket closed (${code})`;
+      this.lastError = redactSecrets(reason ? `socket closed (${code}: ${reason})` : `socket closed (${code})`);
       // A close during handshake still consumed upstream time; time it.
       if (this.connectStartedAt !== null && this.status === "connecting") {
         if (this.latency) {
@@ -287,7 +288,7 @@ export class RollercoinGateway extends EventEmitter {
       if (generation !== this.connectGeneration) return;
       if (this.handshakeTimer) clearTimeout(this.handshakeTimer);
       this.handshakeTimer = null;
-      this.lastError = event?.message || "WebSocket error";
+      this.lastError = redactSecrets(event?.message || "WebSocket error");
       this.logger.warn("gateway", `socket error: ${this.lastError}`);
       if (this.connectStartedAt !== null && this.status === "connecting" && this.latency) {
         this.latency.record("wsHandshake", this.now() - this.connectStartedAt, {
