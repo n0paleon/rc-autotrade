@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
 import {
+  DEFAULT_SETTINGS,
   LOOT_LOG_MAX_PAGE_SIZE,
   LOOT_LOG_PAGE_SIZE,
   MAX_HISTORY,
@@ -15,13 +16,6 @@ import { closeDatabase, openDatabase } from "./db.js";
 
 const STATE_VERSION = 1;
 const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const DEFAULT_SETTINGS = Object.freeze({
-  delayPerOrder: 200,
-  maxOrdersPerMinute: 60,
-  dryRun: false,
-  autoRefresh: true,
-  paused: false
-});
 
 export function hashToken(token) {
   return createHash("sha256").update(String(token), "utf8").digest("hex");
@@ -255,6 +249,24 @@ export class Store {
     this.#prunePriceHistory();
     this.#schedulePrune();
 
+    return this;
+  }
+
+  /**
+   * Rebuilds the in-memory state from SQLite after something wrote rows behind
+   * the store's back — today only a backup restore. Prepared statements stay
+   * valid because a restore replaces rows, not tables.
+   */
+  reload() {
+    if (!this.db?.open) throw new Error("Cannot reload a closed database.");
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.dirty = false;
+    this.#ensureRows();
+    this.#hydrateFromDb();
+    this.#backfillReportIfEmpty();
     return this;
   }
 

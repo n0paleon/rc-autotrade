@@ -173,6 +173,15 @@ export class Engine {
     }
   }
 
+  /**
+   * Drops every per-target live value (price, stock, counters, trend input)
+   * after the store was replaced by a backup. Pending purchases stay tracked so
+   * their eventual fills can still be matched by order id.
+   */
+  resetMarketState() {
+    this.runtime.clear();
+  }
+
   resetCounters() {
     for (const state of this.runtime.values()) {
       state.orders = 0;

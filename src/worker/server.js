@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
+import { readFile, unlink } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
@@ -17,6 +17,16 @@ import {
   validateTarget,
   validateTargets
 } from "../shared/validation.js";
+import {
+  BACKUP_MAX_BYTES,
+  backupFilename,
+  buildBackup,
+  createDatabaseSnapshot,
+  databaseFilename,
+  parseBackup,
+  restoreBackup
+} from "./backup.js";
+import { SCHEMA_VERSION } from "./schema.js";
 import { jwtExpiry, previewToken } from "./store.js";
 
 const PUBLIC_DIR = fileURLToPath(new URL("../../dist/", import.meta.url));
@@ -75,7 +85,7 @@ function intParam(params, name, fallback, max = Number.MAX_SAFE_INTEGER) {
 function corsHeaders() {
   return {
     "access-control-allow-origin": "*",
-    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
     "access-control-allow-headers": "authorization, content-type, cache-control, pragma",
     "access-control-allow-private-network": "true",
     "access-control-max-age": "600"
@@ -351,7 +361,8 @@ export class ControlServer {
         qtyMax: LIMITS.qtyMax,
         configsMax: LIMITS.configsMax,
         ordersPerMinuteMax: LIMITS.ordersPerMinuteMax
-      }
+      },
+      database: { schemaVersion: SCHEMA_VERSION }
     };
   }
 
@@ -477,10 +488,31 @@ export class ControlServer {
   #isCorsPath(rawUrl) {
     try {
       const path = new URL(rawUrl || "/", "http://localhost").pathname;
-      return path === "/api/session/push" || path === "/api/health";
+      return path.startsWith("/api/");
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Adds the CORS headers to every API reply without touching the ~20 places
+   * that write responses. `writeHead` is wrapped once per response, so existing
+   * `json()`/`writeHead()` calls keep working and cannot forget the headers.
+   */
+  #attachCors(res) {
+    const writeHead = res.writeHead.bind(res);
+    res.writeHead = (status, ...rest) => {
+      const headers = typeof rest[0] === "string" ? { ...rest[1] } : { ...(rest[0] || {}) };
+      // A caller that already set its own CORS headers (the preflight handler)
+      // keeps them; anything else inherits the defaults.
+      for (const [key, value] of Object.entries(corsHeaders())) {
+        if (!Object.keys(headers).some((name) => name.toLowerCase() === key)) headers[key] = value;
+      }
+      const vary = headers.vary ? `${headers.vary}, access-control-request-headers` : "access-control-request-headers";
+      headers.vary = vary;
+      return typeof rest[0] === "string" ? writeHead(status, rest[0], headers) : writeHead(status, headers);
+    };
+    return res;
   }
 
   #authorized(req, res, { cors = false } = {}) {
@@ -512,7 +544,12 @@ export class ControlServer {
     const path = url.pathname;
     const isApi = path.startsWith("/api/");
 
-    if (method === "OPTIONS" && (path === "/api/session/push" || path === "/api/health")) {
+    // CORS preflight is a browser permission check, not an authenticated call:
+    // it never carries the Bearer key, so it has to be answered before the auth
+    // gate below. Leaving it to the gate answered 401 without any CORS headers,
+    // and the browser then blocked the real request — which broke logging in
+    // from a separately served UI (Vite dev server on another origin).
+    if (method === "OPTIONS" && isApi) {
       const cors = corsHeaders();
       const requestedHeaders = req.headers["access-control-request-headers"];
       if (typeof requestedHeaders === "string" && requestedHeaders.trim()) {
@@ -545,6 +582,12 @@ export class ControlServer {
       return;
     }
 
+    // Every API response needs CORS headers, not just the hand-written
+    // preflight and the two bridge endpoints: a separately served UI (Vite dev
+    // server on another origin) calls the whole /api surface, and without these
+    // headers the browser discards an otherwise successful 200.
+    if (isApi) this.#attachCors(res);
+
     if (isApi && !this.#authorized(req, res, { cors: this.#isCorsPath(path) })) return;
 
     if (!isApi) {
@@ -571,6 +614,104 @@ export class ControlServer {
 
     if (method === "GET" && path === "/api/state") {
       json(res, 200, { ok: true, ...this.snapshot() });
+      return;
+    }
+
+    if (method === "GET" && path === "/api/backup") {
+      const format = (url.searchParams.get("format") || "json").toLowerCase();
+      if (format === "sqlite" || format === "db") {
+        // A consistent copy without stopping the worker. The temp file is
+        // removed as soon as it has been read into the response.
+        const file = createDatabaseSnapshot(this.store, { prefix: "export" });
+        let data;
+        try {
+          data = await readFile(file);
+        } finally {
+          await unlink(file).catch(() => {});
+        }
+        res.writeHead(200, {
+          ...SECURITY_HEADERS,
+          "content-type": "application/vnd.sqlite3",
+          "content-disposition": `attachment; filename="${databaseFilename()}"`,
+          "cache-control": "no-store",
+          "content-length": data.length
+        });
+        res.end(data);
+        return;
+      }
+      if (format !== "json") {
+        json(res, 400, { ok: false, error: "format must be json, sqlite or db." });
+        return;
+      }
+
+      const credentials = url.searchParams.get("credentials") || "";
+      const includeCredentials = /^(1|true|yes)$/i.test(credentials);
+      const backup = buildBackup(this.store, { includeCredentials });
+      const body = JSON.stringify(backup);
+      res.writeHead(200, {
+        ...SECURITY_HEADERS,
+        "content-type": "application/json; charset=utf-8",
+        "content-disposition": `attachment; filename="${backupFilename()}"`,
+        "cache-control": "no-store",
+        "content-length": Buffer.byteLength(body)
+      });
+      res.end(body);
+      return;
+    }
+
+    if (method === "POST" && path === "/api/backup") {
+      const body = await readJson(req, BACKUP_MAX_BYTES);
+      const parsed = parseBackup(body);
+      if (!parsed.ok) {
+        json(res, 422, {
+          ok: false,
+          error: "This file is not a valid backup for this worker.",
+          fields: parsed.errors
+        });
+        return;
+      }
+
+      const credentialsParam = url.searchParams.get("credentials");
+      const restoreCredentials = credentialsParam == null || !/^(0|false|no)$/i.test(credentialsParam);
+      const previousToken = this.store.state.session.accessToken;
+
+      let result;
+      try {
+        result = restoreBackup(this.store, parsed.value, { restoreCredentials });
+      } catch (error) {
+        this.logger.error("backup", `restore failed: ${error?.message || error}`);
+        throw error;
+      }
+
+      // The restored rows replaced every target and the market cache, so the
+      // engine's live copy of that world is no longer valid.
+      this.engine?.resetMarketState?.();
+      this.engine?.hydrateMarket?.();
+      for (const config of this.store.state.configs) {
+        this.engine?.refreshTrend?.(config.itemId);
+      }
+      this.session?.tick?.();
+      this.keepalive?.wake("backup restored");
+
+      const tokenChanged = previousToken !== this.store.state.session.accessToken;
+      if (restoreCredentials && result.credentialsRestored && tokenChanged && this.gateway?.status === "online") {
+        this.gateway.reconnect("backup restored");
+      }
+
+      this.logger.info(
+        "backup",
+        `restored ${result.counts.targets} targets and ${result.counts.orders} loot entries` +
+          (result.safetyBackup ? ` — safety snapshot ${result.safetyBackup}` : "")
+      );
+
+      // LootLog keeps its own paging state in the browser. Clearing it first,
+      // then handing over the restored snapshot, guarantees no pre-import row
+      // survives the swap.
+      this.broadcast("history-cleared", {});
+      this.broadcast("snapshot", this.snapshot());
+
+      const { safetyBackupPath, ...restored } = result;
+      json(res, 200, { ok: true, restored, warnings: parsed.warnings });
       return;
     }
 

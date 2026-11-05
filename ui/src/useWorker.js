@@ -5,6 +5,66 @@ import { sound } from "./lib/sound.js";
 
 const URL_KEY = "turuc.url";
 const TOKEN_KEY = "turuc.key";
+/**
+ * Marks the stored key as persistent. Without it the key only lives in
+ * sessionStorage, so closing the tab drops the session and asks for login
+ * again; with it the key survives a browser restart but every visitor of
+ * this browser profile can reuse it.
+ */
+const REMEMBER_KEY = "turuc.remember";
+
+/**
+ * Reads the access key from wherever it was last stored. The persistent copy
+ * wins so that toggling "remember" off still picks up a key saved earlier
+ * during the same tab.
+ */
+function readStoredToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function isRemembered() {
+  try {
+    return localStorage.getItem(REMEMBER_KEY) === "on";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Persists the access key. `remember` moves it to localStorage so a closed tab
+ * no longer forces a login; otherwise it stays scoped to this tab only.
+ * The opposite store is always cleared so exactly one copy exists.
+ */
+function writeStoredToken(token, remember) {
+  try {
+    if (remember) {
+      localStorage.setItem(TOKEN_KEY, token);
+      localStorage.setItem(REMEMBER_KEY, "on");
+      sessionStorage.removeItem(TOKEN_KEY);
+    } else {
+      sessionStorage.setItem(TOKEN_KEY, token);
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(REMEMBER_KEY);
+    }
+  } catch {
+    // Storage can be unavailable (private mode, quota); the in-memory session
+    // still works, it just will not be restored.
+  }
+}
+
+function clearStoredToken() {
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(REMEMBER_KEY);
+    sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // Nothing to clean up.
+  }
+}
 
 /**
  * Newest loot entries kept in browser state for the live panel. The full log
@@ -279,13 +339,13 @@ export function useWorker({ notify }) {
         setAuthError(message);
         setSnapshot(null);
         setConnected(false);
-        sessionStorage.removeItem(TOKEN_KEY);
+        clearStoredToken();
         clientRef.current?.logout();
       }
     });
     clientRef.current = client;
 
-    const savedKey = sessionStorage.getItem(TOKEN_KEY);
+    const savedKey = readStoredToken();
     const savedUrl = localStorage.getItem(URL_KEY);
     if (savedKey) {
       client
@@ -297,7 +357,7 @@ export function useWorker({ notify }) {
         })
         .catch((error) => {
           setAuthError(messageForError(error));
-          sessionStorage.removeItem(TOKEN_KEY);
+          clearStoredToken();
         });
     }
 
@@ -305,12 +365,12 @@ export function useWorker({ notify }) {
   }, [applySnapshot, appendLogs, handleEvent]);
 
   const login = useCallback(
-    async (url, token) => {
+    async (url, token, remember = true) => {
       setBusy(true);
       setAuthError("");
       try {
         const state = await clientRef.current.login(url, token);
-        sessionStorage.setItem(TOKEN_KEY, token);
+        writeStoredToken(token, remember);
         localStorage.setItem(URL_KEY, state ? clientRef.current.baseUrl : url);
         applySnapshot(state);
         setStatus("online");
@@ -329,7 +389,7 @@ export function useWorker({ notify }) {
 
   const logout = useCallback(() => {
     clientRef.current?.logout();
-    sessionStorage.removeItem(TOKEN_KEY);
+    clearStoredToken();
     setSnapshot(null);
     setConnected(false);
     setAuthError("");
@@ -341,11 +401,15 @@ export function useWorker({ notify }) {
   }, [clearLogs]);
 
   const replaceAccessKey = useCallback((token) => {
-    sessionStorage.setItem(TOKEN_KEY, token);
+    // A rotated key inherits whatever storage mode the session already uses,
+    // so a remembered deck stays remembered and a tab-scoped one stays scoped.
+    writeStoredToken(token, isRemembered());
     clientRef.current?.replaceToken(token);
   }, []);
 
   const request = useCallback((path, options) => clientRef.current.request(path, options), []);
+  const requestText = useCallback((path, options) => clientRef.current.requestText(path, options), []);
+  const requestBlob = useCallback((path, options) => clientRef.current.requestBlob(path, options), []);
   const resync = useCallback(() => clientRef.current?.resync(), []);
   const getConnection = useCallback(
     () => ({
@@ -472,6 +536,36 @@ export function useWorker({ notify }) {
     return result;
   }, [request]);
 
+  /** Downloads the portable JSON backup exactly as the worker wrote it. */
+  const exportBackup = useCallback(
+    ({ credentials = false } = {}) => {
+      const query = credentials ? "?credentials=1" : "";
+      return requestText(`/api/backup${query}`, { timeout: 120_000 });
+    },
+    [requestText]
+  );
+
+  /** Downloads a consistent `.db` copy for offline disaster recovery. */
+  const exportDatabase = useCallback(
+    () => requestBlob("/api/backup?format=sqlite", { timeout: 120_000 }),
+    [requestBlob]
+  );
+
+  const importBackup = useCallback(
+    async (backup, { restoreCredentials = true } = {}) => {
+      const result = await request(`/api/backup?credentials=${restoreCredentials ? 1 : 0}`, {
+        method: "POST",
+        body: backup,
+        timeout: 300_000
+      });
+      // The worker broadcasts a fresh snapshot, but resyncing here makes the
+      // modal's own counts correct even if a socket frame is missed.
+      await clientRef.current?.resync();
+      return result;
+    },
+    [request]
+  );
+
   const control = useCallback(
     async (action) => {
       const result = await request("/api/control", { method: "POST", body: { action } });
@@ -539,6 +633,9 @@ export function useWorker({ notify }) {
     clearSession,
     rotateAccessKey,
     resetStats,
+    exportBackup,
+    exportDatabase,
+    importBackup,
     control,
     previewItem,
     refreshLatency,
@@ -549,4 +646,12 @@ export function useWorker({ notify }) {
   };
 }
 
-export { ApiError, URL_KEY, TOKEN_KEY };
+export {
+  ApiError,
+  URL_KEY,
+  TOKEN_KEY,
+  REMEMBER_KEY,
+  readStoredToken,
+  isRemembered,
+  clearStoredToken
+};

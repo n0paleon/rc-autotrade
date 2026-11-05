@@ -360,6 +360,78 @@ test("bridge CORS headers survive preflight and auth errors", async () => {
   assert.equal(invalid.headers.get("access-control-allow-origin"), "*");
 });
 
+test("preflight is answered for any API path, including authenticated ones", async () => {
+  // A separately served UI (Vite dev server on another origin) sends a
+  // preflight before every authenticated call. Answering it with 401 and no
+  // CORS headers made the browser block the real request, so login from the
+  // dev server failed with "cannot reach the worker".
+  for (const path of ["/api/state", "/api/settings", "/api/configs", "/api/history"]) {
+    const preflight = await fetch(`${baseUrl}${path}`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "http://127.0.0.1:5173",
+        "access-control-request-method": "GET",
+        "access-control-request-headers": "authorization,content-type"
+      }
+    });
+    assert.equal(preflight.status, 204, `preflight for ${path}`);
+    assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+    assert.match(preflight.headers.get("access-control-allow-headers"), /authorization/);
+  }
+
+  // The methods the UI actually uses must be advertised, or the browser
+  // refuses PATCH/DELETE before it even leaves the page.
+  const methods = (
+    await fetch(`${baseUrl}/api/settings`, {
+      method: "OPTIONS",
+      headers: { origin: "http://127.0.0.1:5173", "access-control-request-method": "PATCH" }
+    })
+  ).headers.get("access-control-allow-methods");
+  for (const verb of ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]) {
+    assert.match(methods, new RegExp(verb));
+  }
+});
+
+test("every API response carries CORS headers, not just the bridge endpoints", async () => {
+  // A cross-origin UI gets a 200 that the browser still discards unless the
+  // real response carries the allow-origin header — the preflight alone is not
+  // enough. This covered /api/state, which returned no CORS headers at all.
+  const get = await fetch(`${baseUrl}/api/state`, {
+    headers: authHeaders({ origin: "http://127.0.0.1:5173" })
+  });
+  assert.equal(get.status, 200);
+  assert.equal(get.headers.get("access-control-allow-origin"), "*");
+
+  // Mutating verbs the UI uses must carry them too.
+  const patched = await fetch(`${baseUrl}/api/settings`, {
+    method: "PATCH",
+    headers: authHeaders({ origin: "http://127.0.0.1:5173", "content-type": "application/json" }),
+    body: JSON.stringify({})
+  });
+  assert.ok(patched.status < 500);
+  assert.equal(patched.headers.get("access-control-allow-origin"), "*");
+
+  // Non-API static files must NOT be advertised cross-origin.
+  const staticRes = await fetch(`${baseUrl}/`, {
+    headers: { origin: "http://127.0.0.1:5173" }
+  });
+  assert.equal(staticRes.headers.get("access-control-allow-origin"), null);
+});
+
+test("a wrong key still fails with a readable cross-origin error", async () => {
+  // CORS headers must ride along on the 401 too, otherwise the UI reports an
+  // opaque network failure instead of "ACCESS DENIED — this key was rejected".
+  const denied = await fetch(`${baseUrl}/api/state`, {
+    headers: { origin: "http://127.0.0.1:5173", authorization: "Bearer definitely-wrong-key" }
+  });
+  assert.equal(denied.status, 401);
+  assert.equal(denied.headers.get("access-control-allow-origin"), "*");
+
+  // The preflight itself must never leak data or bypass the key check.
+  const stillGated = await fetch(`${baseUrl}/api/state`);
+  assert.equal(stillGated.status, 401);
+});
+
 test("session push accepts a newer JWT and CORS is enabled", async () => {
   const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
   const payload = Buffer.from(
@@ -490,6 +562,101 @@ test("system monitor exposes live worker and host metrics", async () => {
   const state = await (await fetch(`${baseUrl}/api/state`, { headers: authHeaders() })).json();
   assert.ok(state.system, "snapshot must embed the system view");
   assert.ok(state.system.memory.rss > 0);
+});
+
+test("backup export, raw snapshot and restore work over HTTP", async () => {
+  // Freeze fills so the counts exported and the counts asserted cannot drift.
+  const paused = await fetch(`${baseUrl}/api/control`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ action: "pause" })
+  });
+  assert.equal(paused.status, 200);
+
+  const savedSession = await fetch(`${baseUrl}/api/session`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({
+      accessToken: "integration-access-token-123",
+      refreshToken: "integration-refresh-token-123",
+      cookie: "cf_clearance=integration"
+    })
+  });
+  assert.equal(savedSession.status, 200);
+
+  const stateBefore = await (await fetch(`${baseUrl}/api/state`, { headers: authHeaders() })).json();
+  assert.equal(stateBefore.database.schemaVersion >= 1, true);
+
+  const portable = await fetch(`${baseUrl}/api/backup`, { headers: authHeaders() });
+  assert.equal(portable.status, 200);
+  assert.match(portable.headers.get("content-disposition"), /attachment; filename="turu-rc-backup-\d{8}T\d{6}Z\.json"/);
+  const backup = await portable.json();
+  assert.equal(backup.kind, "turu-rc-backup");
+  assert.equal(backup.formatVersion, 1);
+  assert.equal(backup.credentials, undefined);
+  assert.equal(backup.counts.targets, stateBefore.configs.length);
+  assert.equal(backup.counts.orders, stateBefore.historyTotal);
+  assert.equal(backup.data.settings.dryRun, stateBefore.settings.dryRun);
+
+  const withCredentials = await (
+    await fetch(`${baseUrl}/api/backup?credentials=1`, { headers: authHeaders() })
+  ).json();
+  assert.equal(withCredentials.credentials.session.accessToken, "integration-access-token-123");
+  assert.equal(withCredentials.credentials.session.cookie, "cf_clearance=integration");
+
+  const sqlite = await fetch(`${baseUrl}/api/backup?format=sqlite`, { headers: authHeaders() });
+  assert.equal(sqlite.status, 200);
+  assert.match(sqlite.headers.get("content-type"), /sqlite/);
+  assert.match(sqlite.headers.get("content-disposition"), /attachment; filename="turu-rc-db-\d{8}T\d{6}Z\.db"/);
+  const bytes = Buffer.from(await sqlite.arrayBuffer());
+  assert.equal(bytes.subarray(0, 16).toString("utf8"), "SQLite format 3\u0000");
+
+  const invalid = await fetch(`${baseUrl}/api/backup`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ kind: "something-else" })
+  });
+  assert.equal(invalid.status, 422);
+  const invalidBody = await invalid.json();
+  assert.equal(invalidBody.ok, false);
+  assert.ok(invalidBody.fields.kind);
+
+  // Add a marker target, then restore the earlier snapshot: the marker must
+  // disappear and the safety file must exist on the server.
+  const markerId = "66ffee0011223344556677";
+  const marker = await fetch(`${baseUrl}/api/configs`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({
+      itemId: markerId,
+      label: "MARKER TARGET",
+      targetPrice: 0.02,
+      desiredQty: 1,
+      highStockThreshold: 1,
+      minAcceptableQty: 1
+    })
+  });
+  assert.equal(marker.status, 201);
+
+  const restored = await fetch(`${baseUrl}/api/backup`, {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify(withCredentials)
+  });
+  assert.equal(restored.status, 200);
+  const restoredBody = await restored.json();
+  assert.equal(restoredBody.ok, true);
+  assert.deepEqual(restoredBody.restored.counts, backup.counts);
+  assert.equal(restoredBody.restored.credentialsRestored, true);
+  assert.match(restoredBody.restored.safetyBackup, /^backups\/pre-import-\d{8}T\d{6}Z\.db$/);
+  assert.deepEqual(restoredBody.warnings, []);
+
+  const stateAfter = await (await fetch(`${baseUrl}/api/state`, { headers: authHeaders() })).json();
+  assert.equal(stateAfter.configs.some((config) => config.itemId === markerId), false);
+  assert.equal(stateAfter.configs.length, backup.counts.targets);
+  assert.equal(stateAfter.historyTotal, backup.counts.orders);
+  assert.equal(stateAfter.session.hasAccessToken, true);
+  assert.equal(stateAfter.settings.dryRun, stateBefore.settings.dryRun);
 });
 
 test("key rotation is refused when WORKER_TOKEN pins the key", async () => {

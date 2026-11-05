@@ -30,6 +30,7 @@ untuk login, mengatur target, memantau market, dan melihat loot.
 - [Worker API](#worker-api)
 - [HTTPS dan mixed content](#https-dan-mixed-content)
 - [Caddy tutorial](#caddy-tutorial-debianubuntu-vps)
+- [Backup dan migrasi](#backup-dan-migrasi)
 - [Data dan keamanan](#data-dan-keamanan)
 - [Mock mode](#mock-mode)
 - [Testing](#testing)
@@ -65,6 +66,11 @@ untuk login, mengatur target, memantau market, dan melihat loot.
   Log yang sama diagregasi per produk (fills, qty, spend, avg buy, profit, margin, success rate,
   last activity). Profit all-time juga tampil langsung di tiap product card. Panel
   **PROFIT BY PRODUCT** bisa diekspor ke CSV; angkanya tetap utuh setelah worker restart.
+- **Backup & migrasi** — panel **CONFIG → Backup & migrate** mengunduh data sebagai `.json`
+  portable (target, settings, counter, loot log, profit per produk) atau salinan `.db`
+  byte-complete, dan me-restore `.json` itu ke worker lain. Import bersifat atomik, selalu menulis
+  snapshot pengaman lebih dulu, opsional membawa sesi Rollercoin, dan tidak pernah memindahkan
+  access key worker. Lihat [Backup dan migrasi](#backup-dan-migrasi).
 - **Live data plane** — HUD, target cards + chart, market wire, terminal event, loot log, profit
   report, health token, runtime config, sound effect, dan tampilan mobile.
 - **Worker health monitor** — tab **SYSTEM** menampilkan CPU worker dan host, heap (kompatibilitas
@@ -168,7 +174,9 @@ Saat pertama kali berjalan, worker mencetak access key satu kali:
   └─────────────────────────────────────────────────────────┘
 ```
 
-Buka `http://127.0.0.1:8787`, tempel key tersebut, lalu tekan **PRESS START**.
+Buka `http://127.0.0.1:8787`, tempel key tersebut, lalu tekan **PRESS START**. Biarkan
+**Remember on this device** menyala (default) supaya tab dan browser boleh ditutup tanpa login
+ulang. Lihat [Key tersimpan di browser](#key-tersimpan-di-browser) untuk detail penyimpanannya.
 
 Mau mencoba tanpa akun? Jalankan simulator:
 
@@ -303,6 +311,23 @@ Catatan:
 
 > `bun run key:reset` harus dijalankan saat worker berhenti. Kalau worker masih hidup, state
 > in-memory-nya bisa menimpa key baru saat shutdown.
+
+#### Key tersimpan di browser
+
+Form login punya toggle **Remember on this device** (aktif secara default). Perilakunya:
+
+| Kondisi | Tempat simpan | Tab ditutup | Browser ditutup |
+| --- | --- | --- | --- |
+| Remember **aktif** | `localStorage` (`turuc.key`, `turuc.remember`) | tetap login | tetap login |
+| Remember **mati** | `sessionStorage` (`turuc.key`) | harus login ulang | harus login ulang |
+
+- Key hanya tersimpan di satu tempat: menyalakan atau mematikan toggle memindahkannya dan
+  menghapus salinan yang lama, jadi tidak ada key "tertinggal" di storage lain.
+- **LOCK** di header menghapus key tersimpan dan kembali ke layar login. Pakai ini kalau deck
+  dibuka di komputer bersama.
+- Key yang dirotasi lewat **ROTATE KEY** mewarisi mode penyimpanan yang sedang aktif.
+- URL worker sudah lebih dulu persist di `localStorage` (`turuc.url`), jadi menutup tab tidak
+  pernah menghapus alamatnya.
 
 ---
 
@@ -1027,6 +1052,9 @@ Authorization: Bearer <access-key>
 | `POST` | `/api/latency/probe` | Jalankan warm probe sekarang dan balas sampel baru |
 | `GET` | `/api/system` | Snapshot health worker/host: CPU, memory, event loop, load, history |
 | `DELETE` | `/api/history` | Reset profit, counter, loot log, dan sampel latency |
+| `GET` | `/api/backup` | Unduh backup portable `.json`; `?credentials=1` ikut menyertakan sesi Rollercoin |
+| `GET` | `/api/backup?format=sqlite` | Unduh salinan `.db` konsisten (byte-complete) untuk disaster recovery |
+| `POST` | `/api/backup` | Restore backup `.json` (replace total); `?credentials=0` pertahankan sesi yang ada |
 
 Error validasi memakai status `422` dan `fields`, misalnya:
 
@@ -1054,6 +1082,31 @@ Error validasi memakai status `422` dan `fields`, misalnya:
 - `market` membawa `price`, `stock`, `targetPrice`, `hot`, `at`, `trend` (model TREND WATCH), `fill`
   (estimasi `{price, filled, requested, partial, approx}` untuk `desiredQty`), serta
   `allowedPriceMin`, `allowedPriceMax`, `allowedAt` (cache band harga terakhir per target).
+
+### CORS
+
+Semua respons di bawah `/api/*` membawa header CORS (`access-control-allow-origin: *`), termasuk
+preflight `OPTIONS`. Ini yang membuat UI bisa dilayani dari origin lain — misalnya Vite dev server
+di `127.0.0.1:5173` yang memanggil worker di `127.0.0.1:8787`:
+
+```bash
+bun run dev        # UI 5173, worker 8787 — login lintas origin jalan
+```
+
+Preflight dijawab `204` **sebelum** gerbang auth, karena browser tidak mengirim Bearer key di
+preflight. Yang tetap dijaga:
+
+- Request sebenarnya **selalu** butuh `Authorization: Bearer <access-key>`; preflight bukan bypass.
+- Salah key tetap `401`, dan karena header CORS ikut terkirim, UI menampilkan pesan aslinya
+  ("ACCESS DENIED — this key was rejected"), bukan error jaringan yang tidak jelas.
+- Pembatasan 20 percobaan gagal/menit per IP tetap berlaku.
+- File statis (`/`, `/assets/*`) **tidak** diberi header CORS — hanya `/api/*`.
+
+> `access-control-allow-origin: *` berarti halaman web mana pun yang Anda buka boleh *mengirim*
+> request ke worker di localhost. Tanpa access key yang benar, request itu tetap ditolak `401`,
+> jadi tidak ada data yang bocor. Untuk paparan publik, tetap ikuti
+> [HTTPS dan mixed content](#https-dan-mixed-content) dan
+> [Caddy tutorial](#caddy-tutorial-debianubuntu-vps) supaya worker tidak terbuka mentah.
 
 ---
 
@@ -1299,6 +1352,51 @@ pm2 restart rc-autotrade --update-env
 
 ---
 
+## Backup dan migrasi
+
+Tab **CONFIG → Backup & migrate** membuka panel dengan dua tab:
+
+- **Export** — mengunduh data dalam salah satu dari dua bentuk:
+  - **Portable `.json`** (`GET /api/backup`) — target, settings, lifetime counter, agregat profit
+    per produk, dan seluruh loot log. Bentuk inilah yang bisa di-restore dari UI, termasuk ke worker
+    lain dengan versi build berbeda.
+  - **Raw `.db`** (`GET /api/backup?format=sqlite`) — salinan **byte-complete** seluruh database
+    (termasuk sesi Rollercoin dan cache pasar) lewat `VACUUM INTO`. Dipakai untuk disaster recovery
+    dan **hanya bisa di-restore dengan worker berhenti**.
+- **Import** — memilih file `.json`, menampilkan pratinjau (jumlah target/loot/produk, versi worker,
+  versi skema) beserta peringatan, lalu menimpa data worker setelah kamu mencentang konfirmasi.
+
+### Pindah mesin (migrasi)
+
+1. Di worker lama: buka **CONFIG → Backup & migrate → Export**, unduh `.json`. Centang
+   *Include Rollercoin session* kalau ingin sesi Rollercoin ikut pindah (lihat catatan keamanan).
+2. Nyalakan worker baru, buka deck-nya, login dengan access key worker baru tersebut.
+3. Buka **Import**, pilih file tadi, lalu **Restore this backup**.
+
+Yang perlu diketahui tentang proses ini:
+
+- **Access key worker tidak ikut pindah.** Backup tidak pernah memuat key material, dan worker tujuan
+  tetap memakai key-nya sendiri. Tab yang sudah terbuka dan snippet bridge di worker baru tetap valid.
+- **Sesi Rollercoin opsional.** Tanpa blok credentials, sesi yang sedang tersimpan di worker tujuan
+  dipertahankan. Dengan blok credentials, kamu bisa memilih untuk tidak menimpanya saat restore.
+- **Selalu ada jalan kembali.** Sebelum menulis apa pun, worker membuat snapshot `.db` ke
+  `data/backups/pre-import-<timestamp>.db`. Kalau snapshot itu gagal dibuat, import dibatalkan.
+- **Import bersifat atomik.** Seluruh penulisan berjalan dalam satu transaksi SQLite, jadi kegagalan
+  di tengah proses tidak meninggalkan data setengah jadi.
+- **Cache pasar tidak ikut** dan dibuang saat import; deck akan mengisinya lagi dari frame live.
+- **Skema lebih baru ditolak.** Backup dari build dengan `schemaVersion` lebih tinggi dari yang
+  dipahami build ini akan ditolak dengan pesan agar worker di-upgrade, bukan data yang di-downgrade.
+- Backup ditulis dengan validasi yang sama seperti API HTTP, jadi file dari build lama tetap bisa
+  di-restore selama `formatVersion` dan `schemaVersion`-nya didukung; baris yang rusak dilewati
+  dengan peringatan, bukan menggagalkan seluruh import.
+
+> Backup `.json` **tanpa** credentials relatif aman disimpan di cloud drive. Begitu kamu mencentang
+> *Include Rollercoin session*, file itu memuat access/refresh token dan cookie Cloudflare dalam
+> bentuk plaintext — siapa pun yang memegangnya bisa bertindak sebagai kamu di Rollercoin sampai
+> token kedaluwarsa. Simpan di tempat privat dan hapus setelah migrasi selesai.
+
+---
+
 ## Data dan keamanan
 
 - `data/rollercoin.db` adalah database SQLite (mode WAL) berisi token sesi Rollercoin (plaintext),
@@ -1322,13 +1420,17 @@ pm2 restart rc-autotrade --update-env
 - Database lama dari versi JSON dimigrasikan otomatis saat boot pertama: `state.json` dan
   `loot-log.json` diimpor lalu di-rename menjadi `*.migrated-<timestamp>` (tidak dihapus).
   Jangan commit atau backup isi `data/` ke tempat publik.
-- Backup: `sqlite3 data/rollercoin.db ".backup 'backup.db'"` saat worker berjalan, atau copy
+- Backup: pakai panel **CONFIG → Backup & migrate** (lihat [Backup dan migrasi](#backup-dan-migrasi))
+  untuk backup portable `.json` atau salinan `.db` tanpa menghentikan worker. Alternatif manual:
+  `sqlite3 data/rollercoin.db ".backup 'backup.db'"` saat worker berjalan, atau copy
   `rollercoin.db` setelah worker berhenti. Jangan menaruh `DATA_DIR` di NFS/folder sync (Dropbox,
   OneDrive) karena WAL butuh locking lokal.
 - Access key worker **tidak** disimpan plaintext; hanya hash SHA-256 + preview.
 - Token Rollercoin tidak pernah dikirim ke UI dalam bentuk penuh; UI hanya menampilkan preview.
   Pengecualian: `/api/session/push` membalas token penuh ke snippet bridge yang sudah terautentikasi.
 - Semua percobaan auth yang gagal dibatasi 20/menit per IP.
+- Endpoint `/api/*` membalas header CORS ke origin mana pun (lihat [CORS](#cors)), tetapi setiap
+  request tetap wajib memakai access key yang benar. Jangan buka port worker mentah ke internet.
 - Default bind loopback. Untuk akses remote, pakai reverse proxy HTTPS + firewall; jangan buka
   port mentah ke internet.
 - Tidak ada telemetry, analytics, atau koneksi ke server pihak ketiga selain Rollercoin.
@@ -1422,6 +1524,7 @@ Total 112 test; integration test memakai port acak dan data directory sementara.
 │       ├── system.js        # CPU/heap/event-loop/host health sampler
 │       ├── db.js            # bun:sqlite wrapper (pragma/transaction/named params)
 │       ├── db-metrics.js    # SQLite statement timing, file/WAL and slow-query probe
+│       ├── backup.js        # export/import portable + raw snapshot (VACUUM INTO)
 │       ├── server.js        # control plane HTTP/WS + static UI
 │       └── reset-token.js
 ├── test/
