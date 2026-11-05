@@ -107,6 +107,8 @@ export function useWorker({ notify }) {
               ? data.allowedPriceMax
               : runtime.allowedPriceMax,
             allowedAt: data.allowedAt ?? runtime.allowedAt,
+            autoTargetPrice: Number.isFinite(data.autoTargetPrice) ? data.autoTargetPrice : null,
+            autoTargetAt: data.autoTargetAt ?? null,
             history: mergeHistory(runtime.history, data.price, bucket)
           }));
           break;

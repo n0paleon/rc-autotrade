@@ -46,6 +46,8 @@ export const LIMITS = Object.freeze({
   delayMax: 60_000,
   ordersPerMinuteMin: 1,
   ordersPerMinuteMax: 600,
+  autoTargetMarginMin: 0,
+  autoTargetMarginMax: 100,
   labelMax: 48,
   configsMax: 100,
   bodyBytes: 256 * 1024,

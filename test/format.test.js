@@ -2,6 +2,7 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 
 import {
+  effectiveTargetPrice,
   formatBytes,
   formatPercent,
   formatPreciseMs,
@@ -9,6 +10,7 @@ import {
   itemTypeOf,
   ITEM_TYPE_ORDER,
   marketplaceUrl,
+  runtimeHot,
   thresholdClass,
   utilizationClass
 } from "../ui/src/lib/format.js";
@@ -33,6 +35,35 @@ test("falls back to a readable label for unknown item types", () => {
 test("resolves the item type from the config or its runtime", () => {
   assert.equal(itemTypeOf({ itemType: "RACK" }), "rack");
   assert.equal(itemTypeOf({ runtime: { itemType: "Miner" } }), "miner");
+});
+
+test("effectiveTargetPrice prefers the runtime auto target", () => {
+  const base = { itemId: "x", targetPrice: 0.1, autoTarget: true, runtime: {} };
+  assert.equal(effectiveTargetPrice(base), 0.1);
+  assert.equal(
+    effectiveTargetPrice({ ...base, runtime: { autoTargetPrice: 0.0525 } }),
+    0.0525
+  );
+  // A stale runtime value must not win after auto mode is switched off.
+  assert.equal(
+    effectiveTargetPrice({
+      ...base,
+      autoTarget: false,
+      runtime: { autoTargetPrice: 0.0525 }
+    }),
+    0.1
+  );
+  // HOT follows the ceiling the engine actually uses.
+  const config = {
+    itemId: "x",
+    active: true,
+    targetPrice: 0.1,
+    minAcceptableQty: 1,
+    autoTarget: true,
+    runtime: { lastPrice: 0.1, lastStock: 5, autoTargetPrice: 0.105 }
+  };
+  assert.equal(runtimeHot(config), true);
+  assert.equal(runtimeHot({ ...config, runtime: { ...config.runtime, autoTargetPrice: 0.095 } }), false);
 });
 
 test("builds the Rollercoin marketplace URL for an item", () => {

@@ -222,12 +222,16 @@ test("target CRUD validates and broadcasts snapshots", async () => {
       targetPrice: 0.075,
       desiredQty: 12,
       highStockThreshold: 30,
-      minAcceptableQty: 3
+      minAcceptableQty: 3,
+      autoTarget: true,
+      autoTargetMarginPct: 3.5
     })
   });
   assert.equal(created.status, 201);
   const createdBody = await created.json();
-  assert.equal(createdBody.configs.some((config) => config.itemId === itemId), true);
+  const createdTarget = createdBody.configs.find((config) => config.itemId === itemId);
+  assert.equal(createdTarget.autoTarget, true);
+  assert.equal(createdTarget.autoTargetMarginPct, 3.5);
 
   const patched = await fetch(`${baseUrl}/api/configs/${itemId}`, {
     method: "PATCH",
@@ -236,7 +240,11 @@ test("target CRUD validates and broadcasts snapshots", async () => {
   });
   assert.equal(patched.status, 200);
   const patchedBody = await patched.json();
-  assert.equal(patchedBody.configs.find((config) => config.itemId === itemId).active, false);
+  const patchedTarget = patchedBody.configs.find((config) => config.itemId === itemId);
+  assert.equal(patchedTarget.active, false);
+  assert.equal(patchedTarget.autoTarget, true, "a partial PATCH keeps the auto target switch");
+  assert.equal(patchedTarget.autoTargetMarginPct, 3.5);
+  assert.equal(patchedTarget.targetPrice, 0.075, "the API never returns a runtime-adjusted base");
 
   const invalid = await fetch(`${baseUrl}/api/configs`, {
     method: "POST",

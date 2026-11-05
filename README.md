@@ -187,6 +187,29 @@ bun run dev:worker        # worker di 127.0.0.1:8787
 bun run dev:ui            # Vite di 5173, proxy /api dan /ws ke 8787
 ```
 
+| Perintah | Yang jalan | UI | Worker | Cocok untuk |
+| --- | --- | --- | --- | --- |
+| `bun run dev` | `scripts/dev.js` → worker `--watch` + Vite | Vite 5173, hot reload | 8787, hot restart | kerja full-stack sehari-hari |
+| `bun run dev:ui` | Vite saja | Vite 5173, hot reload | **tidak dijalankan** — butuh worker terpisah di 8787 | mengerjakan UI/CSS saja |
+| `bun run dev:worker` | worker `--watch` saja | `dist/` statis di 8787, tanpa hot reload | 8787, hot restart | mengerjakan engine/API/gateway |
+| `bun start` | build lalu worker | `dist/` statis di 8787 | 8787, tanpa watch | uji hasil build seperti production |
+| `bun run mock` | build lalu worker `MOCK=1` | `dist/` statis di 8787 | feed simulasi | demo/offline tanpa akun |
+
+- `dev` **tidak** menjalankan `build`. Worker di 8787 menyajikan `dist/` yang mungkin lama; untuk
+  melihat UI terbaru saat memakai `dev`, buka **http://127.0.0.1:5173** (Vite yang menyajikan source
+  dan proxy `/api` + `/ws` ke 8787).
+- `dev:worker` memakai `--watch`, jadi perubahan `src/worker/**` otomatis restart. Perubahan UI
+  **tidak** ikut ter-build; jalankan `bun run build` lalu refresh 8787.
+- `dev:ui` hanya menyalakan Vite. Kalau worker belum jalan di 8787, login/API akan gagal.
+- Vite **wajib** dijalankan dengan Node, bukan Bun (karena itu `dev` men-spawn Vite via `node`).
+  Proxy WS milik Vite memanggil `socket.destroySoon()`, API `net.Socket` yang tidak ada di socket
+  upgrade Bun, sehingga `/ws` yang gagal (worker belum listen, atau balasan HTTP biasa atas upgrade)
+  mematikan dev server dengan `TypeError: socket.destroySoon is not a function`. Karena itu juga
+  `dev` menunggu port 8787 terbuka dulu sebelum menyalakan Vite.
+- Jangan menjalankan `dev` dan `dev:worker` bersamaan: keduanya berebut port 8787.
+- Kalau salah satu child di `dev` mati, `scripts/dev.js` mematikan pasangannya; Ctrl+C kini
+  menutup keduanya dengan cepat.
+
 Mock mode mengisi dua target contoh, membuat harga naik-turun, dan mengirim fill palsu sehingga
 seluruh dashboard bisa diuji offline. Script `bun run mock` memakai environment assignment Bun
 shell, jadi tetap jalan di Windows.
@@ -303,11 +326,13 @@ Contoh dari brief, bisa langsung dipakai di UI atau `PUT /api/configs`:
 | `label` | otomatis | maks 48 karakter | Diisi worker dari item-info; UI tidak meminta input manual |
 | `itemType` | tidak | default `mutation_component` | Dipakai untuk item-info dan purchase; worker auto-mencoba `mutation_component`, `miner`, `rack`, `battery`, dan mengoreksi dari frame market |
 | `rarityColor` | otomatis | 6 digit hex | Warna aksen card, diisi dari `rarityGroup.baseHexColor` bila ada |
-| `targetPrice` | ya | > 0, ≤ 1.000.000, maks 6 desimal | Harga maksimum **per unit** (RLT) |
+| `targetPrice` | ya | > 0, ≤ 1.000.000, maks 6 desimal | Harga maksimum **per unit** (base price; auto target bisa menggantinya saat runtime) |
 | `desiredQty` | ya | integer 1–10.000 | Qty normal **per order** |
 | `highStockThreshold` | ya | integer `desiredQty`–1.000.000 | Book ≥ nilai ini → qty order diminta 2× `desiredQty` |
 | `minAcceptableQty` | ya | integer 1..`desiredQty` | Batas bawah partial order |
 | `allowPartialOrder` | tidak | boolean, default `true` | Izinkan beli seadanya saat stok < `desiredQty` |
+| `autoTarget` | tidak | boolean, default `false` | Aktifkan target runtime dari `allowedPriceMin` |
+| `autoTargetMarginPct` | tidak | 0–100, maks 2 desimal, default `0` | Margin di atas `allowedPriceMin` saat auto target aktif |
 | `maxSpendPerFill` | — | turunan UI, read-only | `targetPrice × desiredQty × 2`, plafon teoretis satu fill |
 | `active` | tidak | boolean, default `true` | Arm/disarm target |
 
@@ -331,7 +356,8 @@ Perilaku pembelian:
   micro-RLT ke RLT dan di-cache per target di runtime worker. Card menampilkan band tersebut, dan
   snapshot `/api/state` tetap membawanya setelah halaman di-reload. Frame baru langsung memperbarui
   nilai cache; frame yang tidak membawa band tidak menghapus nilai lama. Cache hilang saat worker
-  restart, sama seperti chart history.
+  restart, sama seperti chart history. Saat `autoTarget` aktif, `allowedPriceMin` juga menjadi
+  sumber target runtime (lihat [Auto target](#auto-target-dari-allowedpricemin-runtime-only)).
 - **PURCHASE SUCCESS** di card = `fills / (fills + failures) × 100%` untuk target tersebut selama
   sesi worker. Order yang masih pending tidak dihitung sampai fill atau gagal terkonfirmasi.
   Reset lifetime stats juga mereset counter per target ini.
@@ -349,6 +375,35 @@ Perilaku pembelian:
   menghapus riwayat produknya. Produk yang disimpan dibatasi `MAX_REPORT_PRODUCTS = 500`; saat daftar
   penuh, produk dengan profit terendah dibuang lebih dulu. Saat upgrade dari state lama tanpa
   `report`, worker membangun ulang laporan sekali dari seluruh loot log yang tersimpan.
+
+### Auto target dari `allowedPriceMin` (runtime-only)
+
+Setiap target punya saklar sendiri; tidak ada setting global. Saat diaktifkan dan frame market
+membawa `allowedPriceMin`, engine menghitung plafon beli:
+
+```text
+runtimeTarget = round6(allowedPriceMin × (1 + autoTargetMarginPct / 100))
+```
+
+Contoh: `allowedPriceMin` 0,05 RLT dengan margin 5% → target runtime 0,0525 RLT. Margin 0% berarti
+target tepat di `allowedPriceMin`. `planOrder()` memakai angka ini sebagai plafon, sedangkan
+`config.targetPrice` tetap menjadi **base price** yang tersimpan di SQLite.
+
+Aturan runtime-nya:
+
+- Nilai auto target hanya hidup di `runtime.autoTargetPrice` (RAM). Nilai ini **tidak** pernah
+  ditulis ke `targets.target_price`; setelah worker restart, runtime kosong dan target kembali ke
+  base price sampai frame live berikutnya yang membawa band tiba.
+- Snapshot `allowedPriceMin` yang di-hydrate dari SQLite setelah restart **tidak** dipakai untuk
+  menghitung auto target. Snapshot itu hanya untuk tampilan; auto target selalu butuh frame live.
+- Frame yang tidak membawa band tidak mengubah target runtime; nilai terakhir dipertahankan.
+  Mengedit target, arm/disarm, atau mengganti margin membuang override runtime, lalu frame
+  berikutnya menghitung ulang.
+- `allowedPriceMax` tetap tidak dipakai sebagai syarat beli.
+- Card menampilkan target yang sedang dipakai, badge `AUTO` + margin, dan base price kecil di
+  bawahnya. Chart, plafon `MAX`, serta `runtimeHot()` juga memakai target runtime yang sama.
+- Profit fill dihitung terhadap target yang dipakai saat order dikirim (`runtimeTarget`), bukan
+  terhadap base price.
 
 Label otomatis diambil dari:
 
@@ -433,13 +488,15 @@ ketersediaan access token (kecuali `dryRun`). Gerbang-gerbang ini **tidak** meng
 | Dibandingkan dengan | `unitPrice` listing termurah (harga micro-RLT ÷ 1.000.000) |
 | Lolos bila | `unitPrice <= targetPrice + 1e-9` (epsilon float, jadi harga yang persis sama tetap dibeli) |
 | Ditolak bila | `unitPrice > targetPrice` → `price-above-target`, frame dilewati |
+| Sumber angka | `config.targetPrice` (base) atau `runtime.autoTargetPrice` saat `autoTarget` aktif |
 
 - Anda **tidak** menawar. Kalau listing termurah di bawah target, engine tetap membayar harga
   listing tersebut (bukan `targetPrice`), sehingga biaya nyata ≤ plafon.
 - `targetPrice` bukan budget dan bukan batas total. Total satu order = `unitPrice × qty`, dan bisa
   sampai 2× `desiredQty` item saat high-stock aktif — lihat `maxSpendPerFill` di bawah.
-- Band harga dari Rollercoin (`allowedPriceMin` / `allowedPriceMax`) hanya **informasi**. Engine
-  menyimpannya untuk ditampilkan di card, tetapi tidak pernah dipakai sebagai syarat beli.
+- Band harga dari Rollercoin (`allowedPriceMin` / `allowedPriceMax`): `allowedPriceMin` menjadi
+  sumber auto target per produk bila `autoTarget` aktif; selain itu band hanya informasi untuk
+  card. `allowedPriceMax` tidak pernah dipakai sebagai syarat beli.
 - Menurunkan `targetPrice` membuat order lebih jarang tetapi profit per item lebih besar; menaikkan
   mendekati harga pasar membuat order lebih sering dengan margin lebih tipis. Profit yang dicatat
   adalah `(targetPrice − hargaBeli) × qty`, jadi target yang terlalu tinggi juga menggelembungkan
@@ -840,8 +897,10 @@ Error validasi memakai status `422` dan `fields`, misalnya:
 - Event server: `hello`, `snapshot`, `log`, `market`, `order`, `history`, `stats`, `report`,
   `session`, `gateway`, `settings`, `configs`, `latency`, `system`, `history-cleared`.
 - `order.phase`: `submitted`, `accepted`, `filled`, `failed`, `dry`.
-- `market` membawa `price`, `stock`, `targetPrice`, `hot`, `at`, serta `allowedPriceMin`,
-  `allowedPriceMax`, `allowedAt` (cache band harga terakhir per target).
+- `market` membawa `price`, `stock`, `targetPrice` (target yang sedang dipakai), `baseTargetPrice`,
+  `autoTarget`, `autoTargetPrice`, `autoTargetMarginPct`, `autoTargetAt`, `hot`, `at`, serta
+  `allowedPriceMin`, `allowedPriceMax`, `allowedAt` (cache band harga terakhir per target).
+  `runtime.effectiveTargetPrice` di `/api/state` mengikuti nilai yang sama.
 
 ---
 
@@ -1101,7 +1160,13 @@ pm2 restart rc-autotrade --update-env
   (`DELETE /api/history`) atau backup rutin bila perlu.
 - Cache pasar (`market_snapshot` + `price_points`) membuat deck langsung terisi setelah restart.
   Data ini hanya untuk tampilan: order tetap hanya direncanakan dari frame socket live, dan badge
-  `cached` menandai harga yang belum diperbarui frame baru.
+  `cached` menandai harga yang belum diperbarui frame baru. Auto target juga tidak dihitung dari
+  cache ini saat hydrate.
+- Skema SQLite v3 menambah kolom `targets.auto_target` dan `targets.auto_target_margin_pct`.
+  Database v1 maupun v2 dimigrasikan otomatis saat boot (`ALTER TABLE ... ADD COLUMN`), tanpa
+  kehilangan target yang sudah ada. Migrasi v2 bersifat repair: database yang sempat ter-stamp
+  `user_version = 2` sebelum kolomnya dibuat akan diperbaiki saat boot berikutnya. Harga hasil auto
+  target tetap tidak pernah disimpan.
 - Titik harga 1 menit disimpan 14 hari lalu dipangkas otomatis (saat boot dan tiap 6 jam). Ubah
   `PRICE_RETENTION_DAYS` di `src/shared/constants.js` kalau butuh histori lebih panjang.
 - Database lama dari versi JSON dimigrasikan otomatis saat boot pertama: `state.json` dan
@@ -1230,12 +1295,13 @@ Total 112 test; integration test memakai port acak dan data directory sementara.
 | Halaman menampilkan “REACT DECK READY” atau 404 | Worker lama masih menyajikan `public/`. Restart dengan `Ctrl+C` lalu `bun start` agar worker menyajikan `dist/` React. |
 | `LINK LOST` | Control WebSocket putus. Worker mati? Cek proses/port. |
 | `FEED DOWN` / `SYNCING` | Worker hidup tetapi socket Rollercoin belum tersambung. Cek log, token, jaringan. |
-| Log gateway `TLS handshake failed` | Versi lama memakai paket `ws` lewat `node:tls`; versi Bun ini memakai WebSocket native. Restart worker dengan build terbaru. Jika masih muncul, cek DNS/firewall/IP server ke `nws.rollercoin.com`. |
+| Log gateway `TLS handshake failed` | Token **tidak** terlibat: TLS selesai sebelum URL/`?token=` dikirim, jadi token valid sekalipun bisa kena. Jalankan `bun scripts/diagnose-ws.js` di terminal yang sama dengan `npm run dev` untuk memisahkan DNS/TCP, CA/`node:tls`, `fetch`, dan WebSocket native Bun. Hentikan worker dulu agar dua socket tidak memakai sesi yang sama. Jika semua probe hijau, error lama biasanya berasal dari proses worker basi atau gangguan edge sesaat. Bandingkan juga `bun --revision` lokal vs production. Token dan Bearer sekarang diredaksi dari log/`lastError`. |
 | `NO TOKEN` | Belum ada sesi Rollercoin. Buka tab LINK dan tempel token. |
 | `AUTH ERR` | Token ditolak Rollercoin. Tempel sesi baru; cek cookie/UA bila perlu. |
 | Purchase `403` / HTML challenge | Cloudflare. Isi cookie dari browser; pastikan IP/UA wajar. |
 | Bridge `CORS` / `Failed to fetch` | Console mode memakai `fetch` halaman dan bisa diblokir CSP/Private Network Access. Pakai **USERSCRIPT · AUTO** (memakai `GM_xmlhttpRequest`). Pastikan URL bridge `http://127.0.0.1:<port>`, worker hidup, dan userscript di-generate ulang. Error `401` sekarang juga mengirim header CORS, jadi restart worker agar pesan aslinya terlihat. |
 | `EADDRINUSE` | Port dipakai. `PORT=8788 bun start` atau hentikan proses lain. |
+| Ctrl+C lama / worker tidak keluar | Di bawah `bun --watch`, timer exit yang di-`unref` bisa menjadi satu-satunya pending work setelah server ditutup, sehingga watcher menunggu sampai Ctrl+C kedua. Versi ini memakai timer exit yang di-ref, watchdog 5 detik, dan Ctrl+C kedua memaksa `process.exit(1)`. Kalau masih macet, cek `ss -ltnp 'sport = :8787'` untuk proses lama. |
 | Key hilang | `bun run key:reset`, lalu restart worker dan login dengan key baru. |
 | Harga terlihat, order tidak jalan | Target terlalu rendah, stok di bawah minimum, pause/dry-run aktif, cooldown, atau batas order/menit. Cocokkan dengan [reason code](#reason-code-yang-muncul-di-log) di log `scan` dan cek state card. |
 | Label tetap `ITEM xxxx` / `Item not found` | Item ID tidak ditemukan untuk tipe yang dicoba, atau `item-info` gagal (sesi/Cloudflare/jaringan). Buka edit target dan klik **RETRY**; worker akan mencoba `mutation_component`, `miner`, `rack`, `battery`. `rarityGroup` yang tidak ada akan fallback ke nama item. |

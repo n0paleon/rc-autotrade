@@ -243,23 +243,45 @@ async function main() {
     if (closing) return;
     closing = true;
     logger.info("worker", `${signal} received — shutting down`);
+    // A stuck HTTP/socket peer must never trap the process in shutdown. The
+    // normal path exits below; this is only a hard ceiling.
+    setTimeout(() => {
+      logger.error("worker", "shutdown watchdog fired — forcing exit");
+      process.exit(1);
+    }, 5_000);
     try {
       system.stop();
       keepalive?.stop();
       gateway.stop();
       session.stop();
       engine.stop();
+      logger.debug("worker", "shutdown: actors stopped");
       await server.stop();
+      logger.debug("worker", "shutdown: control server stopped");
     } catch (error) {
       logger.error("worker", `shutdown error: ${error?.message || error}`);
     } finally {
       store.close();
-      setTimeout(() => process.exit(0), 50).unref?.();
+      logger.debug("worker", "shutdown: store closed, exiting");
+      // Keep this timer referenced. Under `bun --watch` the file watcher keeps
+      // the event loop alive, and an unref'd exit timer can be the only pending
+      // work after the server closes — which leaves the watcher running until
+      // a second Ctrl+C. A referenced 50ms timer lets stdout drain and always
+      // terminates the process.
+      setTimeout(() => process.exit(0), 50);
     }
   }
 
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  const handleSignal = (signal) => {
+    if (closing) {
+      logger.warn("worker", `${signal} received again — forcing exit`);
+      process.exit(1);
+    }
+    shutdown(signal);
+  };
+
+  process.on("SIGINT", () => handleSignal("SIGINT"));
+  process.on("SIGTERM", () => handleSignal("SIGTERM"));
 
   process.on("uncaughtException", (error) => {
     logger.error("worker", `uncaught exception: ${error?.stack || error}`);

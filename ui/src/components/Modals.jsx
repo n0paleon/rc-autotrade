@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon, ModalShell, useModalClose } from "./ModalShell.jsx";
-import { fixedPrice, shortId } from "../lib/format.js";
+import { fixedPrice, shortId, trimPrice, deriveAutoTargetPrice } from "../lib/format.js";
 
 export async function copyText(text) {
   try {
@@ -68,6 +68,14 @@ function validateTargetLocally(target) {
   } else if (Number.isInteger(target.desiredQty) && target.minAcceptableQty > target.desiredQty) {
     errors.minAcceptableQty = "Minimum cannot exceed desired qty.";
   }
+  if (target.autoTarget) {
+    const margin = target.autoTargetMarginPct;
+    if (!Number.isFinite(margin) || margin < 0 || margin > 100) {
+      errors.autoTargetMarginPct = "Enter a margin between 0 and 100%.";
+    } else if (Math.abs(margin * 100 - Math.round(margin * 100)) > 1e-6) {
+      errors.autoTargetMarginPct = "Use at most 2 decimal places.";
+    }
+  }
   return errors;
 }
 
@@ -85,6 +93,10 @@ export function TargetModal({ config, onClose, worker, notify }) {
     config ? String(config.minAcceptableQty) : ""
   );
   const [allowPartialOrder, setAllowPartialOrder] = useState(config?.allowPartialOrder !== false);
+  const [autoTarget, setAutoTarget] = useState(config?.autoTarget === true);
+  const [autoTargetMarginPct, setAutoTargetMarginPct] = useState(
+    config ? String(config.autoTargetMarginPct ?? 0) : "0"
+  );
   const [active, setActive] = useState(config?.active !== false);
   const [errors, setErrors] = useState({});
   const [busy, setBusy] = useState(false);
@@ -149,14 +161,21 @@ export function TargetModal({ config, onClose, worker, notify }) {
     return () => clearTimeout(timer);
   }, [itemId, editing]);
 
+  const autoPreview = useMemo(() => {
+    if (!autoTarget) return null;
+    const floor = Number(config?.runtime?.allowedPriceMin);
+    return deriveAutoTargetPrice(floor, autoTargetMarginPct);
+  }, [autoTarget, autoTargetMarginPct, config]);
+
   const maxSpend = useMemo(() => {
-    const price = Number(targetPrice) || 0;
+    const price = autoPreview ?? (Number(targetPrice) || 0);
     const qty = Number(desiredQty) || 0;
     return price > 0 && qty > 0 ? `${fixedPrice(price * qty * 2)} RLT` : "—";
-  }, [targetPrice, desiredQty]);
+  }, [autoPreview, targetPrice, desiredQty]);
 
   const submit = async (event) => {
     event.preventDefault();
+    const marginText = String(autoTargetMarginPct).trim();
     const target = {
       itemId: itemId.trim(),
       itemType: itemType || "mutation_component",
@@ -165,6 +184,8 @@ export function TargetModal({ config, onClose, worker, notify }) {
       highStockThreshold: Number(highStockThreshold),
       minAcceptableQty: Number(minAcceptableQty),
       allowPartialOrder,
+      autoTarget,
+      autoTargetMarginPct: marginText !== "" && Number.isFinite(Number(marginText)) ? Number(marginText) : 0,
       active
     };
     const localErrors = validateTargetLocally(target);
@@ -268,8 +289,34 @@ export function TargetModal({ config, onClose, worker, notify }) {
               aria-describedby={errors.targetPrice ? "target-price-error" : undefined}
               required
             />
-            <small>Never pay more than this per item.</small>
+            <small>Never pay more than this per item. Stays the base price even when auto target is on.</small>
             <FieldError id="target-price-error" message={errors.targetPrice} />
+          </label>
+          <label className="field">
+            <span>Auto target margin (%)</span>
+            <input
+              className={`input${errors.autoTargetMarginPct ? " border-danger/60" : ""}`}
+              name="autoTargetMarginPct"
+              value={autoTargetMarginPct}
+              onChange={(event) => setAutoTargetMarginPct(event.target.value)}
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              min="0"
+              max="100"
+              placeholder="e.g. 5"
+              disabled={!autoTarget}
+              aria-invalid={Boolean(errors.autoTargetMarginPct)}
+              aria-describedby={errors.autoTargetMarginPct ? "target-margin-error" : undefined}
+            />
+            <small>
+              {autoTarget
+                ? autoPreview != null
+                  ? `Runtime target now ${fixedPrice(autoPreview)} RLT (allowed min ${fixedPrice(config?.runtime?.allowedPriceMin)} + ${trimPrice(autoTargetMarginPct)}%). Base stays ${fixedPrice(targetPrice)} RLT.`
+                  : `Waiting for a live allowed price min; the saved base ${fixedPrice(targetPrice)} RLT is used until then.`
+                : "Enable auto target below to derive the target from allowedPriceMin."}
+            </small>
+            <FieldError id="target-margin-error" message={errors.autoTargetMarginPct} />
           </label>
           <label className="field">
             <span>Desired qty</span>
@@ -331,7 +378,7 @@ export function TargetModal({ config, onClose, worker, notify }) {
           <div className="field">
             <span>Max spend per fill</span>
             <output className="output-box">{maxSpend}</output>
-            <small>Target price × doubled quantity ceiling.</small>
+            <small>Effective target × doubled quantity ceiling.</small>
           </div>
         </div>
 
@@ -341,6 +388,12 @@ export function TargetModal({ config, onClose, worker, notify }) {
             onChange={setAllowPartialOrder}
             title="Allow partial order"
             hint="Buy whatever is available above the minimum."
+          />
+          <ToggleRow
+            checked={autoTarget}
+            onChange={setAutoTarget}
+            title="Auto target from allowed min"
+            hint="Runtime only: target = allowedPriceMin × (1 + margin). A restart restores the saved base price."
           />
           <ToggleRow
             checked={active}

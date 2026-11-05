@@ -34,6 +34,7 @@ import {
   successStats,
   trimPrice,
   drawPixelAvatar,
+  effectiveTargetPrice,
   formatMs,
   formatPreciseMs,
   formatBytes,
@@ -519,6 +520,46 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
   const rangeMin = Number.isFinite(runtime.allowedPriceMin) ? trimPrice(runtime.allowedPriceMin) : null;
   const rangeMax = Number.isFinite(runtime.allowedPriceMax) ? trimPrice(runtime.allowedPriceMax) : null;
   const hasRange = rangeMin !== null || rangeMax !== null;
+  const targetPrice = effectiveTargetPrice(config);
+  const autoEnabled = config.autoTarget === true;
+  const autoActive =
+    autoEnabled &&
+    Number.isFinite(Number(runtime.autoTargetPrice)) &&
+    Number(runtime.autoTargetPrice) > 0;
+  const autoMargin = Number(config.autoTargetMarginPct);
+  const autoLabel = Number.isFinite(autoMargin) ? `${trimPrice(autoMargin)}%` : "—";
+
+  const marketPrice = Number.isFinite(runtime.lastPrice) ? runtime.lastPrice : null;
+  const previousMarketPrice = useRef(marketPrice);
+  const [marketMove, setMarketMove] = useState(null);
+  useEffect(() => {
+    const previous = previousMarketPrice.current;
+    previousMarketPrice.current = marketPrice;
+    if (marketPrice === null || previous === null || marketPrice === previous) return;
+    setMarketMove((last) => ({
+      dir: marketPrice > previous ? "up" : "down",
+      delta: marketPrice - previous,
+      tick: (last?.tick || 0) + 1
+    }));
+  }, [marketPrice]);
+
+  const previousTargetPrice = useRef(targetPrice);
+  const [targetPulse, setTargetPulse] = useState(0);
+  const [adjusted, setAdjusted] = useState(false);
+  const adjustTimer = useRef(null);
+  useEffect(() => {
+    const previous = previousTargetPrice.current;
+    previousTargetPrice.current = targetPrice;
+    if (!autoEnabled || !Number.isFinite(targetPrice) || !Number.isFinite(previous) || targetPrice === previous) return;
+    setTargetPulse((value) => value + 1);
+    setAdjusted(true);
+    window.clearTimeout(adjustTimer.current);
+    adjustTimer.current = window.setTimeout(() => setAdjusted(false), 2200);
+  }, [targetPrice, autoEnabled]);
+  useEffect(() => {
+    const timer = adjustTimer;
+    return () => window.clearTimeout(timer.current);
+  }, []);
 
   useEffect(() => {
     drawPixelAvatar(canvasRef.current, config.itemId, config.rarityColor);
@@ -606,7 +647,22 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
 
       <div className="grid grid-cols-2 gap-[2px] border-2 border-line bg-line">
         <div className="bg-info/5 px-2.5 py-2 sm:px-3">
-          <span className="label">Market</span>
+          <div
+            className="flex items-center gap-1"
+            title={
+              marketMove
+                ? `Last frame moved ${marketMove.dir === "up" ? "up" : "down"} ${fixedPrice(Math.abs(marketMove.delta))} RLT.`
+                : "Waiting for this item's next market frame."
+            }
+          >
+            <span className="label">Market</span>
+            {marketMove ? (
+              <span key={marketMove.tick} className="price-tick" data-dir={marketMove.dir}>
+                <Icon name={marketMove.dir === "up" ? "i-caret-up" : "i-caret-down"} className="h-2.5 w-2.5" />
+                <span className="sr-only">{`Price ${marketMove.dir} ${fixedPrice(Math.abs(marketMove.delta))} since the previous frame.`}</span>
+              </span>
+            ) : null}
+          </div>
           <div className="mt-0.5 flex items-baseline gap-1">
             <strong className={`font-mono text-[18px] font-bold leading-none tabular-nums min-[360px]:text-[20px] ${hot ? "text-gold" : "text-info"}`}>
               {Number.isFinite(runtime.lastPrice) ? fixedPrice(runtime.lastPrice) : "—"}
@@ -622,14 +678,54 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
             ) : null}
           </div>
         </div>
-        <div className="bg-gold/5 px-2.5 py-2 sm:px-3">
-          <span className="label">Target</span>
+        <div
+          className="bg-gold/5 px-2.5 py-2 sm:px-3"
+          title={
+            autoActive
+              ? `Runtime target = allowed min ${fixedPrice(runtime.allowedPriceMin)} × (1 + ${autoLabel}). Saved base target ${fixedPrice(config.targetPrice)} RLT is restored after a restart.`
+              : autoEnabled
+                ? `Auto target armed (+${autoLabel} over the allowed min). Waiting for a market frame that carries the band; the saved base target stays ${fixedPrice(config.targetPrice)} RLT.`
+                : "Saved base target price."
+          }
+        >
+          <div className="flex items-center justify-between gap-1">
+            <span className="label">Target</span>
+            {autoEnabled ? (
+              <span
+                key={adjusted ? `adjusted-${targetPulse}` : "auto"}
+                className={`border-2 px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.08em] max-[359px]:px-0.5 max-[359px]:tracking-normal ${
+                  autoActive
+                    ? "border-[#05030f] bg-gold text-[#2a1600]"
+                    : "border-gold/60 text-gold"
+                }${adjusted ? " auto-badge-pop" : ""}`}
+              >
+                {adjusted ? (
+                  <>
+                    <span className="min-[360px]:hidden">ADJ</span>
+                    <span className="hidden min-[360px]:inline">ADJUSTED</span>
+                  </>
+                ) : (
+                  "AUTO"
+                )}
+              </span>
+            ) : null}
+          </div>
           <div className="mt-0.5 flex items-baseline gap-1">
-            <strong className="font-mono text-[18px] font-bold leading-none tabular-nums text-gold min-[360px]:text-[20px]">
-              {fixedPrice(config.targetPrice)}
+            <strong
+              key={targetPulse}
+              className={`target-price font-mono text-[18px] font-bold leading-none tabular-nums text-gold min-[360px]:text-[20px]${
+                autoEnabled && targetPulse ? " is-adjusted" : ""
+              }`}
+            >
+              {fixedPrice(targetPrice)}
             </strong>
             <span className="font-mono text-[12px] text-faint">RLT</span>
           </div>
+          {autoEnabled ? (
+            <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
+              base {fixedPrice(config.targetPrice)} · margin {autoLabel}
+            </p>
+          ) : null}
         </div>
         <div
           className="col-span-2 flex items-center justify-between gap-3 bg-gold/5 px-2.5 py-2 sm:px-3"
@@ -672,7 +768,7 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
         )}
       </div>
 
-      <MemoChart history={runtime.history || []} targetPrice={config.targetPrice} />
+      <MemoChart history={runtime.history || []} targetPrice={targetPrice} />
 
       <div
         className="space-y-1.5"
@@ -697,7 +793,15 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
         <span className="tag">QTY <b>{formatInt(config.desiredQty)}</b></span>
         <span className="tag">HIGH <b>{formatInt(config.highStockThreshold)}</b></span>
         <span className="tag">MIN <b>{formatInt(config.minAcceptableQty)}</b></span>
-        <span className="tag">MAX <b>{fixedPrice(config.targetPrice * config.desiredQty * 2)}</b></span>
+        <span className="tag">MAX <b>{fixedPrice(targetPrice * config.desiredQty * 2)}</b></span>
+        {autoEnabled ? (
+          <span
+            className="tag"
+            title={`Auto target: allowed min + ${autoLabel} margin (runtime only). Saved base target ${fixedPrice(config.targetPrice)} RLT is restored after a restart.`}
+          >
+            AUTO <b className={autoActive ? "text-gold" : undefined}>{autoLabel}</b>
+          </span>
+        ) : null}
       </div>
 
       <div className="mt-auto flex items-end justify-between gap-3 border-t-2 border-line pt-2.5">

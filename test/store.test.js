@@ -55,6 +55,8 @@ test("store persists session, targets and history in SQLite", () => {
       highStockThreshold: 20,
       minAcceptableQty: 1,
       allowPartialOrder: true,
+      autoTarget: true,
+      autoTargetMarginPct: 4.5,
       active: true
     });
     store.addHistory({
@@ -82,6 +84,8 @@ test("store persists session, targets and history in SQLite", () => {
 
     assert.equal(targets.length, 1);
     assert.equal(targets[0].label, "NEON SHARD");
+    assert.equal(targets[0].auto_target, 1);
+    assert.equal(targets[0].auto_target_margin_pct, 4.5);
     assert.equal(order.profit_rlt, 0.1);
     assert.equal(order.message, "-");
     assert.equal(session.access_token, "access-token-123456");
@@ -94,6 +98,9 @@ test("store persists session, targets and history in SQLite", () => {
     assert.equal(reloaded.state.session.accessToken, "access-token-123456");
     assert.equal(reloaded.state.configs.length, 1);
     assert.equal(reloaded.state.configs[0].label, "NEON SHARD");
+    assert.equal(reloaded.state.configs[0].autoTarget, true);
+    assert.equal(reloaded.state.configs[0].autoTargetMarginPct, 4.5);
+    assert.equal(reloaded.state.configs[0].targetPrice, 0.1, "the base target is what gets persisted");
     assert.equal(reloaded.state.history.length, 1);
     assert.equal(reloaded.state.history[0].profitRlt, 0.1);
     assert.equal(reloaded.state.history[0].message, "-");

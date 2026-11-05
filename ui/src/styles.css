@@ -1137,6 +1137,33 @@
     border-color: var(--color-danger);
   }
 
+  .price-tick {
+    display: inline-flex;
+    width: 10px;
+    height: 10px;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .price-tick[data-dir="up"] {
+    color: var(--color-danger);
+    animation: price-tick-up var(--motion-state) var(--ease-pixel-3);
+  }
+
+  .price-tick[data-dir="down"] {
+    color: var(--color-signal);
+    animation: price-tick-down var(--motion-state) var(--ease-pixel-3);
+  }
+
+  .target-price.is-adjusted {
+    animation: target-blink 460ms steps(2, end);
+  }
+
+  .auto-badge-pop {
+    animation: chip-pop var(--motion-state) var(--ease-pixel-3);
+  }
+
   .product-title {
     font-family: var(--font-sans);
     font-weight: 600;
@@ -1553,6 +1580,47 @@
   }
 }
 
+@keyframes price-tick-up {
+  0% {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  55% {
+    opacity: 1;
+    transform: translateY(-1px);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes price-tick-down {
+  0% {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  55% {
+    opacity: 1;
+    transform: translateY(1px);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes target-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0.3;
+  }
+}
+
 @keyframes loot-in {
   0% {
     background-color: color-mix(in srgb, var(--loot-tint, var(--color-signal)) 26%, transparent);
@@ -1596,7 +1664,10 @@
   .hot-edge,
   .auto-label[data-state="loading"] strong,
   .state-chip-pulse,
-  .loot-entry {
+  .loot-entry,
+  .price-tick,
+  .target-price.is-adjusted,
+  .auto-badge-pop {
     animation: none !important;
   }
 
