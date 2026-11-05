@@ -112,6 +112,27 @@ export function validateTarget(input, opts = {}) {
     }
   }
 
+  const autoTarget = boolOr(source.autoTarget, false);
+  let autoTargetMarginPct = 0;
+  if (
+    source.autoTargetMarginPct !== undefined &&
+    source.autoTargetMarginPct !== null &&
+    source.autoTargetMarginPct !== ""
+  ) {
+    const margin = toNumber(source.autoTargetMarginPct);
+    if (
+      !Number.isFinite(margin) ||
+      margin < LIMITS.autoTargetMarginMin ||
+      margin > LIMITS.autoTargetMarginMax
+    ) {
+      errors.autoTargetMarginPct = `Auto-target margin must be between ${LIMITS.autoTargetMarginMin} and ${LIMITS.autoTargetMarginMax}%.`;
+    } else if (hasDecimalsBeyond(margin, 2)) {
+      errors.autoTargetMarginPct = "Auto-target margin supports at most 2 decimal places.";
+    } else {
+      autoTargetMarginPct = Math.round(margin * 100) / 100;
+    }
+  }
+
   let rarityColor = null;
   if (source.rarityColor !== undefined && source.rarityColor !== null && source.rarityColor !== "") {
     if (typeof source.rarityColor !== "string" || !/^#?[0-9a-fA-F]{6}$/.test(source.rarityColor.trim())) {
@@ -138,6 +159,8 @@ export function validateTarget(input, opts = {}) {
       highStockThreshold,
       minAcceptableQty,
       allowPartialOrder: boolOr(source.allowPartialOrder, true),
+      autoTarget,
+      autoTargetMarginPct,
       active: boolOr(source.active, true)
     }
   };

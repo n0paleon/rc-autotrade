@@ -327,10 +327,12 @@ export class Store {
       targetUpsert: db.prepare(`
         INSERT INTO targets
           (item_id, label, item_type, rarity_color, target_price, desired_qty,
-           high_stock_threshold, min_acceptable_qty, allow_partial_order, active, created_at, updated_at)
+           high_stock_threshold, min_acceptable_qty, allow_partial_order, auto_target,
+           auto_target_margin_pct, active, created_at, updated_at)
         VALUES
           (@item_id, @label, @item_type, @rarity_color, @target_price, @desired_qty,
-           @high_stock_threshold, @min_acceptable_qty, @allow_partial_order, @active, @created_at, @updated_at)
+           @high_stock_threshold, @min_acceptable_qty, @allow_partial_order, @auto_target,
+           @auto_target_margin_pct, @active, @created_at, @updated_at)
         ON CONFLICT(item_id) DO UPDATE SET
           label = excluded.label,
           item_type = excluded.item_type,
@@ -340,6 +342,8 @@ export class Store {
           high_stock_threshold = excluded.high_stock_threshold,
           min_acceptable_qty = excluded.min_acceptable_qty,
           allow_partial_order = excluded.allow_partial_order,
+          auto_target = excluded.auto_target,
+          auto_target_margin_pct = excluded.auto_target_margin_pct,
           active = excluded.active,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at
@@ -588,6 +592,8 @@ export class Store {
       highStockThreshold: row.high_stock_threshold,
       minAcceptableQty: row.min_acceptable_qty,
       allowPartialOrder: row.allow_partial_order === 1,
+      autoTarget: row.auto_target === 1,
+      autoTargetMarginPct: asFinite(row.auto_target_margin_pct),
       active: row.active === 1,
       createdAt: row.created_at,
       updatedAt: row.updated_at
@@ -806,6 +812,10 @@ export class Store {
       high_stock_threshold: config.highStockThreshold,
       min_acceptable_qty: config.minAcceptableQty,
       allow_partial_order: config.allowPartialOrder === false ? 0 : 1,
+      auto_target: config.autoTarget === true ? 1 : 0,
+      auto_target_margin_pct: Number.isFinite(config.autoTargetMarginPct)
+        ? config.autoTargetMarginPct
+        : 0,
       active: config.active === false ? 0 : 1,
       created_at: config.createdAt ?? now,
       updated_at: config.updatedAt ?? now

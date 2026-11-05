@@ -13,6 +13,30 @@ export function microToRlt(raw) {
 }
 
 /**
+ * Runtime-only target derived from the marketplace floor:
+ *
+ *   targetPrice = allowedPriceMin × (1 + marginPct / 100)
+ *
+ * The result is rounded to RLT precision and capped at the regular target
+ * ceiling. It is never written back to the target configuration; the caller
+ * keeps it in memory so a restart falls back to the saved base price.
+ *
+ * @param {number} allowedPriceMin marketplace floor in RLT
+ * @param {number} marginPct percentage above the floor (0–100)
+ * @returns {number | null} derived price, or null when the inputs are unusable
+ */
+export function deriveAutoTargetPrice(allowedPriceMin, marginPct) {
+  const floor = Number(allowedPriceMin);
+  const margin = Number(marginPct);
+  if (!Number.isFinite(floor) || floor <= 0) return null;
+  if (!Number.isFinite(margin) || margin < 0) return null;
+
+  const price = roundPrice(floor * (1 + margin / 100));
+  if (!Number.isFinite(price) || price <= 0) return null;
+  return Math.min(price, LIMITS.targetPriceMax);
+}
+
+/**
  * Pure decision function that mirrors (and hardens) the original trade.js flow.
  *
  * @param {object} args
@@ -20,6 +44,7 @@ export function microToRlt(raw) {
  * @param {number} args.unitPrice cheapest listing price in RLT
  * @param {number} args.available quantity available on the cheapest listing
  * @param {boolean} [args.paused] global trading pause
+ * @param {number} [args.targetPrice] runtime ceiling (auto target), defaults to config.targetPrice
  * @returns {{
  *   action: "buy" | "skip",
  *   reason?: string,
@@ -28,7 +53,7 @@ export function microToRlt(raw) {
  *   notional?: number
  * }}
  */
-export function planOrder({ config, unitPrice, available, paused = false }) {
+export function planOrder({ config, unitPrice, available, paused = false, targetPrice = null }) {
   if (paused) return { action: "skip", reason: "paused" };
   if (!config?.active) return { action: "skip", reason: "inactive" };
   if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
@@ -37,7 +62,9 @@ export function planOrder({ config, unitPrice, available, paused = false }) {
   if (!Number.isFinite(available) || available < 1) {
     return { action: "skip", reason: "no-stock" };
   }
-  if (unitPrice > config.targetPrice + 1e-9) {
+
+  const ceiling = Number.isFinite(targetPrice) ? targetPrice : config.targetPrice;
+  if (unitPrice > ceiling + 1e-9) {
     return { action: "skip", reason: "price-above-target" };
   }
 

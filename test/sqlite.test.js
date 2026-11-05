@@ -10,9 +10,41 @@ import {
   openSqlite,
   scanParameters
 } from "../src/worker/db.js";
+import { SCHEMA_VERSION } from "../src/worker/schema.js";
 
 function tempDir() {
   return mkdtempSync(join(tmpdir(), "turuc-sqlite-"));
+}
+
+const LEGACY_TARGETS_SQL = `
+  CREATE TABLE targets (
+    item_id              TEXT PRIMARY KEY,
+    label                TEXT NOT NULL DEFAULT '',
+    item_type            TEXT NOT NULL DEFAULT 'mutation_component',
+    rarity_color         TEXT,
+    target_price         REAL NOT NULL,
+    desired_qty          INTEGER NOT NULL,
+    high_stock_threshold INTEGER NOT NULL,
+    min_acceptable_qty   INTEGER NOT NULL,
+    allow_partial_order  INTEGER NOT NULL DEFAULT 1,
+    active               INTEGER NOT NULL DEFAULT 1,
+    created_at           INTEGER,
+    updated_at           INTEGER
+  )
+`;
+
+/** Writes the pre-auto-target `targets` table and stamps a schema version. */
+function seedLegacyTargets(dir, version) {
+  const db = openSqlite(join(dir, "rollercoin.db"));
+  db.exec(LEGACY_TARGETS_SQL);
+  db.prepare(`
+    INSERT INTO targets
+      (item_id, label, target_price, desired_qty, high_stock_threshold,
+       min_acceptable_qty, allow_partial_order, active)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run("6571aa39ca8bfef34adcd9e9", "LEGACY", 0.1, 10, 20, 1, 1, 1);
+  db.pragma(`user_version = ${version}`);
+  db.close();
 }
 
 test("database reports the Bun driver and a live open flag", () => {
@@ -125,7 +157,7 @@ test("openDatabase bootstraps the schema and readonly handles reject writes", ()
   try {
     const db = openDatabase({ dataDir: dir, logger: null });
     assert.equal(db.pragma("journal_mode", { simple: true }), "wal");
-    assert.equal(db.pragma("user_version", { simple: true }), 1);
+    assert.equal(db.pragma("user_version", { simple: true }), SCHEMA_VERSION);
     db.prepare("INSERT INTO meta (key, value) VALUES (@key, @value)").run({ key: "k", value: "v" });
     closeDatabase(db);
     assert.equal(db.open, false);
@@ -135,6 +167,55 @@ test("openDatabase bootstraps the schema and readonly handles reject writes", ()
     assert.equal(readonly.prepare("SELECT value FROM meta WHERE key = ?").get("k").value, "v");
     assert.throws(() => readonly.prepare("DELETE FROM meta").run());
     readonly.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("openDatabase migrates a v1 targets table without losing rows", () => {
+  const dir = tempDir();
+  try {
+    seedLegacyTargets(dir, 1);
+
+    const db = openDatabase({ dataDir: dir, logger: null });
+    assert.equal(db.pragma("user_version", { simple: true }), SCHEMA_VERSION);
+    const columns = db.pragma("table_info(targets)").map((column) => column.name);
+    assert.ok(columns.includes("auto_target"));
+    assert.ok(columns.includes("auto_target_margin_pct"));
+
+    const row = db
+      .prepare("SELECT * FROM targets WHERE item_id = ?")
+      .get("6571aa39ca8bfef34adcd9e9");
+    assert.equal(row.label, "LEGACY");
+    assert.equal(row.auto_target, 0);
+    assert.equal(row.auto_target_margin_pct, 0);
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("openDatabase repairs a v2 database stamped without the column migration", () => {
+  const dir = tempDir();
+  try {
+    // A partially updated build could bump user_version to 2 while leaving
+    // targets on the legacy shape. The repair migration must still add the
+    // columns instead of trusting the stamped version.
+    seedLegacyTargets(dir, 2);
+
+    const db = openDatabase({ dataDir: dir, logger: null });
+    assert.equal(db.pragma("user_version", { simple: true }), SCHEMA_VERSION);
+    const columns = db.pragma("table_info(targets)").map((column) => column.name);
+    assert.ok(columns.includes("auto_target"));
+    assert.ok(columns.includes("auto_target_margin_pct"));
+
+    const row = db
+      .prepare("SELECT * FROM targets WHERE item_id = ?")
+      .get("6571aa39ca8bfef34adcd9e9");
+    assert.equal(row.label, "LEGACY");
+    assert.equal(row.auto_target, 0);
+    assert.equal(row.auto_target_margin_pct, 0);
+    db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
