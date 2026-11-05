@@ -376,29 +376,32 @@ export function openSqlite(file, { readonly = false } = {}) {
 }
 
 /**
- * Forward-only schema upgrades. Each entry runs when the database is older
- * than SCHEMA_VERSION; `addColumnIfMissing` keeps them safe to re-run even if
- * an older build managed to create some of the columns already.
+ * Removes the columns that belonged to the auto adjust price feature.
  *
- * v2 shipped once without its migration, so a database could be stamped
- * `user_version = 2` while `targets` still lacked the columns. Migration 2
- * exists purely to repair that state; v1 gets the same repair through 1.
+ * This deliberately runs on every open instead of being a version-gated
+ * migration: a build can bump SCHEMA_VERSION before the step that follows it
+ * exists (v2 shipped exactly like that), and once `user_version` is stamped
+ * the gated step would never run again. The column check makes it a cheap
+ * no-op on databases that were already cleaned up.
  */
-function addAutoTargetColumns(db) {
-  addColumnIfMissing(db, "targets", "auto_target", "INTEGER NOT NULL DEFAULT 0");
-  addColumnIfMissing(db, "targets", "auto_target_margin_pct", "REAL NOT NULL DEFAULT 0");
+function dropAutoTargetColumns(db) {
+  const columns = db.pragma("table_info(targets)");
+  for (const column of ["auto_target", "auto_target_margin_pct"]) {
+    if (!columns.some((row) => row.name === column)) continue;
+    db.exec(`ALTER TABLE targets DROP COLUMN ${column}`);
+  }
 }
 
+/**
+ * Forward-only schema upgrades, keyed by the version they upgrade from.
+ * v1/v2 only added the auto target columns; that feature is gone, so both
+ * steps are no-ops kept for the ladder. The column drop lives outside this
+ * map (see `dropAutoTargetColumns`).
+ */
 const MIGRATIONS = {
-  1: addAutoTargetColumns,
-  2: addAutoTargetColumns
+  1: () => {},
+  2: () => {}
 };
-
-function addColumnIfMissing(db, table, column, definition) {
-  const columns = db.pragma(`table_info(${table})`);
-  if (columns.some((row) => row.name === column)) return;
-  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-}
 
 function migrate(db, fromVersion) {
   for (let version = fromVersion; version < SCHEMA_VERSION; version += 1) {
@@ -432,6 +435,7 @@ export function openDatabase({ dataDir, logger, filename = DB_FILENAME }) {
 
   db.exec(SCHEMA_SQL);
   migrate(db, version);
+  dropAutoTargetColumns(db);
   if (version !== SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
 
   secureFile(file);

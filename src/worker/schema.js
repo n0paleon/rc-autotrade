@@ -7,7 +7,7 @@
  * decides whether a real migration is needed.
  */
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -46,8 +46,6 @@ CREATE TABLE IF NOT EXISTS targets (
   high_stock_threshold INTEGER NOT NULL,
   min_acceptable_qty   INTEGER NOT NULL,
   allow_partial_order  INTEGER NOT NULL DEFAULT 1,
-  auto_target          INTEGER NOT NULL DEFAULT 0,
-  auto_target_margin_pct REAL NOT NULL DEFAULT 0,
   active               INTEGER NOT NULL DEFAULT 1,
   created_at           INTEGER,
   updated_at           INTEGER
