@@ -374,6 +374,68 @@ Perilaku pembelian:
   penuh, produk dengan profit terendah dibuang lebih dulu. Saat upgrade dari state lama tanpa
   `report`, worker membangun ulang laporan sekali dari seluruh loot log yang tersimpan.
 
+### Trend watch — sinyal, bukan eksekusi
+
+**TREND WATCH** membandingkan `targetPrice` tiap target dengan trend harga pasar, lalu memberi label
+tanpa pernah mengirim order. `planOrder()` tidak berubah: `targetPrice` tetap satu-satunya gerbang
+beli, dan panel ini murni informasi.
+
+Modelnya ada di `src/shared/trend.js` (fungsi murni, tanpa akses store/clock) dan
+`src/shared/depth.js` untuk estimasi harga eksekusi. Input trend **bukan lagi ask termurah**,
+melainkan depth-weighted fill price:
+
+0. Setiap frame, `estimateFillPrice()` menelusuri `list` (lalu `rest`) untuk `desiredQty` unit dan
+   menghasilkan VWAP. Listing qty-1 hanya berbobot `1/q`, jadi tidak bisa mendikte trend. `rest`
+   dipakai hanya bila ukuran order melewati kedalaman yang terlihat, dan hasilnya ditandai
+   `approx`. Seri ini disimpan per menit di `price_points.fill_price` (schema v5), terpisah dari
+   `price` ask termurah yang tetap dipakai chart. Karena VWAP memakai ukuran order, membeli 25 unit
+   dari level 88 tidak mengubah `p_fill(25)` — sinyal tidak langsung hilang di mode live seperti
+   pada seri ask termurah.
+1. Harga diubah ke log space, lalu **Hampel filter** (±2 titik, 3σ, lantai 0,5%) membuang spike
+   satu-dua frame sebelum smoothing melihatnya. Pergeseran harga yang bertahan tetap lolos setelah
+   ~2 titik.
+2. **EMA sadar-waktu** (`1 − exp(−dt/τ)`) untuk kaki cepat (15 mnt) dan lambat (60 mnt), sehingga
+   celah antar-frame tidak dihitung sebagai satu bar besar.
+3. **Momentum** = `(fast − slow) × 100`, **signal** = EMA momentum (20 mnt), **hist** = momentum −
+   signal — komponen MACD-like, tetapi pada harga log dan waktu nyata, bukan bar tetap.
+4. **Slope** regresi berbobot durasi 3 jam (%/jam) memberi arah independen, dan **noise** (MAD
+   residual) dipakai untuk menurunkan kepercayaan.
+
+Saat depth history belum mencapai window minimum (instalasi baru, atau ~30 menit pertama setelah
+upgrade), model jatuh ke seri ask termurah dan menandai `source: "top"`; setelah itu `source:
+"depth"`. Tooltip pada panel dan chip menyebut sumber serta ukuran order yang dipakai.
+
+Klasifikasi memakai `proximity = targetPrice / trend − 1`:
+
+| State | Syarat | Arti |
+| --- | --- | --- |
+| `ABOVE` | proximity > +2% | Target di atas trend: bot membeli di harga pasar, bukan saat diskon |
+| `NEAR` | −2% … +2% (keluar di ±3%) | Target menempel di trend; margin tipis |
+| `BELOW` | < −2% | Target di bawah trend; menunggu dip |
+| `FAR_BELOW` | ≤ −20% | Terlalu jauh di bawah trend; fill bisa langka |
+| `STALE` | tidak ada frame > 30 mnt | Sinyal dibekukan, tidak dipakai sebagai saran |
+| `NO_DATA` | < 12 titik atau span < 30 mnt | Belum cukup history |
+
+Hysteresis ±2% → ±3% mencegah label berkedip di batas. **Confidence** 0–100 dihitung dari
+kesegaran, panjang window, jumlah sampel, celah terbesar, dan noise; `reliable` bila ≥ 50. Panel
+menampilkan tab **at/above trend** (target ≥ trend, gap terbesar di atas — yang paling perlu
+diturunkan), **below trend** (sisi sehat, menunggu dip), dan **all**, dengan tombol edit serta tautan
+marketplace. Daftar default sengaja hanya target ≥ trend: itulah yang perlu di-follow up. Card target
+menampilkan chip trend yang sama.
+
+Model dihitung di engine saat frame market (throttle 10 detik), saat hydrate setelah restart, dan
+langsung dihitung ulang lewat `engine.refreshTrend()` ketika target ditambah/diedit. Hasilnya ikut di
+`runtime.trend` pada `/api/state` dan pada event `market`. Field-nya: `status`, `source` (`depth` /
+`top`), `trend`, `fast`, `momentumPct`, `signalPct`, `histPct`, `slopePctPerHour`, `noisePct`,
+`confidence`, `points`, `spanMs`, `maxGapMs`, `coveragePct`, `direction`, `lastSampleAt`,
+`computedAt`, `target`, `proximityPct`, `gapPct`, `state`, `reliable`, `stale`, `bookQty`,
+`thinBook`, `fillPrice`, `fillQty`, `fillPartial`, `fillApprox`.
+
+Batasannya: `rest` hanya mengungkap harga lantai tail, bukan bentuk lengkapnya (karena itu
+`approx`); window efektif 24 jam; dan butuh sekitar 30 menit depth history sebelum sinyal pindah
+dari `top` ke `depth`. Perbandingan tetap `targetPrice` vs trend, dan `planOrder()` tidak berubah —
+ia masih hanya melihat listing termurah.
+
 Label otomatis diambil dari:
 
 ```http
@@ -865,8 +927,9 @@ Error validasi memakai status `422` dan `fields`, misalnya:
 - Event server: `hello`, `snapshot`, `log`, `market`, `order`, `history`, `stats`, `report`,
   `session`, `gateway`, `settings`, `configs`, `latency`, `system`, `history-cleared`.
 - `order.phase`: `submitted`, `accepted`, `filled`, `failed`, `dry`.
-- `market` membawa `price`, `stock`, `targetPrice`, `hot`, `at`, serta `allowedPriceMin`,
-  `allowedPriceMax`, `allowedAt` (cache band harga terakhir per target).
+- `market` membawa `price`, `stock`, `targetPrice`, `hot`, `at`, `trend` (model TREND WATCH), `fill`
+  (estimasi `{price, filled, requested, partial, approx}` untuk `desiredQty`), serta
+  `allowedPriceMin`, `allowedPriceMax`, `allowedAt` (cache band harga terakhir per target).
 
 ---
 

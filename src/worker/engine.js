@@ -7,9 +7,13 @@ import {
 } from "../shared/constants.js";
 import { normalizeUpstreamEvent } from "./events.js";
 import { planOrder, roundPrice } from "../shared/rules.js";
+import { buildTrend, TREND } from "../shared/trend.js";
+import { estimateFillPrice } from "../shared/depth.js";
 
 const PENDING_TIMEOUT_MS = 120_000;
 const SCAN_LOG_INTERVAL_MS = 12_000;
+/** Frames can arrive several times per second; the trend only needs a refresh now and then. */
+const TREND_REFRESH_MS = 10_000;
 
 function labelFor(config, itemId) {
   return config?.label || `ITEM ${String(itemId || "?").slice(-6).toUpperCase()}`;
@@ -98,7 +102,37 @@ export class Engine {
         runtime.history = [...merged.values()]
           .sort((a, b) => a.t - b.t)
           .slice(-PRICE_HISTORY_LIMIT);
+
+        const fillPoints = stored
+          .filter((point) => Number.isFinite(point.fillPrice))
+          .map((point) => ({ t: point.t, p: point.fillPrice }));
+        if (fillPoints.length > 0) {
+          const mergedFill = new Map(
+            (runtime.fillHistory ?? []).map((point) => [point.t, point])
+          );
+          for (const point of fillPoints) mergedFill.set(point.t, point);
+          runtime.fillHistory = [...mergedFill.values()]
+            .sort((a, b) => a.t - b.t)
+            .slice(-PRICE_HISTORY_LIMIT);
+
+          // Keep the depth diagnostics available before the first live frame,
+          // so the restored trend can still say how many units it priced.
+          const latest = stored[stored.length - 1];
+          if (Number.isFinite(latest.fillPrice)) {
+            runtime.lastFill = {
+              price: latest.fillPrice,
+              filled: Number.isFinite(latest.fillQty) ? latest.fillQty : null,
+              requested: config.desiredQty,
+              partial: false,
+              approx: Boolean(latest.fillApprox),
+              levels: null
+            };
+          }
+          runtime.fillQtyFor = config.desiredQty;
+        }
       }
+      // Restored history is enough to answer the signal before the first live frame.
+      this.#computeTrend(config, runtime, this.clock(), { force: true });
       restored += 1;
     }
 
@@ -152,8 +186,12 @@ export class Engine {
     const out = {};
     for (const [itemId, state] of this.runtime.entries()) {
       const config = this.#configFor(itemId);
+      // `fillHistory` is an internal series: the browser only needs the points
+      // behind the chart plus the computed trend, and shipping both histories
+      // for every target would double the state payload.
+      const { fillHistory, ...runtime } = state;
       out[itemId] = {
-        ...state,
+        ...runtime,
         label: labelFor(config, itemId)
       };
     }
@@ -162,6 +200,79 @@ export class Engine {
 
   pendingSnapshot() {
     return [...this.pending.entries()].map(([orderId, meta]) => ({ orderId, ...meta }));
+  }
+
+  /**
+   * Recomputes the signal for one target and returns it. Used after a target is
+   * added or edited so the proximity reading follows the new ceiling at once,
+   * without waiting for that item's next market frame.
+   */
+  refreshTrend(itemId) {
+    const config = this.#configFor(itemId);
+    if (!config) return null;
+    const runtime = this.#runtime(config.itemId);
+    this.#syncFillQty(config, runtime);
+    return this.#computeTrend(config, runtime, this.clock(), { force: true });
+  }
+
+  /**
+   * `p_fill` is only comparable across points computed for the same order
+   * size. Editing `desiredQty` therefore starts a fresh depth series; the
+   * top-ask chart history is untouched.
+   */
+  #syncFillQty(config, runtime) {
+    if (runtime.fillQtyFor === config.desiredQty) return;
+    runtime.fillHistory = [];
+    runtime.fillQtyFor = config.desiredQty;
+    runtime.lastFill = null;
+  }
+
+  /**
+   * Throttled wrapper around the pure model in shared/trend.js.
+   *
+   * The previous state is forwarded only when the target is unchanged; after an
+   * edit the hysteresis band must be re-entered from scratch, otherwise an old
+   * "NEAR" label could survive a move that is no longer near anything.
+   */
+  #computeTrend(config, runtime, now, { force = false } = {}) {
+    const targetPrice = Number(config?.targetPrice) || 0;
+    if (
+      !force &&
+      runtime.trend &&
+      runtime.trendTarget === targetPrice &&
+      now - runtime.trendAt < TREND_REFRESH_MS
+    ) {
+      return runtime.trend;
+    }
+
+    const previousState =
+      runtime.trend && runtime.trendTarget === targetPrice ? runtime.trend.state : null;
+
+    // Prefer the depth series once it covers the model's minimum window; before
+    // that (fresh install, first 30 minutes) fall back to the top-ask series
+    // and label the source so the UI can be honest about it.
+    const fillPoints = runtime.fillHistory || [];
+    const fillSpan =
+      fillPoints.length > 0 ? fillPoints[fillPoints.length - 1].t - fillPoints[0].t : 0;
+    const fillFresh =
+      fillPoints.length > 0 &&
+      now - fillPoints[fillPoints.length - 1].t <= TREND.maxGapMs;
+    const useFill =
+      fillPoints.length >= TREND.minPoints && fillSpan >= TREND.minSpanMs && fillFresh;
+    const series = useFill ? fillPoints : runtime.history || [];
+
+    runtime.trend = buildTrend(series, {
+      now,
+      targetPrice,
+      previousState,
+      bookQty: runtime.lastStock,
+      minQty: config?.minAcceptableQty,
+      source: useFill ? "depth" : "top",
+      fill: runtime.lastFill
+    });
+    runtime.trendAt = now;
+    runtime.trendTarget = targetPrice;
+    return runtime.trend;
   }
 
   #configFor(itemId) {
@@ -194,6 +305,10 @@ export class Engine {
         lastResult: null,
         itemType: null,
         history: [],
+        // Depth-weighted fill price (same one-minute buckets as `history`).
+        fillHistory: [],
+        fillQtyFor: null,
+        lastFill: null,
         // Market cache bookkeeping (see hydrateMarket/#persistMarket).
         seenAt: null,
         stale: false,
@@ -201,7 +316,11 @@ export class Engine {
         persistedAt: 0,
         pointWriteAt: 0,
         lastPointBucket: null,
-        persistErrorAt: 0
+        persistErrorAt: 0,
+        // Signal model cache: recomputed on frames, never on every render.
+        trend: null,
+        trendAt: 0,
+        trendTarget: null
       };
       if (this.mock) state.history = this.#seedMockHistory(key);
       this.runtime.set(key, state);
@@ -232,7 +351,7 @@ export class Engine {
    * price point at most every PRICE_POINT_WRITE_INTERVAL_MS. A failed write
    * must never break the frame loop.
    */
-  #persistMarket(config, runtime, event, price, bucket, now) {
+  #persistMarket(config, runtime, event, price, fill, bucket, now) {
     try {
       const bandChanged = event.allowedPriceMin != null || event.allowedPriceMax != null;
       if (bandChanged || now - runtime.persistedAt >= MARKET_SNAPSHOT_THROTTLE_MS) {
@@ -253,7 +372,7 @@ export class Engine {
         runtime.lastPointBucket !== bucket ||
         now - runtime.pointWriteAt >= PRICE_POINT_WRITE_INTERVAL_MS
       ) {
-        this.store.recordPricePoint?.(config.itemId, bucket, price);
+        this.store.recordPricePoint?.(config.itemId, bucket, price, fill);
         runtime.lastPointBucket = bucket;
         runtime.pointWriteAt = now;
       }
@@ -330,7 +449,32 @@ export class Engine {
       lastPoint.p = best.unitPrice;
     }
 
-    this.#persistMarket(config, runtime, event, best.unitPrice, bucket, now);
+    // The signal runs on the depth-weighted fill price for this target's order
+    // size, not on the cheapest ask: a quantity-1 listing must not define the
+    // market. The top-ask series stays untouched for the chart.
+    this.#syncFillQty(config, runtime);
+    const fill = estimateFillPrice({
+      listings: event.listings,
+      rest: event.rest,
+      qty: config.desiredQty
+    });
+    runtime.lastFill = fill;
+    if (fill) {
+      const fillHistory = runtime.fillHistory || (runtime.fillHistory = []);
+      const lastFillPoint = fillHistory[fillHistory.length - 1];
+      if (!lastFillPoint || lastFillPoint.t < bucket) {
+        fillHistory.push({ t: bucket, p: fill.price });
+        if (fillHistory.length > 1440) fillHistory.splice(0, fillHistory.length - 1440);
+      } else {
+        lastFillPoint.p = fill.price;
+      }
+    }
+
+    // Refresh the signal model before broadcasting so the UI and the snapshot
+    // always describe the same frame. This never influences planOrder().
+    this.#computeTrend(config, runtime, now);
+
+    this.#persistMarket(config, runtime, event, best.unitPrice, fill, bucket, now);
 
     const settings = this.store.state.settings;
     const plan = planOrder({
@@ -352,6 +496,8 @@ export class Engine {
       allowedPriceMin: runtime.allowedPriceMin,
       allowedPriceMax: runtime.allowedPriceMax,
       allowedAt: runtime.allowedAt,
+      trend: runtime.trend,
+      fill: runtime.lastFill,
       currency: event.currency || "RLT",
       itemType: event.itemType || runtime.itemType || config.itemType || "mutation_component",
       bucket,

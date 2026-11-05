@@ -7,7 +7,7 @@
  * decides whether a real migration is needed.
  */
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -107,9 +107,12 @@ CREATE TABLE IF NOT EXISTS market_snapshot (
 );
 
 CREATE TABLE IF NOT EXISTS price_points (
-  item_id   TEXT NOT NULL,
-  bucket_at INTEGER NOT NULL,
-  price     REAL NOT NULL,
+  item_id    TEXT NOT NULL,
+  bucket_at  INTEGER NOT NULL,
+  price      REAL NOT NULL,
+  fill_price REAL,
+  fill_qty   REAL,
+  fill_approx INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (item_id, bucket_at)
 ) WITHOUT ROWID;
 `;

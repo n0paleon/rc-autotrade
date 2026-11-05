@@ -439,3 +439,49 @@ test("jwtExpiry reads an exp claim and rejects opaque tokens", () => {
   assert.equal(jwtExpiry("opaque-token"), null);
   assert.equal(jwtExpiry(null), null);
 });
+
+test("depth fill prices persist and survive a frame without a fill", () => {
+  const dir = tempDir();
+  const itemId = "6571aa39ca8bfef34adcd9e9";
+  const bucket = Math.floor(Date.now() / 60_000) * 60_000;
+
+  try {
+    const store = new Store({ dataDir: dir, logger: null }).load();
+    store.upsertConfig({
+      itemId,
+      label: "NEON SHARD",
+      targetPrice: 3.0,
+      desiredQty: 25,
+      highStockThreshold: 50,
+      minAcceptableQty: 5,
+      allowPartialOrder: true,
+      active: true
+    });
+    store.recordPricePoint(itemId, bucket - 60_000, 3.0, {
+      price: 3.04,
+      filled: 25,
+      approx: false
+    });
+    // A later frame that cannot estimate depth must not wipe the stored fill.
+    store.recordPricePoint(itemId, bucket - 60_000, 3.01, null);
+    store.recordPricePoint(itemId, bucket, 3.02, {
+      price: 3.13,
+      filled: 40,
+      approx: true
+    });
+    store.close();
+
+    const reloaded = new Store({ dataDir: dir, logger: null }).load();
+    const points = reloaded.loadPriceHistory(itemId);
+    assert.equal(points.length, 2);
+    assert.equal(points[0].p, 3.01);
+    assert.ok(Math.abs(points[0].fillPrice - 3.04) < 1e-9, "fill survives a NULL update");
+    assert.equal(points[0].fillQty, 25);
+    assert.equal(points[0].fillApprox, false);
+    assert.ok(Math.abs(points[1].fillPrice - 3.13) < 1e-9);
+    assert.equal(points[1].fillApprox, true);
+    reloaded.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

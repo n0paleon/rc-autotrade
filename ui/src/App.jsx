@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import PriceChart from "./components/PriceChart.jsx";
+import TrendPanel, { TrendChip } from "./components/TrendPanel.jsx";
 import { Icon, ModalShell } from "./components/ModalShell.jsx";
 import {
   BridgeModal,
@@ -619,6 +620,8 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
         </div>
       </div>
 
+      <TrendChip trend={runtime.trend} />
+
       <div className="grid grid-cols-2 gap-[2px] border-2 border-line bg-line">
         <div className="bg-info/5 px-2.5 py-2 sm:px-3">
           <div
@@ -774,7 +777,7 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onT
 
 
   return (
-    <section className="panel min-w-0 max-xl:order-1 xl:col-start-1 xl:row-start-1" data-accent="cyan">
+    <section className="panel min-w-0 max-xl:order-3 xl:col-start-1 xl:row-start-3" data-accent="cyan">
       <div className="panel-head flex-wrap gap-y-2">
         <h2 className="panel-title">
           <Icon name="i-target" className="h-4 w-4 text-info" />
@@ -943,7 +946,7 @@ function ReportPanel({ report, notify }) {
   };
 
   return (
-    <section className="panel min-w-0 max-xl:order-4 xl:col-start-1 xl:row-start-3" data-accent="gold">
+    <section className="panel min-w-0 max-xl:order-2 xl:col-start-1 xl:row-start-2" data-accent="gold">
       <div className="panel-head flex-wrap gap-y-2">
         <h2 className="panel-title">
           <Icon name="i-coin" className="h-4 w-4 text-gold" /> Profit by product
@@ -1254,7 +1257,7 @@ function LootLog({ history, historyTotal, onReset, request }) {
       : "Confirmed fills will drop here with profit and latency.";
 
   return (
-    <section className="panel flex h-[380px] min-w-0 flex-col max-xl:order-3 xl:col-start-1 xl:row-start-2" data-accent="gold">
+    <section className="panel flex h-[380px] min-w-0 flex-col max-xl:order-1 xl:col-start-1 xl:row-start-1" data-accent="gold">
       <div className="panel-head shrink-0 flex-wrap gap-y-2">
         <h2 className="panel-title">
           <Icon name="i-coin" className="h-4 w-4 text-gold" /> Loot log
@@ -2191,7 +2194,7 @@ function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSes
     { id: "system", label: "SYSTEM" }
   ];
   return (
-    <aside className="flex min-w-0 flex-col gap-3 max-xl:order-2 xl:sticky xl:top-24 xl:col-start-2 xl:row-start-1 xl:row-span-2 xl:max-h-[calc(100dvh-6rem)] xl:self-start xl:overflow-y-auto">
+    <aside className="flex min-w-0 flex-col gap-3 max-xl:order-4 xl:sticky xl:top-24 xl:col-start-2 xl:row-start-1 xl:row-span-3 xl:max-h-[calc(100dvh-6rem)] xl:self-start xl:overflow-y-auto">
       <div className="tab-rail" role="tablist" aria-label="Control panels">
         {tabs.map((item) => (
           <button
@@ -2440,7 +2443,33 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       <div className="deck-enter deck-enter-2 mx-auto w-full max-w-[1600px] px-3 pt-4 sm:px-4 lg:px-6">
         <Hud snapshot={snapshot} now={now} eps={eps} />
       </div>
+      <div className="deck-enter deck-enter-3 mx-auto mt-4 w-full max-w-[1600px] px-3 sm:px-4 lg:px-6">
+        <TrendPanel
+          configs={snapshot.configs || []}
+          onEdit={(config) => setModal({ type: "target", config })}
+        />
+      </div>
       <main className="deck-enter deck-enter-3 mx-auto mt-4 grid w-full max-w-[1600px] gap-4 px-3 pb-10 sm:px-4 lg:px-6 xl:grid-cols-[minmax(0,1fr)_380px] xl:items-start">
+        <LootLog
+          history={snapshot.history || []}
+          historyTotal={snapshot.historyTotal}
+          onReset={resetStats}
+          request={worker.request}
+        />
+        <ReportPanel report={snapshot.report} notify={notify} />
+        <TargetsPanel
+          configs={snapshot.configs || []}
+          reportByItem={reportByItem}
+          search={search}
+          typeFilter={typeFilter}
+          onSearch={setSearch}
+          onTypeFilter={setTypeFilter}
+          onAdd={() => setModal({ type: "target", config: null })}
+          onEdit={(config) => setModal({ type: "target", config })}
+          onDelete={deleteTarget}
+          onToggle={toggleTarget}
+          notify={notify}
+        />
         <SidePanel
           tab={tab}
           setTab={setTab}
@@ -2457,26 +2486,6 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           onReconnect={reconnect}
           baseUrl={baseUrl}
         />
-        <TargetsPanel
-          configs={snapshot.configs || []}
-          reportByItem={reportByItem}
-          search={search}
-          typeFilter={typeFilter}
-          onSearch={setSearch}
-          onTypeFilter={setTypeFilter}
-          onAdd={() => setModal({ type: "target", config: null })}
-          onEdit={(config) => setModal({ type: "target", config })}
-          onDelete={deleteTarget}
-          onToggle={toggleTarget}
-          notify={notify}
-        />
-        <LootLog
-          history={snapshot.history || []}
-          historyTotal={snapshot.historyTotal}
-          onReset={resetStats}
-          request={worker.request}
-        />
-        <ReportPanel report={snapshot.report} notify={notify} />
       </main>
       <div className="pixel-stripe mt-8" aria-hidden="true" />
       <footer className="border-t-2 border-line bg-night-950/70">

@@ -107,6 +107,7 @@ export function useWorker({ notify }) {
               ? data.allowedPriceMax
               : runtime.allowedPriceMax,
             allowedAt: data.allowedAt ?? runtime.allowedAt,
+            trend: data.trend ?? runtime.trend,
             history: mergeHistory(runtime.history, data.price, bucket)
           }));
           break;

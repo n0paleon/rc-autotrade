@@ -400,7 +400,21 @@ function dropAutoTargetColumns(db) {
  */
 const MIGRATIONS = {
   1: () => {},
-  2: () => {}
+  2: () => {},
+  // v5 stores the depth-weighted fill price next to the top ask so the trend
+  // survives a restart with the same series it was using live.
+  4: (db) => {
+    const columns = db.pragma("table_info(price_points)").map((row) => row.name);
+    if (!columns.includes("fill_price")) {
+      db.exec("ALTER TABLE price_points ADD COLUMN fill_price REAL");
+    }
+    if (!columns.includes("fill_qty")) {
+      db.exec("ALTER TABLE price_points ADD COLUMN fill_qty REAL");
+    }
+    if (!columns.includes("fill_approx")) {
+      db.exec("ALTER TABLE price_points ADD COLUMN fill_approx INTEGER NOT NULL DEFAULT 0");
+    }
+  }
 };
 
 function migrate(db, fromVersion) {
