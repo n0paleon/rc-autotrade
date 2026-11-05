@@ -58,11 +58,26 @@ export function signalMeta(state) {
 /** Tailwind needs literal class names, so tone → utility is an explicit map. */
 const TONE_TEXT = Object.freeze({
   danger: "text-danger",
+  warn: "text-warn",
   gold: "text-gold",
   signal: "text-signal",
   info: "text-info",
   muted: "text-faint"
 });
+
+/**
+ * Gap heat ramp: the closer the target sits to the trend line (zero), the
+ * redder it reads, because that is where the next frame flips the signal.
+ * Above-trend gaps stay red at every size — that side is always a bad entry.
+ */
+function gapToneOf(proximity) {
+  if (!Number.isFinite(proximity) || proximity >= 0) return "danger";
+  const distance = Math.abs(proximity);
+  if (distance <= 2) return "danger";
+  if (distance <= 5) return "warn";
+  if (distance <= 10) return "gold";
+  return "signal";
+}
 
 function momentumTone(value) {
   if (!Number.isFinite(value)) return "muted";
@@ -122,7 +137,7 @@ function TrendRow({ row, onEdit }) {
   const label = config.label || `ITEM ${shortId(config.itemId)}`;
   const momentum = Number(trend.momentumPct);
   const type = itemTypeOf(config);
-  const gapTone = proximity > 0.5 ? "danger" : proximity < -0.5 ? "signal" : "muted";
+  const gapTone = gapToneOf(proximity);
 
   return (
     <tr data-tone={meta.tone} data-reliable={trend.reliable ? "yes" : "no"}>
