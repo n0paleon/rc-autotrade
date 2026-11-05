@@ -326,13 +326,11 @@ Contoh dari brief, bisa langsung dipakai di UI atau `PUT /api/configs`:
 | `label` | otomatis | maks 48 karakter | Diisi worker dari item-info; UI tidak meminta input manual |
 | `itemType` | tidak | default `mutation_component` | Dipakai untuk item-info dan purchase; worker auto-mencoba `mutation_component`, `miner`, `rack`, `battery`, dan mengoreksi dari frame market |
 | `rarityColor` | otomatis | 6 digit hex | Warna aksen card, diisi dari `rarityGroup.baseHexColor` bila ada |
-| `targetPrice` | ya | > 0, ≤ 1.000.000, maks 6 desimal | Harga maksimum **per unit** (base price; auto target bisa menggantinya saat runtime) |
+| `targetPrice` | ya | > 0, ≤ 1.000.000, maks 6 desimal | Harga maksimum **per unit** yang mau dibayar |
 | `desiredQty` | ya | integer 1–10.000 | Qty normal **per order** |
 | `highStockThreshold` | ya | integer `desiredQty`–1.000.000 | Book ≥ nilai ini → qty order diminta 2× `desiredQty` |
 | `minAcceptableQty` | ya | integer 1..`desiredQty` | Batas bawah partial order |
 | `allowPartialOrder` | tidak | boolean, default `true` | Izinkan beli seadanya saat stok < `desiredQty` |
-| `autoTarget` | tidak | boolean, default `false` | Aktifkan target runtime dari `allowedPriceMin` |
-| `autoTargetMarginPct` | tidak | 0–100, maks 2 desimal, default `0` | Margin di atas `allowedPriceMin` saat auto target aktif |
 | `maxSpendPerFill` | — | turunan UI, read-only | `targetPrice × desiredQty × 2`, plafon teoretis satu fill |
 | `active` | tidak | boolean, default `true` | Arm/disarm target |
 
@@ -356,8 +354,8 @@ Perilaku pembelian:
   micro-RLT ke RLT dan di-cache per target di runtime worker. Card menampilkan band tersebut, dan
   snapshot `/api/state` tetap membawanya setelah halaman di-reload. Frame baru langsung memperbarui
   nilai cache; frame yang tidak membawa band tidak menghapus nilai lama. Cache hilang saat worker
-  restart, sama seperti chart history. Saat `autoTarget` aktif, `allowedPriceMin` juga menjadi
-  sumber target runtime (lihat [Auto target](#auto-target-dari-allowedpricemin-runtime-only)).
+  restart, sama seperti chart history. Band ini murni informasi tampilan dan tidak pernah dipakai
+  sebagai syarat beli.
 - **PURCHASE SUCCESS** di card = `fills / (fills + failures) × 100%` untuk target tersebut selama
   sesi worker. Order yang masih pending tidak dihitung sampai fill atau gagal terkonfirmasi.
   Reset lifetime stats juga mereset counter per target ini.
@@ -375,35 +373,6 @@ Perilaku pembelian:
   menghapus riwayat produknya. Produk yang disimpan dibatasi `MAX_REPORT_PRODUCTS = 500`; saat daftar
   penuh, produk dengan profit terendah dibuang lebih dulu. Saat upgrade dari state lama tanpa
   `report`, worker membangun ulang laporan sekali dari seluruh loot log yang tersimpan.
-
-### Auto target dari `allowedPriceMin` (runtime-only)
-
-Setiap target punya saklar sendiri; tidak ada setting global. Saat diaktifkan dan frame market
-membawa `allowedPriceMin`, engine menghitung plafon beli:
-
-```text
-runtimeTarget = round6(allowedPriceMin × (1 + autoTargetMarginPct / 100))
-```
-
-Contoh: `allowedPriceMin` 0,05 RLT dengan margin 5% → target runtime 0,0525 RLT. Margin 0% berarti
-target tepat di `allowedPriceMin`. `planOrder()` memakai angka ini sebagai plafon, sedangkan
-`config.targetPrice` tetap menjadi **base price** yang tersimpan di SQLite.
-
-Aturan runtime-nya:
-
-- Nilai auto target hanya hidup di `runtime.autoTargetPrice` (RAM). Nilai ini **tidak** pernah
-  ditulis ke `targets.target_price`; setelah worker restart, runtime kosong dan target kembali ke
-  base price sampai frame live berikutnya yang membawa band tiba.
-- Snapshot `allowedPriceMin` yang di-hydrate dari SQLite setelah restart **tidak** dipakai untuk
-  menghitung auto target. Snapshot itu hanya untuk tampilan; auto target selalu butuh frame live.
-- Frame yang tidak membawa band tidak mengubah target runtime; nilai terakhir dipertahankan.
-  Mengedit target, arm/disarm, atau mengganti margin membuang override runtime, lalu frame
-  berikutnya menghitung ulang.
-- `allowedPriceMax` tetap tidak dipakai sebagai syarat beli.
-- Card menampilkan target yang sedang dipakai, badge `AUTO` + margin, dan base price kecil di
-  bawahnya. Chart, plafon `MAX`, serta `runtimeHot()` juga memakai target runtime yang sama.
-- Profit fill dihitung terhadap target yang dipakai saat order dikirim (`runtimeTarget`), bukan
-  terhadap base price.
 
 Label otomatis diambil dari:
 
@@ -488,15 +457,14 @@ ketersediaan access token (kecuali `dryRun`). Gerbang-gerbang ini **tidak** meng
 | Dibandingkan dengan | `unitPrice` listing termurah (harga micro-RLT ÷ 1.000.000) |
 | Lolos bila | `unitPrice <= targetPrice + 1e-9` (epsilon float, jadi harga yang persis sama tetap dibeli) |
 | Ditolak bila | `unitPrice > targetPrice` → `price-above-target`, frame dilewati |
-| Sumber angka | `config.targetPrice` (base) atau `runtime.autoTargetPrice` saat `autoTarget` aktif |
+| Sumber angka | `config.targetPrice` |
 
 - Anda **tidak** menawar. Kalau listing termurah di bawah target, engine tetap membayar harga
   listing tersebut (bukan `targetPrice`), sehingga biaya nyata ≤ plafon.
 - `targetPrice` bukan budget dan bukan batas total. Total satu order = `unitPrice × qty`, dan bisa
   sampai 2× `desiredQty` item saat high-stock aktif — lihat `maxSpendPerFill` di bawah.
-- Band harga dari Rollercoin (`allowedPriceMin` / `allowedPriceMax`): `allowedPriceMin` menjadi
-  sumber auto target per produk bila `autoTarget` aktif; selain itu band hanya informasi untuk
-  card. `allowedPriceMax` tidak pernah dipakai sebagai syarat beli.
+- Band harga dari Rollercoin (`allowedPriceMin` / `allowedPriceMax`) hanya informasi untuk card.
+  Band ini tidak dipakai sebagai syarat beli dan tidak mengubah `targetPrice`.
 - Menurunkan `targetPrice` membuat order lebih jarang tetapi profit per item lebih besar; menaikkan
   mendekati harga pasar membuat order lebih sering dengan margin lebih tipis. Profit yang dicatat
   adalah `(targetPrice − hargaBeli) × qty`, jadi target yang terlalu tinggi juga menggelembungkan
@@ -897,10 +865,8 @@ Error validasi memakai status `422` dan `fields`, misalnya:
 - Event server: `hello`, `snapshot`, `log`, `market`, `order`, `history`, `stats`, `report`,
   `session`, `gateway`, `settings`, `configs`, `latency`, `system`, `history-cleared`.
 - `order.phase`: `submitted`, `accepted`, `filled`, `failed`, `dry`.
-- `market` membawa `price`, `stock`, `targetPrice` (target yang sedang dipakai), `baseTargetPrice`,
-  `autoTarget`, `autoTargetPrice`, `autoTargetMarginPct`, `autoTargetAt`, `hot`, `at`, serta
-  `allowedPriceMin`, `allowedPriceMax`, `allowedAt` (cache band harga terakhir per target).
-  `runtime.effectiveTargetPrice` di `/api/state` mengikuti nilai yang sama.
+- `market` membawa `price`, `stock`, `targetPrice`, `hot`, `at`, serta `allowedPriceMin`,
+  `allowedPriceMax`, `allowedAt` (cache band harga terakhir per target).
 
 ---
 
@@ -1160,13 +1126,10 @@ pm2 restart rc-autotrade --update-env
   (`DELETE /api/history`) atau backup rutin bila perlu.
 - Cache pasar (`market_snapshot` + `price_points`) membuat deck langsung terisi setelah restart.
   Data ini hanya untuk tampilan: order tetap hanya direncanakan dari frame socket live, dan badge
-  `cached` menandai harga yang belum diperbarui frame baru. Auto target juga tidak dihitung dari
-  cache ini saat hydrate.
-- Skema SQLite v3 menambah kolom `targets.auto_target` dan `targets.auto_target_margin_pct`.
-  Database v1 maupun v2 dimigrasikan otomatis saat boot (`ALTER TABLE ... ADD COLUMN`), tanpa
-  kehilangan target yang sudah ada. Migrasi v2 bersifat repair: database yang sempat ter-stamp
-  `user_version = 2` sebelum kolomnya dibuat akan diperbaiki saat boot berikutnya. Harga hasil auto
-  target tetap tidak pernah disimpan.
+  `cached` menandai harga yang belum diperbarui frame baru.
+- Skema SQLite v4 menghapus kolom `targets.auto_target` dan `targets.auto_target_margin_pct` yang
+  dulu dipakai fitur auto adjust price. Database v1–v3 dimigrasikan otomatis saat boot
+  (`ALTER TABLE ... DROP COLUMN`), tanpa kehilangan target yang sudah ada.
 - Titik harga 1 menit disimpan 14 hari lalu dipangkas otomatis (saat boot dan tiap 6 jam). Ubah
   `PRICE_RETENTION_DAYS` di `src/shared/constants.js` kalau butuh histori lebih panjang.
 - Database lama dari versi JSON dimigrasikan otomatis saat boot pertama: `state.json` dan

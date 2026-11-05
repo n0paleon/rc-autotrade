@@ -1,5 +1,3 @@
-import { deriveAutoTargetPrice } from "../../../src/shared/rules.js";
-
 export const priceFmt = new Intl.NumberFormat("en-US", {
   minimumFractionDigits: 6,
   maximumFractionDigits: 6
@@ -17,19 +15,6 @@ export function trimPrice(value) {
   const number = Number(value);
   return Number.isFinite(number) ? trimFmt.format(number) : "—";
 }
-
-/**
- * Ceiling actually used by the engine: the runtime auto target when a live
- * frame has produced one, otherwise the saved base target.
- */
-export function effectiveTargetPrice(config) {
-  const auto = Number(config?.runtime?.autoTargetPrice);
-  if (config?.autoTarget === true && Number.isFinite(auto) && auto > 0) return auto;
-  const base = Number(config?.targetPrice);
-  return Number.isFinite(base) ? base : NaN;
-}
-
-export { deriveAutoTargetPrice };
 
 export function formatRlt(value) {
   const number = Number(value);
@@ -127,7 +112,7 @@ export function runtimeHot(config) {
   return Boolean(
     config?.active &&
       Number.isFinite(runtime.lastPrice) &&
-      runtime.lastPrice <= effectiveTargetPrice(config) + 1e-9 &&
+      runtime.lastPrice <= Number(config.targetPrice) + 1e-9 &&
       Number.isFinite(runtime.lastStock) &&
       runtime.lastStock >= config.minAcceptableQty
   );

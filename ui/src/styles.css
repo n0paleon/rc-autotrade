@@ -1156,14 +1156,6 @@
     animation: price-tick-down var(--motion-state) var(--ease-pixel-3);
   }
 
-  .target-price.is-adjusted {
-    animation: target-blink 460ms steps(2, end);
-  }
-
-  .auto-badge-pop {
-    animation: chip-pop var(--motion-state) var(--ease-pixel-3);
-  }
-
   .product-title {
     font-family: var(--font-sans);
     font-weight: 600;
@@ -1610,16 +1602,6 @@
   }
 }
 
-@keyframes target-blink {
-  0%,
-  49% {
-    opacity: 1;
-  }
-  50%,
-  100% {
-    opacity: 0.3;
-  }
-}
 
 @keyframes loot-in {
   0% {
@@ -1665,9 +1647,7 @@
   .auto-label[data-state="loading"] strong,
   .state-chip-pulse,
   .loot-entry,
-  .price-tick,
-  .target-price.is-adjusted,
-  .auto-badge-pop {
+  .price-tick {
     animation: none !important;
   }
 

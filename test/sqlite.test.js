@@ -172,7 +172,7 @@ test("openDatabase bootstraps the schema and readonly handles reject writes", ()
   }
 });
 
-test("openDatabase migrates a v1 targets table without losing rows", () => {
+test("openDatabase upgrades a v1 targets table without losing rows", () => {
   const dir = tempDir();
   try {
     seedLegacyTargets(dir, 1);
@@ -180,41 +180,85 @@ test("openDatabase migrates a v1 targets table without losing rows", () => {
     const db = openDatabase({ dataDir: dir, logger: null });
     assert.equal(db.pragma("user_version", { simple: true }), SCHEMA_VERSION);
     const columns = db.pragma("table_info(targets)").map((column) => column.name);
-    assert.ok(columns.includes("auto_target"));
-    assert.ok(columns.includes("auto_target_margin_pct"));
+    assert.equal(columns.includes("auto_target"), false, "the removed feature leaves no column behind");
+    assert.equal(columns.includes("auto_target_margin_pct"), false);
 
     const row = db
       .prepare("SELECT * FROM targets WHERE item_id = ?")
       .get("6571aa39ca8bfef34adcd9e9");
     assert.equal(row.label, "LEGACY");
-    assert.equal(row.auto_target, 0);
-    assert.equal(row.auto_target_margin_pct, 0);
+    assert.equal(row.target_price, 0.1);
+    assert.equal(row.desired_qty, 10);
     db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("openDatabase repairs a v2 database stamped without the column migration", () => {
+test("openDatabase drops the auto target columns kept by a v3 database", () => {
   const dir = tempDir();
   try {
-    // A partially updated build could bump user_version to 2 while leaving
-    // targets on the legacy shape. The repair migration must still add the
-    // columns instead of trusting the stamped version.
-    seedLegacyTargets(dir, 2);
+    // v3 databases still carry the columns from the removed feature.
+    const legacy = openSqlite(join(dir, "rollercoin.db"));
+    legacy.exec(LEGACY_TARGETS_SQL);
+    legacy.exec("ALTER TABLE targets ADD COLUMN auto_target INTEGER NOT NULL DEFAULT 0");
+    legacy.exec("ALTER TABLE targets ADD COLUMN auto_target_margin_pct REAL NOT NULL DEFAULT 0");
+    legacy
+      .prepare(
+        `INSERT INTO targets
+           (item_id, label, target_price, desired_qty, high_stock_threshold,
+            min_acceptable_qty, allow_partial_order, active, auto_target, auto_target_margin_pct)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run("6571aa39ca8bfef34adcd9e9", "LEGACY", 0.1, 10, 20, 1, 1, 1, 1, 42);
+    legacy.pragma("user_version = 3");
+    legacy.close();
 
     const db = openDatabase({ dataDir: dir, logger: null });
     assert.equal(db.pragma("user_version", { simple: true }), SCHEMA_VERSION);
     const columns = db.pragma("table_info(targets)").map((column) => column.name);
-    assert.ok(columns.includes("auto_target"));
-    assert.ok(columns.includes("auto_target_margin_pct"));
+    assert.equal(columns.includes("auto_target"), false);
+    assert.equal(columns.includes("auto_target_margin_pct"), false);
 
     const row = db
       .prepare("SELECT * FROM targets WHERE item_id = ?")
       .get("6571aa39ca8bfef34adcd9e9");
     assert.equal(row.label, "LEGACY");
-    assert.equal(row.auto_target, 0);
-    assert.equal(row.auto_target_margin_pct, 0);
+    assert.equal(row.target_price, 0.1, "dropping the columns keeps the row");
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("openDatabase repairs a database stamped before the column drop existed", () => {
+  const dir = tempDir();
+  try {
+    // A build bumped user_version to 4 before the drop step was added, so the
+    // version gate alone would leave the columns behind forever.
+    const legacy = openSqlite(join(dir, "rollercoin.db"));
+    legacy.exec(LEGACY_TARGETS_SQL);
+    legacy.exec("ALTER TABLE targets ADD COLUMN auto_target INTEGER NOT NULL DEFAULT 0");
+    legacy.exec("ALTER TABLE targets ADD COLUMN auto_target_margin_pct REAL NOT NULL DEFAULT 0");
+    legacy
+      .prepare(
+        `INSERT INTO targets
+           (item_id, label, target_price, desired_qty, high_stock_threshold,
+            min_acceptable_qty, allow_partial_order, active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run("6571aa39ca8bfef34adcd9e9", "LEGACY", 0.1, 10, 20, 1, 1, 1);
+    legacy.pragma(`user_version = ${SCHEMA_VERSION}`);
+    legacy.close();
+
+    const db = openDatabase({ dataDir: dir, logger: null });
+    const columns = db.pragma("table_info(targets)").map((column) => column.name);
+    assert.equal(columns.includes("auto_target"), false, "the cleanup is not version-gated");
+    assert.equal(columns.includes("auto_target_margin_pct"), false);
+    assert.equal(
+      db.prepare("SELECT label FROM targets WHERE item_id = ?").get("6571aa39ca8bfef34adcd9e9").label,
+      "LEGACY"
+    );
     db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

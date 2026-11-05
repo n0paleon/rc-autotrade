@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { createRateLimiter, deriveAutoTargetPrice, microToRlt, planOrder, roundPrice } from "../src/shared/rules.js";
+import { createRateLimiter, microToRlt, planOrder, roundPrice } from "../src/shared/rules.js";
 
 const CONFIG = {
   itemId: "6571aa39ca8bfef34adcd9e9",
@@ -15,24 +15,6 @@ const CONFIG = {
 test("converts micro-RLT and rounds prices", () => {
   assert.equal(microToRlt(100_000), 0.1);
   assert.equal(roundPrice(0.1234567), 0.123457);
-});
-
-test("derives the auto target from the allowed price floor", () => {
-  assert.equal(deriveAutoTargetPrice(0.05, 5), 0.0525);
-  assert.equal(deriveAutoTargetPrice(0.05, 0), 0.05);
-  assert.equal(deriveAutoTargetPrice(0.1, 12.5), 0.1125);
-  assert.equal(deriveAutoTargetPrice(0.0525, 5), 0.055125, "keeps six-decimal RLT precision");
-
-  assert.equal(deriveAutoTargetPrice(0, 5), null, "no floor means no derived target");
-  assert.equal(deriveAutoTargetPrice(-1, 5), null);
-  assert.equal(deriveAutoTargetPrice(0.05, -1), null);
-  assert.equal(deriveAutoTargetPrice(Number.NaN, 5), null);
-
-  assert.equal(
-    deriveAutoTargetPrice(1_000_000, 100),
-    1_000_000,
-    "derived targets stay under the regular price ceiling"
-  );
 });
 
 test("planOrder accepts a runtime target override", () => {

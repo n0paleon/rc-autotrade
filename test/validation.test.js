@@ -24,8 +24,6 @@ test("accepts the documented sample target", () => {
     itemType: "mutation_component",
     label: "",
     allowPartialOrder: true,
-    autoTarget: false,
-    autoTargetMarginPct: 0,
     active: true
   });
 });
@@ -81,35 +79,6 @@ test("normalises labels and booleans", () => {
   assert.equal(result.value.label, "NeonShard");
   assert.equal(result.value.active, false);
   assert.equal(result.value.allowPartialOrder, false);
-});
-
-test("validates the per-target auto target margin", () => {
-  const enabled = validateTarget({
-    ...SAMPLE,
-    autoTarget: true,
-    autoTargetMarginPct: 7.25
-  });
-  assert.equal(enabled.ok, true);
-  assert.equal(enabled.value.autoTarget, true);
-  assert.equal(enabled.value.autoTargetMarginPct, 7.25);
-
-  // 0% is valid: the target sits exactly on the allowed min.
-  const zero = validateTarget({ ...SAMPLE, autoTarget: true, autoTargetMarginPct: 0 });
-  assert.equal(zero.ok, true);
-  assert.equal(zero.value.autoTargetMarginPct, 0);
-
-  assert.match(
-    validateTarget({ ...SAMPLE, autoTargetMarginPct: 101 }).errors.autoTargetMarginPct,
-    /between 0 and 100/
-  );
-  assert.match(
-    validateTarget({ ...SAMPLE, autoTargetMarginPct: -1 }).errors.autoTargetMarginPct,
-    /between 0 and 100/
-  );
-  assert.match(
-    validateTarget({ ...SAMPLE, autoTargetMarginPct: 1.234 }).errors.autoTargetMarginPct,
-    /2 decimal places/
-  );
 });
 
 test("settings stay inside safe bounds", () => {

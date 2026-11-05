@@ -6,7 +6,7 @@ import {
   PRICE_POINT_WRITE_INTERVAL_MS
 } from "../shared/constants.js";
 import { normalizeUpstreamEvent } from "./events.js";
-import { deriveAutoTargetPrice, planOrder, roundPrice } from "../shared/rules.js";
+import { planOrder, roundPrice } from "../shared/rules.js";
 
 const PENDING_TIMEOUT_MS = 120_000;
 const SCAN_LOG_INTERVAL_MS = 12_000;
@@ -148,32 +148,12 @@ export class Engine {
     }
   }
 
-  /**
-   * Drops the runtime auto-target override so the saved base price applies
-   * again. Called when a target is edited, armed/disarmed or removed; the next
-   * live frame carrying `allowedPriceMin` recomputes it.
-   */
-  invalidateAutoTarget(itemId = null) {
-    if (itemId == null) {
-      for (const state of this.runtime.values()) {
-        state.autoTargetPrice = null;
-        state.autoTargetAt = null;
-      }
-      return;
-    }
-    const state = this.runtime.get(String(itemId).toLowerCase());
-    if (!state) return;
-    state.autoTargetPrice = null;
-    state.autoTargetAt = null;
-  }
-
   runtimeSnapshot() {
     const out = {};
     for (const [itemId, state] of this.runtime.entries()) {
       const config = this.#configFor(itemId);
       out[itemId] = {
         ...state,
-        effectiveTargetPrice: state.autoTargetPrice ?? config?.targetPrice ?? null,
         label: labelFor(config, itemId)
       };
     }
@@ -202,11 +182,6 @@ export class Engine {
         allowedPriceMin: null,
         allowedPriceMax: null,
         allowedAt: null,
-        // Runtime-only target override derived from a live market frame. It is
-        // deliberately never persisted: after a restart the saved base target
-        // wins until the first frame carrying an allowed price band arrives.
-        autoTargetPrice: null,
-        autoTargetAt: null,
         lastOrderAt: null,
         lastInRangeAt: null,
         lastLogAt: 0,
@@ -232,32 +207,6 @@ export class Engine {
       this.runtime.set(key, state);
     }
     return state;
-  }
-
-  /**
-   * Resolves the ceiling used for this frame.
-   *
-   * With `autoTarget` enabled and a live frame that carries `allowedPriceMin`,
-   * the target becomes `allowedPriceMin × (1 + margin)`. Frames that omit the
-   * band keep the previous runtime value. Hydrated snapshots are intentionally
-   * ignored here, so a worker restart always starts from the saved base price.
-   */
-  #resolveTargetPrice(config, runtime, event, now) {
-    if (!config.autoTarget) {
-      runtime.autoTargetPrice = null;
-      runtime.autoTargetAt = null;
-      return config.targetPrice;
-    }
-
-    if (event.allowedPriceMin != null) {
-      const derived = deriveAutoTargetPrice(event.allowedPriceMin, config.autoTargetMarginPct);
-      if (derived != null) {
-        runtime.autoTargetPrice = derived;
-        runtime.autoTargetAt = now;
-      }
-    }
-
-    return runtime.autoTargetPrice ?? config.targetPrice;
   }
 
   #seedMockHistory(itemId) {
@@ -367,9 +316,8 @@ export class Engine {
     if (event.allowedPriceMax != null) runtime.allowedPriceMax = event.allowedPriceMax;
     if (event.allowedPriceMin != null || event.allowedPriceMax != null) runtime.allowedAt = now;
 
-    // Auto mode only reacts to a live band; the base target stays untouched in
-    // the store so a restart cannot inherit the adjusted price.
-    const targetPrice = this.#resolveTargetPrice(config, runtime, event, now);
+    // The saved target is the ceiling; the marketplace band is display-only.
+    const targetPrice = config.targetPrice;
 
     const bucket = Math.floor(now / 60_000) * 60_000;
     const history = runtime.history || (runtime.history = []);
@@ -400,11 +348,6 @@ export class Engine {
       price: best.unitPrice,
       stock: best.quantity,
       targetPrice,
-      baseTargetPrice: config.targetPrice,
-      autoTarget: Boolean(config.autoTarget),
-      autoTargetPrice: runtime.autoTargetPrice,
-      autoTargetMarginPct: config.autoTargetMarginPct ?? 0,
-      autoTargetAt: runtime.autoTargetAt,
       desiredQty: config.desiredQty,
       allowedPriceMin: runtime.allowedPriceMin,
       allowedPriceMax: runtime.allowedPriceMax,
@@ -458,7 +401,6 @@ export class Engine {
       unitPriceRaw: best.priceRaw,
       unitPrice: best.unitPrice,
       targetPrice,
-      baseTargetPrice: config.targetPrice,
       notional: plan.notional,
       at: now
     };

@@ -711,7 +711,6 @@ export class ControlServer {
         return;
       }
       this.store.setConfigs(result.values);
-      this.engine.invalidateAutoTarget();
       this.logger.info("config", `target list replaced (${result.values.length} item${result.values.length === 1 ? "" : "s"})`);
       this.keepalive?.wake("target list replaced");
       this.broadcast("configs", this.configsView());
@@ -731,7 +730,6 @@ export class ControlServer {
         return;
       }
       const saved = this.store.upsertConfig(result.value);
-      this.engine.invalidateAutoTarget(saved.itemId);
       this.logger.info("config", `target added: ${saved.itemId}`);
       this.keepalive?.wake("target added");
       if (this.itemInfo) {
@@ -762,7 +760,6 @@ export class ControlServer {
 
       if (method === "DELETE") {
         this.store.removeConfig(existing.itemId);
-        this.engine.invalidateAutoTarget(existing.itemId);
         this.logger.info("config", `target removed: ${existing.label || existing.itemId}`);
         this.broadcast("configs", this.configsView());
         json(res, 200, { ok: true, configs: this.configsView() });
@@ -777,7 +774,6 @@ export class ControlServer {
         return;
       }
       const saved = this.store.upsertConfig(result.value, { originalId: existing.itemId });
-      this.engine.invalidateAutoTarget(saved.itemId);
       this.logger.info("config", `target updated: ${saved.itemId}`);
       this.keepalive?.wake("target updated");
       this.broadcast("configs", this.configsView());
