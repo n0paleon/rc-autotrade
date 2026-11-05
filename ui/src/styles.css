@@ -776,6 +776,22 @@
     @apply truncate font-mono text-[13px] tabular-nums text-ink-dim;
   }
 
+  /* The profit report is capped for the same reason the trend list is: a
+     growing product catalogue must not stretch the deck. About nine rows
+     fit, then the body scrolls under a sticky header. */
+  .report-scroll {
+    max-height: 360px;
+    overflow: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  @media (max-width: 720px) {
+    .report-scroll {
+      max-height: 300px;
+    }
+  }
+
   /* ── upstream latency ─────────────────────────────────────────── */
   .lat-card {
     @apply flex min-w-0 flex-col border-2 border-line bg-night-950/60 p-3;
