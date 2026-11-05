@@ -5,6 +5,7 @@ import {
   itemTypeLabel,
   itemTypeOf,
   marketplaceUrl,
+  relTime,
   shortId
 } from "../lib/format.js";
 import { Icon } from "./ModalShell.jsx";
@@ -132,7 +133,7 @@ export function TrendChip({ trend }) {
 }
 
 function TrendRow({ row, onEdit }) {
-  const { config, trend, target, market, proximity } = row;
+  const { config, trend, target, market, marketPrice, marketSeenAt, proximity } = row;
   const meta = signalMeta(trend.state);
   const label = config.label || `ITEM ${shortId(config.itemId)}`;
   const momentum = Number(trend.momentumPct);
@@ -153,6 +154,16 @@ function TrendRow({ row, onEdit }) {
       </td>
       <td className="numeric">{fixedPrice(target)}</td>
       <td className="numeric" title={trendSourceNote(trend)}>{fixedPrice(market)}</td>
+      <td
+        className="numeric"
+        title={
+          Number.isFinite(marketSeenAt)
+            ? `Live market price · frame ${relTime(marketSeenAt)}`
+            : "No market frame yet"
+        }
+      >
+        {Number.isFinite(marketPrice) ? fixedPrice(marketPrice) : "—"}
+      </td>
       <td className={`numeric trend-gap-cell ${TONE_TEXT[gapTone]}`}>
         {proximity >= 0 ? "+" : ""}
         {proximity.toFixed(1)}%
@@ -244,6 +255,8 @@ export default function TrendPanel({ configs, onEdit }) {
         trend,
         target,
         market: trend.trend,
+        marketPrice: config?.runtime?.lastPrice,
+        marketSeenAt: config?.runtime?.lastSeenAt,
         proximity
       });
     }
@@ -349,6 +362,7 @@ export default function TrendPanel({ configs, onEdit }) {
                 <th scope="col">Item</th>
                 <th scope="col" className="text-right">Target</th>
                 <th scope="col" className="text-right">Trend</th>
+                <th scope="col" className="text-right">Market</th>
                 <th scope="col" className="text-right">Gap</th>
                 <th scope="col" className="text-right trend-mom">Mom</th>
                 <th scope="col" className="text-right trend-conf-cell">Confidence</th>

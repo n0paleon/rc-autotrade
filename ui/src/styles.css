@@ -1853,14 +1853,15 @@
       table-layout: fixed;
     }
 
-    .trend-table th:nth-child(1) { width: 25%; }
-    .trend-table th:nth-child(2) { width: 12%; }
-    .trend-table th:nth-child(3) { width: 12%; }
-    .trend-table th:nth-child(4) { width: 8%; }
-    .trend-table th:nth-child(5) { width: 9%; }
-    .trend-table th:nth-child(6) { width: 12%; }
-    .trend-table th:nth-child(7) { width: 13%; }
-    .trend-table th:nth-child(8) { width: 9%; }
+    .trend-table th:nth-child(1) { width: 20%; }
+    .trend-table th:nth-child(2) { width: 10%; }
+    .trend-table th:nth-child(3) { width: 10%; }
+    .trend-table th:nth-child(4) { width: 10%; }
+    .trend-table th:nth-child(5) { width: 8%; }
+    .trend-table th:nth-child(6) { width: 9%; }
+    .trend-table th:nth-child(7) { width: 11%; }
+    .trend-table th:nth-child(8) { width: 13%; }
+    .trend-table th:nth-child(9) { width: 9%; }
   }
 
   .trend-table .trend-gap-cell {
