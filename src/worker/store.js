@@ -438,13 +438,21 @@ export class Store {
       `),
 
       pointsRange: db.prepare(`
-        SELECT bucket_at, price FROM price_points
+        SELECT bucket_at, price, fill_price, fill_qty, fill_approx FROM price_points
         WHERE item_id = ? AND bucket_at >= ?
         ORDER BY bucket_at DESC LIMIT ?
       `),
       pointUpsert: db.prepare(`
-        INSERT INTO price_points (item_id, bucket_at, price) VALUES (?, ?, ?)
-        ON CONFLICT(item_id, bucket_at) DO UPDATE SET price = excluded.price
+        INSERT INTO price_points (item_id, bucket_at, price, fill_price, fill_qty, fill_approx)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(item_id, bucket_at) DO UPDATE SET
+          price = excluded.price,
+          fill_price = COALESCE(excluded.fill_price, price_points.fill_price),
+          fill_qty = COALESCE(excluded.fill_qty, price_points.fill_qty),
+          fill_approx = CASE
+            WHEN excluded.fill_price IS NULL THEN price_points.fill_approx
+            ELSE excluded.fill_approx
+          END
       `),
       pointsPrune: db.prepare("DELETE FROM price_points WHERE bucket_at < ?")
     };
@@ -1264,11 +1272,30 @@ export class Store {
   /** Oldest → newest minute points for one item. */
   loadPriceHistory(itemId, { limit = PRICE_HISTORY_LIMIT, since = 0 } = {}) {
     const rows = this.stmts.pointsRange.all(String(itemId).toLowerCase(), since, limit);
-    return rows.reverse().map((row) => ({ t: row.bucket_at, p: row.price }));
+    return rows.reverse().map((row) => ({
+      t: row.bucket_at,
+      p: row.price,
+      fillPrice: row.fill_price,
+      fillQty: row.fill_qty,
+      fillApprox: Boolean(row.fill_approx)
+    }));
   }
 
-  recordPricePoint(itemId, bucketAt, price) {
-    this.stmts.pointUpsert.run(String(itemId).toLowerCase(), bucketAt, price);
+  /**
+   * Upserts one minute bucket. `fill` is optional: when a frame could not
+   * produce a depth estimate, the previously stored fill columns are kept
+   * instead of being wiped by a NULL.
+   */
+  recordPricePoint(itemId, bucketAt, price, fill = null) {
+    const fillPrice = Number.isFinite(fill?.price) ? fill.price : null;
+    this.stmts.pointUpsert.run(
+      String(itemId).toLowerCase(),
+      bucketAt,
+      price,
+      fillPrice,
+      fillPrice != null && Number.isFinite(fill?.filled) ? fill.filled : null,
+      fill?.approx ? 1 : 0
+    );
   }
 
   #prunePriceHistory() {

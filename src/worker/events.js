@@ -46,6 +46,22 @@ function parseAllowedPrice(raw) {
 }
 
 /**
+ * The tail of the book beyond the visible ladder arrives as a single aggregate
+ * level (`{ price, quantity }`). It is used only when an order is larger than
+ * the visible depth, and always marked approximate.
+ */
+function parseRest(raw) {
+  const source = asObject(raw);
+  const priceRaw = toNumber(firstDefined(source.price, source.unit_price, source.unitPrice));
+  const quantity = toNumber(
+    firstDefined(source.quantity, source.count, source.qty, source.amount, source.total_count)
+  );
+  if (!Number.isFinite(priceRaw) || priceRaw <= 0) return null;
+  if (!Number.isFinite(quantity) || quantity < 1) return null;
+  return { priceRaw, quantity: Math.floor(quantity), unitPrice: priceRaw / 1_000_000 };
+}
+
+/**
  * @param {unknown} frame parsed socket frame
  * @returns {null | {
  *   cmd: string,
@@ -55,6 +71,8 @@ function parseAllowedPrice(raw) {
  *   kind: "market" | "fill" | "other",
  *   allowedPriceMin: number | null,
  *   allowedPriceMax: number | null,
+ *   rest: {priceRaw:number, quantity:number, unitPrice:number} | null,
+ *   totalCount: number | null,
  *   listings: {priceRaw:number, quantity:number, unitPrice:number}[],
  *   fill: null | {orderId:string|null, count:number, priceRaw:number, unitPrice:number, status:number}
  * }}
@@ -90,6 +108,11 @@ export function normalizeUpstreamEvent(frame) {
   const allowedPriceMax = parseAllowedPrice(
     firstDefined(data.allowedPriceMax, value.allowedPriceMax, data.allowed_price_max, value.allowed_price_max)
   );
+  const rest = parseRest(firstDefined(data.rest, value.rest));
+  const totalRaw = toNumber(
+    firstDefined(data.totalCount, data.total_count, value.totalCount, value.total_count)
+  );
+  const totalCount = Number.isFinite(totalRaw) && totalRaw >= 0 ? Math.floor(totalRaw) : null;
 
   const orderIdRaw = firstDefined(value.order_id, value.orderId, data.order_id, data.orderId);
   const statusRaw = firstDefined(value.status, data.status);
@@ -110,6 +133,8 @@ export function normalizeUpstreamEvent(frame) {
     kind,
     allowedPriceMin,
     allowedPriceMax,
+    rest,
+    totalCount,
     listings,
     fill:
       kind === "fill"

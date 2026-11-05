@@ -711,6 +711,7 @@ export class ControlServer {
         return;
       }
       this.store.setConfigs(result.values);
+      for (const config of result.values) this.engine.refreshTrend(config.itemId);
       this.logger.info("config", `target list replaced (${result.values.length} item${result.values.length === 1 ? "" : "s"})`);
       this.keepalive?.wake("target list replaced");
       this.broadcast("configs", this.configsView());
@@ -730,6 +731,7 @@ export class ControlServer {
         return;
       }
       const saved = this.store.upsertConfig(result.value);
+      this.engine.refreshTrend(saved.itemId);
       this.logger.info("config", `target added: ${saved.itemId}`);
       this.keepalive?.wake("target added");
       if (this.itemInfo) {
@@ -774,6 +776,7 @@ export class ControlServer {
         return;
       }
       const saved = this.store.upsertConfig(result.value, { originalId: existing.itemId });
+      this.engine.refreshTrend(saved.itemId);
       this.logger.info("config", `target updated: ${saved.itemId}`);
       this.keepalive?.wake("target updated");
       this.broadcast("configs", this.configsView());

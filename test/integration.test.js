@@ -177,6 +177,25 @@ test("mock engine fills a seeded target", async () => {
   );
   assert.ok(ranged, `expected the market frame to cache an allowed price band\n${output}`);
   assert.ok(ranged.runtime.allowedPriceMax > ranged.runtime.allowedPriceMin);
+
+  const trending = snapshot.configs.find((config) => config.runtime?.trend?.status === "ok");
+  assert.ok(trending, `expected the trend model on a live target\n${output}`);
+  assert.ok(Number.isFinite(trending.runtime.trend.trend));
+  assert.ok(Number.isFinite(trending.runtime.trend.proximityPct));
+  assert.ok(trending.runtime.trend.points > 0);
+  assert.ok(
+    Number.isFinite(trending.runtime.lastFill?.price),
+    `expected a depth-weighted fill estimate\n${output}`
+  );
+  assert.ok(
+    ["top", "depth"].includes(trending.runtime.trend.source),
+    `unexpected trend source ${trending.runtime.trend.source}`
+  );
+  assert.ok(Number.isFinite(trending.runtime.trend.fillPrice));
+  assert.ok(
+    ["ABOVE", "NEAR", "BELOW", "FAR_BELOW"].includes(trending.runtime.trend.state),
+    `unexpected signal state ${trending.runtime.trend.state}`
+  );
   assert.equal(snapshot.startedAt > 0, true);
 
   assert.ok(snapshot.report?.items?.length > 0, "snapshot must include the per-product report");

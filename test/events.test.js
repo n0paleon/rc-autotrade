@@ -87,3 +87,36 @@ test("ignores frames without a market or fill shape", () => {
   assert.deepEqual(event.listings, []);
   assert.equal(event.fill, null);
 });
+
+test("normalises the aggregated tail of the book", () => {
+  const event = normalizeUpstreamEvent({
+    cmd: "marketplace_orders_update",
+    value: {
+      currency: "RLT",
+      item_type: "rack",
+      item_id: "6a7b40a8f188bab31b1c2195",
+      data: {
+        list: [
+          { price: 3_150_000, quantity: 4 },
+          { price: 3_222_000, quantity: 1 }
+        ],
+        rest: { price: 3_360_000, quantity: 223 },
+        totalCount: 228
+      }
+    }
+  });
+
+  assert.equal(event.kind, "market");
+  assert.equal(event.rest.unitPrice, 3.36);
+  assert.equal(event.rest.quantity, 223);
+  assert.equal(event.totalCount, 228);
+});
+
+test("leaves the tail null when the frame has no rest block", () => {
+  const event = normalizeUpstreamEvent({
+    cmd: "marketplace_orders_update",
+    value: { item_id: "abc12345", data: { list: [{ price: 100_000, quantity: 2 }] } }
+  });
+  assert.equal(event.rest, null);
+  assert.equal(event.totalCount, null);
+});

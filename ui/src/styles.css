@@ -1708,3 +1708,179 @@
     transform: none !important;
   }
 }
+
+/* ── trend watch ─────────────────────────────────────────────────────
+   The signal is advisory: amber/green/red bands mirror the state names in
+   shared/trend.js so the card and the fleet table never disagree.
+   ───────────────────────────────────────────────────────────────── */
+@layer components {
+  .trend-strip {
+    --trend-tone: var(--color-faint);
+    @apply flex flex-wrap items-center gap-x-2 gap-y-1 px-2.5 py-1.5 font-mono text-[12px] uppercase tracking-[0.08em] text-faint;
+    border: 2px solid var(--color-line);
+    background:
+      linear-gradient(90deg, color-mix(in srgb, var(--trend-tone) 14%, transparent), transparent 62%),
+      rgb(8 6 23 / 0.45);
+  }
+
+  .trend-strip[data-tone="danger"],
+  .signal-chip[data-tone="danger"],
+  .trend-filter[data-tone="danger"] {
+    --trend-tone: var(--color-danger);
+  }
+
+  .trend-strip[data-tone="gold"],
+  .signal-chip[data-tone="gold"],
+  .trend-filter[data-tone="gold"] {
+    --trend-tone: var(--color-gold);
+  }
+
+  .trend-strip[data-tone="signal"],
+  .signal-chip[data-tone="signal"],
+  .trend-filter[data-tone="signal"] {
+    --trend-tone: var(--color-signal);
+  }
+
+  .trend-strip[data-tone="info"],
+  .signal-chip[data-tone="info"],
+  .trend-filter[data-tone="info"] {
+    --trend-tone: var(--color-info);
+  }
+
+  .trend-strip[data-tone="muted"],
+  .signal-chip[data-tone="muted"],
+  .trend-filter[data-tone="muted"] {
+    --trend-tone: var(--color-faint);
+  }
+
+  .trend-strip b {
+    @apply text-[13px] font-bold tabular-nums text-ink-dim;
+  }
+
+  .trend-gap {
+    @apply inline-flex items-center gap-0.5 font-bold tabular-nums;
+    color: var(--trend-tone);
+  }
+
+  .trend-signal {
+    @apply ml-auto px-1.5 py-0.5 text-[11px] font-bold leading-none;
+    color: var(--trend-tone);
+    border: 1px solid color-mix(in srgb, var(--trend-tone) 55%, transparent);
+    background: rgb(8 6 23 / 0.75);
+    white-space: nowrap;
+  }
+
+  .trend-conf {
+    @apply text-[11px] tabular-nums;
+    color: var(--color-faint);
+  }
+
+  .trend-filter {
+    --trend-tone: var(--color-faint);
+    @apply inline-flex items-center gap-1 px-2 py-1 font-mono text-[11px] uppercase tracking-[0.08em] text-muted;
+    border: 2px solid var(--color-line);
+    background: rgb(8 6 23 / 0.7);
+  }
+
+  .trend-filter:hover {
+    border-color: var(--color-line-strong);
+    color: var(--color-ink);
+  }
+
+  .trend-filter[aria-pressed="true"] {
+    color: var(--color-ink);
+    border-color: color-mix(in srgb, var(--trend-tone) 65%, var(--color-line-strong));
+    box-shadow: inset 0 -3px 0 var(--trend-tone);
+  }
+
+  /* The list is capped so a growing fleet cannot stretch the deck: roughly six
+     rows fit, then the body scrolls under a sticky header. */
+  .trend-scroll {
+    max-height: 360px;
+    overflow: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  @media (max-width: 720px) {
+    .trend-scroll {
+      max-height: 300px;
+    }
+  }
+
+  .trend-table {
+    @apply w-full border-collapse text-left;
+  }
+
+  .trend-table th {
+    @apply px-3 py-2 font-sans text-[11px] font-semibold uppercase tracking-[0.12em] text-faint;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #16103b;
+    border-bottom: 2px solid var(--color-line);
+    white-space: nowrap;
+  }
+
+  .trend-table td {
+    @apply px-3 py-2 align-middle;
+    border-bottom: 1px solid rgb(52 38 115 / 0.55);
+  }
+
+  .trend-table tbody tr {
+    transition: background var(--motion-ui) linear;
+  }
+
+  .trend-table tbody tr:hover {
+    background: rgb(99 77 214 / 0.12);
+  }
+
+  .trend-table tr[data-reliable="no"] {
+    opacity: 0.62;
+  }
+
+  .trend-table .numeric {
+    @apply font-mono text-[12px] font-semibold tabular-nums text-ink-dim;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  /* Numbers are right-aligned, and the columns share the panel width on
+     desktop so the panel reads as a full-width table instead of a narrow
+     cluster of values with empty space beside the item names. */
+  @media (min-width: 721px) {
+    .trend-table {
+      table-layout: fixed;
+    }
+
+    .trend-table th:nth-child(1) { width: 20%; }
+    .trend-table th:nth-child(2) { width: 10%; }
+    .trend-table th:nth-child(3) { width: 10%; }
+    .trend-table th:nth-child(4) { width: 10%; }
+    .trend-table th:nth-child(5) { width: 8%; }
+    .trend-table th:nth-child(6) { width: 9%; }
+    .trend-table th:nth-child(7) { width: 11%; }
+    .trend-table th:nth-child(8) { width: 13%; }
+    .trend-table th:nth-child(9) { width: 9%; }
+  }
+
+  .trend-table .trend-gap-cell {
+    @apply font-bold;
+  }
+
+  .signal-chip {
+    --trend-tone: var(--color-faint);
+    @apply inline-flex items-center px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.08em];
+    color: var(--trend-tone);
+    border: 1px solid color-mix(in srgb, var(--trend-tone) 55%, transparent);
+    background: rgb(8 6 23 / 0.8);
+    white-space: nowrap;
+  }
+
+  @media (max-width: 720px) {
+    .trend-table .trend-mom,
+    .trend-table .trend-conf-cell {
+      display: none;
+    }
+  }
+}
