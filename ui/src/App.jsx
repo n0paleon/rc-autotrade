@@ -529,6 +529,38 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
   const autoMargin = Number(config.autoTargetMarginPct);
   const autoLabel = Number.isFinite(autoMargin) ? `${trimPrice(autoMargin)}%` : "—";
 
+  const marketPrice = Number.isFinite(runtime.lastPrice) ? runtime.lastPrice : null;
+  const previousMarketPrice = useRef(marketPrice);
+  const [marketMove, setMarketMove] = useState(null);
+  useEffect(() => {
+    const previous = previousMarketPrice.current;
+    previousMarketPrice.current = marketPrice;
+    if (marketPrice === null || previous === null || marketPrice === previous) return;
+    setMarketMove((last) => ({
+      dir: marketPrice > previous ? "up" : "down",
+      delta: marketPrice - previous,
+      tick: (last?.tick || 0) + 1
+    }));
+  }, [marketPrice]);
+
+  const previousTargetPrice = useRef(targetPrice);
+  const [targetPulse, setTargetPulse] = useState(0);
+  const [adjusted, setAdjusted] = useState(false);
+  const adjustTimer = useRef(null);
+  useEffect(() => {
+    const previous = previousTargetPrice.current;
+    previousTargetPrice.current = targetPrice;
+    if (!autoEnabled || !Number.isFinite(targetPrice) || !Number.isFinite(previous) || targetPrice === previous) return;
+    setTargetPulse((value) => value + 1);
+    setAdjusted(true);
+    window.clearTimeout(adjustTimer.current);
+    adjustTimer.current = window.setTimeout(() => setAdjusted(false), 2200);
+  }, [targetPrice, autoEnabled]);
+  useEffect(() => {
+    const timer = adjustTimer;
+    return () => window.clearTimeout(timer.current);
+  }, []);
+
   useEffect(() => {
     drawPixelAvatar(canvasRef.current, config.itemId, config.rarityColor);
   }, [config.itemId, config.rarityColor]);
@@ -615,7 +647,22 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
 
       <div className="grid grid-cols-2 gap-[2px] border-2 border-line bg-line">
         <div className="bg-info/5 px-2.5 py-2 sm:px-3">
-          <span className="label">Market</span>
+          <div
+            className="flex items-center gap-1"
+            title={
+              marketMove
+                ? `Last frame moved ${marketMove.dir === "up" ? "up" : "down"} ${fixedPrice(Math.abs(marketMove.delta))} RLT.`
+                : "Waiting for this item's next market frame."
+            }
+          >
+            <span className="label">Market</span>
+            {marketMove ? (
+              <span key={marketMove.tick} className="price-tick" data-dir={marketMove.dir}>
+                <Icon name={marketMove.dir === "up" ? "i-caret-up" : "i-caret-down"} className="h-2.5 w-2.5" />
+                <span className="sr-only">{`Price ${marketMove.dir} ${fixedPrice(Math.abs(marketMove.delta))} since the previous frame.`}</span>
+              </span>
+            ) : null}
+          </div>
           <div className="mt-0.5 flex items-baseline gap-1">
             <strong className={`font-mono text-[18px] font-bold leading-none tabular-nums min-[360px]:text-[20px] ${hot ? "text-gold" : "text-info"}`}>
               {Number.isFinite(runtime.lastPrice) ? fixedPrice(runtime.lastPrice) : "—"}
@@ -645,18 +692,31 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
             <span className="label">Target</span>
             {autoEnabled ? (
               <span
-                className={
+                key={adjusted ? `adjusted-${targetPulse}` : "auto"}
+                className={`border-2 px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.08em] max-[359px]:px-0.5 max-[359px]:tracking-normal ${
                   autoActive
-                    ? "border-2 border-[#05030f] bg-gold px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.08em] text-[#2a1600]"
-                    : "border-2 border-gold/60 px-1 py-0.5 font-mono text-[10px] font-bold uppercase tracking-[0.08em] text-gold"
-                }
+                    ? "border-[#05030f] bg-gold text-[#2a1600]"
+                    : "border-gold/60 text-gold"
+                }${adjusted ? " auto-badge-pop" : ""}`}
               >
-                AUTO
+                {adjusted ? (
+                  <>
+                    <span className="min-[360px]:hidden">ADJ</span>
+                    <span className="hidden min-[360px]:inline">ADJUSTED</span>
+                  </>
+                ) : (
+                  "AUTO"
+                )}
               </span>
             ) : null}
           </div>
           <div className="mt-0.5 flex items-baseline gap-1">
-            <strong className="font-mono text-[18px] font-bold leading-none tabular-nums text-gold min-[360px]:text-[20px]">
+            <strong
+              key={targetPulse}
+              className={`target-price font-mono text-[18px] font-bold leading-none tabular-nums text-gold min-[360px]:text-[20px]${
+                autoEnabled && targetPulse ? " is-adjusted" : ""
+              }`}
+            >
               {fixedPrice(targetPrice)}
             </strong>
             <span className="font-mono text-[12px] text-faint">RLT</span>
