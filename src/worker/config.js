@@ -40,7 +40,7 @@ export function loadConfig({ cwd = process.cwd(), env = process.env } = {}) {
 
   const apiBase = (env.RC_API_BASE || "https://rollercoin.com").replace(/\/+$/, "");
   const keepAliveUrlInput = (env.RC_KEEPALIVE_URL || "").trim();
-  let keepAliveUrl = `${apiBase}/api/events/config`;
+  let keepAliveUrl = `${apiBase}/api/marketplace/purchase-item`;
   if (keepAliveUrlInput) {
     try {
       keepAliveUrl = new URL(keepAliveUrlInput, `${apiBase}/`).toString();
