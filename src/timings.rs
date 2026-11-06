@@ -98,6 +98,14 @@ pub struct Timings {
     pub dns_family: Option<u8>,
     #[serde(rename = "dnsError", skip_serializing_if = "Option::is_none", default)]
     pub dns_error: Option<String>,
+    /// `new` (fresh connection), `reused` (pooled keep-alive socket) or
+    /// `unknown` (IP upstream / not observed).
+    #[serde(
+        rename = "socketMode",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub socket_mode: Option<String>,
 }
 
 fn number(raw: &Value, key: &str) -> Option<f64> {
@@ -173,6 +181,8 @@ pub fn sanitize(raw: &Value) -> Option<Timings> {
         _ => None,
     });
     out.dns_error = trimmed(raw, "dnsError", 120);
+    out.socket_mode = trimmed(raw, "socketMode", 16)
+        .filter(|mode| matches!(mode.as_str(), "new" | "reused" | "unknown"));
 
     if out.has_time() { Some(out) } else { None }
 }
@@ -240,5 +250,14 @@ mod tests {
         let timings = sanitize(&json!({ "signalAt": 5, "attempts": 99, "dnsFamily": 7 })).unwrap();
         assert_eq!(timings.attempts, Some(10));
         assert_eq!(timings.dns_family, None);
+    }
+
+    #[test]
+    fn keeps_only_known_socket_modes() {
+        let reused = sanitize(&json!({ "signalAt": 5, "socketMode": "reused" })).unwrap();
+        assert_eq!(reused.socket_mode.as_deref(), Some("reused"));
+
+        let junk = sanitize(&json!({ "signalAt": 5, "socketMode": "sideways" })).unwrap();
+        assert_eq!(junk.socket_mode, None);
     }
 }

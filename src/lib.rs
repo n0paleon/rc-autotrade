@@ -15,6 +15,7 @@ pub mod constants;
 pub mod db;
 pub mod db_metrics;
 pub mod depth;
+pub mod dns_probe;
 pub mod engine;
 pub mod events;
 pub mod feed;

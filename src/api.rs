@@ -47,6 +47,11 @@ pub struct PurchaseResult {
     pub body: Option<Value>,
     pub error: Option<String>,
     pub unauthorized: bool,
+    /// Whether the HTTP call opened a fresh connection or reused a pooled one.
+    pub socket: crate::dns_probe::SocketMode,
+    /// The resolver work this call actually paid for. `None` when the request
+    /// reused a socket, the upstream is an IP literal, or no lookup completed.
+    pub dns: Option<crate::dns_probe::DnsLookup>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -73,6 +78,9 @@ pub struct ApiClient {
     timeout: Duration,
     last_request_at: std::sync::Arc<AtomicI64>,
     latency: Option<std::sync::Arc<std::sync::Mutex<crate::latency::LatencyTracker>>>,
+    /// Every resolver call the shared client makes, used to tell a fresh
+    /// connection from a reused keep-alive socket and to keep its real lookup.
+    dns: std::sync::Arc<crate::dns_probe::DnsRecorder>,
 }
 
 fn now_ms() -> i64 {
@@ -135,6 +143,7 @@ fn message_from(body: Option<&Value>, text: &str, fallback: &str) -> String {
 
 impl ApiClient {
     pub fn new(base_url: &str, timeout_ms: u64) -> Self {
+        let dns = std::sync::Arc::new(crate::dns_probe::DnsRecorder::new());
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .timeout(Duration::from_millis(timeout_ms.max(1_000)))
@@ -143,6 +152,9 @@ impl ApiClient {
             // warm probe shares *this* client, not that the timeout is repeated.
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_nodelay(true)
+            // Measures the resolver only when hyper opens a connection, which
+            // also tells a purchase whether it reused a keep-alive socket.
+            .dns_resolver(crate::dns_probe::RecordingResolver::new(dns.clone()))
             .build()
             .expect("reqwest client");
         Self {
@@ -151,6 +163,7 @@ impl ApiClient {
             timeout: Duration::from_millis(timeout_ms.max(1_000)),
             last_request_at: std::sync::Arc::new(AtomicI64::new(0)),
             latency: None,
+            dns,
         }
     }
 
@@ -188,6 +201,12 @@ impl ApiClient {
     /// the client.
     pub fn last_request_at_handle(&self) -> std::sync::Arc<AtomicI64> {
         self.last_request_at.clone()
+    }
+
+    /// The upstream origin every call is sent to, used by the DNS telemetry to
+    /// name the host it records.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     /// The underlying `reqwest::Client`, cloned by handle. Clones share one
@@ -299,6 +318,7 @@ impl ApiClient {
             "totalPrice": request.unit_price_raw * request.qty as f64,
         });
 
+        let dns_mark = self.dns.mark();
         let (status, body, text, transport_error) = self
             .post_json(
                 "/api/marketplace/purchase-item",
@@ -308,12 +328,15 @@ impl ApiClient {
                 self.timeout,
             )
             .await;
+        let (socket, dns) = self.classify_connection(dns_mark);
 
         if let Some(error) = transport_error {
             return PurchaseResult {
                 ok: false,
                 status: 0,
                 error: Some(error),
+                socket,
+                dns,
                 ..Default::default()
             };
         }
@@ -327,6 +350,8 @@ impl ApiClient {
                 body,
                 error: Some(message),
                 unauthorized,
+                socket,
+                dns,
                 ..Default::default()
             };
         }
@@ -339,6 +364,8 @@ impl ApiClient {
                     "Upstream returned a non-JSON response (Cloudflare challenge or maintenance?)."
                         .to_string(),
                 ),
+                socket,
+                dns,
                 ..Default::default()
             };
         }
@@ -366,6 +393,8 @@ impl ApiClient {
                 status,
                 body: Some(body),
                 error: Some(error),
+                socket,
+                dns,
                 ..Default::default()
             };
         }
@@ -377,6 +406,30 @@ impl ApiClient {
             body: Some(body),
             error: None,
             unauthorized: false,
+            socket,
+            dns,
+        }
+    }
+
+    /// Classifies the connection the purchase just used and keeps the resolver
+    /// sample when one exists. hyper connects to IP literals without consulting
+    /// the resolver, so there is no signal either way for those; a name that
+    /// did not touch the resolver came from the client's keep-alive pool.
+    fn classify_connection(
+        &self,
+        mark: u64,
+    ) -> (
+        crate::dns_probe::SocketMode,
+        Option<crate::dns_probe::DnsLookup>,
+    ) {
+        let (looked_up, sample) = self.dns.since(mark);
+        match crate::dns_probe::host_of(&self.base_url) {
+            Some(host) if crate::dns_probe::is_ip(&host) => {
+                (crate::dns_probe::SocketMode::Unknown, None)
+            }
+            Some(_) if looked_up => (crate::dns_probe::SocketMode::New, sample),
+            Some(_) => (crate::dns_probe::SocketMode::Reused, None),
+            None => (crate::dns_probe::SocketMode::Unknown, None),
         }
     }
 

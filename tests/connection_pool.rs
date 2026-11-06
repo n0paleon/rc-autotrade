@@ -15,6 +15,7 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 
 use rollercoin_worker::api::{ApiClient, Credentials, PurchaseRequest};
+use rollercoin_worker::dns_probe::SocketMode;
 use rollercoin_worker::keepalive::{KeepaliveConfig, KeepaliveService};
 use rollercoin_worker::latency::LatencyTracker;
 use rollercoin_worker::logger::Logger;
@@ -91,5 +92,49 @@ async fn the_warm_probe_and_purchases_share_one_connection() {
         connections, 1,
         "the probe and the purchase used {connections} TCP connections; \
          KeepaliveConfig must receive ApiClient::http_client()"
+    );
+}
+
+/// A DNS name (not an IP literal) is required: hyper skips the resolver for IP
+/// hosts, so keep-alive detection has no signal there. `localhost` is the one
+/// name every machine resolves without external DNS.
+#[tokio::test]
+async fn purchases_report_a_new_then_a_reused_socket() {
+    let (base, _seen) = spawn_server().await;
+    let port = base.rsplit(':').next().expect("port");
+    let api = ApiClient::with_default_timeout(&format!("http://localhost:{port}"));
+    let request = PurchaseRequest {
+        item_id: "6319f7baa8ce530569ed16b9".into(),
+        item_type: "miner".into(),
+        qty: 1,
+        unit_price_raw: 1.0,
+    };
+
+    let first = api.purchase(&Credentials::default(), &request).await;
+    assert!(first.ok, "first purchase should succeed: {first:?}");
+    assert_eq!(
+        first.socket,
+        SocketMode::New,
+        "the first purchase must resolve the host and open a connection"
+    );
+    let lookup = first
+        .dns
+        .as_ref()
+        .expect("the first purchase must keep its lookup");
+    assert!(lookup.ms >= 0.0);
+    assert_eq!(lookup.error, None);
+    assert!(lookup.address.is_some());
+    assert!(matches!(lookup.family, Some(4) | Some(6)));
+
+    let second = api.purchase(&Credentials::default(), &request).await;
+    assert!(second.ok, "second purchase should succeed: {second:?}");
+    assert_eq!(
+        second.socket,
+        SocketMode::Reused,
+        "the second purchase must reuse the pooled keep-alive socket"
+    );
+    assert!(
+        second.dns.is_none(),
+        "a reused socket performs no DNS lookup"
     );
 }

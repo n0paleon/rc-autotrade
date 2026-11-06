@@ -229,6 +229,30 @@ async fn feed_to_fill_round_trip() {
         assert_eq!(entry.status, "filled");
         assert!(entry.timings.is_some());
         assert!(entry.raw_events.is_some());
+
+        // The resolver probe runs on every real purchase. This upstream is
+        // `127.0.0.1`, so the row must say the lookup was skipped instead of
+        // carrying a bogus latency sample.
+        let timings = entry.timings.as_ref().expect("timings");
+        assert_eq!(timings.dns_host.as_deref(), Some("127.0.0.1"));
+        assert_eq!(timings.dns_mode.as_deref(), Some("skipped"));
+        assert!(timings.dns_ms.is_none());
+        // hyper bypasses the resolver for IP literals, so socket reuse is not
+        // observable for this upstream.
+        assert_eq!(timings.socket_mode.as_deref(), Some("unknown"));
+
+        // Same row after the SQLite round-trip the deck reads through
+        // `/api/history`; the DNS fields must survive encode/decode.
+        let page = store
+            .history_page(rollercoin_worker::store::HistoryQuery {
+                limit: Some(1),
+                ..Default::default()
+            })
+            .expect("history page");
+        let stored = page.entries.first().expect("stored row");
+        let stored_timings = stored.timings.as_ref().expect("stored timings");
+        assert_eq!(stored_timings.dns_mode.as_deref(), Some("skipped"));
+        assert_eq!(stored_timings.socket_mode.as_deref(), Some("unknown"));
     }
 
     // The latency tracker must have seen both the purchase and the handshake.

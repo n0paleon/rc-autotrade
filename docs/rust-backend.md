@@ -250,6 +250,20 @@ Bun worker.
 - Failed no-item orders keep the attempted `qty`/`unitPrice`/`targetPrice` and
   the full dispatch→result `latencyMs` in the loot row, matching the Bun
   `failureMeta = pendingMeta` path (covered by an engine test).
+- The loot latency debugger gets DNS facts from a recording resolver on the
+  shared `reqwest` client. hyper only resolves a name when it opens a
+  connection, so a purchase that never touched the resolver reused a pooled
+  keep-alive socket (`socketMode = "reused"`, `dnsMode = "reused"`, no DNS
+  cost), while one that did keeps the real lookup latency, address and family
+  (`socketMode = "new"`, `dnsMode = "lookup"`). IP-literal upstreams bypass the
+  resolver entirely (`skipped` / `unknown`). The lookup completes before the
+  HTTP response, so there is no separate probe task or late row patch. The
+  signal is per shared client, so a lookup from concurrent traffic (label
+  enrichment or the warm probe) during the same window can mark a reused
+  purchase as `new`; orders are normally serialized per target, so this is an
+  edge case. `tests/connection_pool.rs` covers the new→reused sequence against
+  `localhost`; `tests/wiring.rs` covers the skipped/unknown branch against
+  `127.0.0.1`.
 - React deck opened in a real browser against the Rust worker: login with the
   access key, target list rendered, `PAUSED` state from the DB, no console
   errors. Screenshot: `.qa/rust-ui.png` (local, gitignored).
