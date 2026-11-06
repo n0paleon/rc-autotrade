@@ -3,6 +3,7 @@ import PriceChart from "./components/PriceChart.jsx";
 import TrendPanel, { TrendChip } from "./components/TrendPanel.jsx";
 import { Icon, ModalShell } from "./components/ModalShell.jsx";
 import { BackupModal } from "./components/BackupModal.jsx";
+import { LootDetailModal } from "./components/LootDetailModal.jsx";
 import {
   BridgeModal,
   ConfirmModal,
@@ -1135,6 +1136,7 @@ function LootLog({ history, historyTotal, onReset, request }) {
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [detail, setDetail] = useState(null);
   const idsRef = useRef(new Set());
 
   // Typing updates the box immediately; the server query is debounced so a
@@ -1183,13 +1185,20 @@ function LootLog({ history, historyTotal, onReset, request }) {
   // Live socket entries are prepended so the newest loot stays on screen even
   // while older pages are loaded below it.
   useEffect(() => {
-    if (query) return;
     const list = Array.isArray(history) ? history : [];
     if (list.length === 0) return;
-    const fresh = list.filter((entry) => entry && !idsRef.current.has(entry.id));
-    if (fresh.length === 0) return;
+    const fresh = query
+      ? []
+      : list.filter((entry) => entry && !idsRef.current.has(entry.id));
     for (const entry of fresh) idsRef.current.add(entry.id);
-    setEntries((previous) => [...fresh, ...previous].slice(0, LOOT_MAX_ROWS));
+    const latestById = new Map(list.filter(Boolean).map((entry) => [entry.id, entry]));
+    setEntries((previous) => {
+      const updated = previous.map((entry) => {
+        const latest = latestById.get(entry.id);
+        return latest ? { ...entry, ...latest } : entry;
+      });
+      return [...fresh, ...updated].slice(0, LOOT_MAX_ROWS);
+    });
   }, [history, query]);
 
   // Server-side search over the whole permanent log (product name / item id).
@@ -1272,8 +1281,12 @@ function LootLog({ history, historyTotal, onReset, request }) {
     : query
       ? `Nothing in the permanent log matches “${query}”.`
       : "Confirmed fills will drop here with profit and latency.";
+  const latestDetail = detail
+    ? entries.find((entry) => entry.id === detail.id) || detail
+    : null;
 
   return (
+    <>
     <section className="panel flex h-[380px] min-w-0 flex-col max-xl:order-1 xl:col-start-1 xl:row-start-1" data-accent="gold">
       <div className="panel-head shrink-0 flex-wrap gap-y-2">
         <h2 className="panel-title">
@@ -1318,10 +1331,20 @@ function LootLog({ history, historyTotal, onReset, request }) {
           <ul className="min-h-0 flex-1 divide-y divide-line/40 overflow-y-auto overscroll-contain md:hidden">
             {entries.map((entry) => (
               <li
-                className={`flex items-start justify-between gap-3 px-4 py-2.5${isRecent(entry.at, 6000) ? " loot-entry" : ""}`}
+                className={`flex cursor-pointer items-start justify-between gap-3 px-4 py-2.5 transition-colors hover:bg-night-850/60${isRecent(entry.at, 6000) ? " loot-entry" : ""}`}
                 key={entry.id || `${entry.orderId}-${entry.at}`}
                 data-status={entry.status}
-                title={entry.note || (entry.orderId ? `order ${entry.orderId}` : undefined)}
+                title={`${entry.note || (entry.orderId ? `order ${entry.orderId}` : "loot entry")} · click for latency details`}
+                role="button"
+                tabIndex={0}
+                aria-label={`Open latency details for ${entry.label || shortId(entry.itemId)}`}
+                onClick={() => setDetail(entry)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setDetail(entry);
+                  }
+                }}
               >
                 <div className="min-w-0">
                   <p className="truncate text-[13px] text-ink-dim">{entry.label || shortId(entry.itemId)}</p>
@@ -1363,10 +1386,19 @@ function LootLog({ history, historyTotal, onReset, request }) {
               <tbody className="divide-y divide-line/40">
                 {entries.map((entry) => (
                   <tr
-                    className={`transition-colors hover:bg-night-850/60${isRecent(entry.at, 6000) ? " loot-entry" : ""}`}
+                    className={`cursor-pointer transition-colors hover:bg-night-850/60${isRecent(entry.at, 6000) ? " loot-entry" : ""}`}
                     key={entry.id || `${entry.orderId}-${entry.at}`}
                     data-status={entry.status}
-                    title={entry.note || (entry.orderId ? `order ${entry.orderId}` : undefined)}
+                    title={`${entry.note || (entry.orderId ? `order ${entry.orderId}` : "loot entry")} · click for latency details`}
+                    tabIndex={0}
+                    aria-label={`Open latency details for ${entry.label || shortId(entry.itemId)}`}
+                    onClick={() => setDetail(entry)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setDetail(entry);
+                      }
+                    }}
                   >
                     <td className="whitespace-nowrap px-4 py-2 text-faint">{formatTime(entry.at)}</td>
                     <td className="max-w-[180px] truncate px-3 py-2 text-ink-dim">{entry.label || shortId(entry.itemId)}</td>
@@ -1424,6 +1456,10 @@ function LootLog({ history, historyTotal, onReset, request }) {
         </div>
       </div>
     </section>
+    {latestDetail ? (
+      <LootDetailModal entry={latestDetail} onClose={() => setDetail(null)} />
+    ) : null}
+    </>
   );
 }
 

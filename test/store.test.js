@@ -57,6 +57,7 @@ test("store persists session, targets and history in SQLite", () => {
       allowPartialOrder: true,
       active: true
     });
+    const at = Date.now();
     store.addHistory({
       id: "order-1",
       orderId: "order-1",
@@ -68,8 +69,18 @@ test("store persists session, targets and history in SQLite", () => {
       targetPrice: 0.1,
       profitRlt: 0.1,
       status: "filled",
-      at: Date.now(),
+      at,
       latencyMs: 400,
+      timings: {
+        signalAt: at - 400,
+        handleAt: at - 399,
+        sendAt: at - 398,
+        responseAt: at - 300,
+        completeAt: at - 280,
+        acceptedAt: at - 279,
+        fillAt: at,
+        dnsMs: 8.25
+      },
       note: null
     });
     store.flush();
@@ -84,6 +95,7 @@ test("store persists session, targets and history in SQLite", () => {
     assert.equal(targets[0].label, "NEON SHARD");
     assert.equal(order.profit_rlt, 0.1);
     assert.equal(order.message, "-");
+    assert.equal(JSON.parse(order.timings).dnsMs, 8.25, "latency marks persist as JSON");
     assert.equal(session.access_token, "access-token-123456");
 
     if (process.platform !== "win32") {
@@ -98,6 +110,8 @@ test("store persists session, targets and history in SQLite", () => {
     assert.equal(reloaded.state.history.length, 1);
     assert.equal(reloaded.state.history[0].profitRlt, 0.1);
     assert.equal(reloaded.state.history[0].message, "-");
+    assert.equal(reloaded.state.history[0].timings.dnsMs, 8.25);
+    assert.equal(reloaded.historyPage({ limit: 1 }).entries[0].timings.dnsMs, 8.25);
     assert.equal(reloaded.state.stats.filled, 0);
     reloaded.close();
   } finally {

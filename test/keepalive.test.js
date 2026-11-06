@@ -111,13 +111,20 @@ test("RollercoinApi sends every upstream call through the injected fetch", async
     }
   });
 
+  const timing = {};
   const purchase = await api.purchase({
     itemId: "item-1",
     qty: 2,
-    unitPriceRaw: 10
+    unitPriceRaw: 10,
+    timing
   });
   assert.equal(purchase.ok, true);
   assert.equal(purchase.orderId, "order-1");
+  assert.equal(purchase.timing, timing);
+  assert.ok(timing.sendAt > 0, "purchase records the dispatch moment");
+  assert.ok(timing.responseAt >= timing.sendAt, "response follows the send");
+  assert.ok(timing.completeAt >= timing.responseAt, "body completes after headers");
+  assert.equal(timing.attempts, 1);
 
   const info = await api.fetchItemInfo({ itemId: "item-1" });
   assert.equal(info.ok, true);

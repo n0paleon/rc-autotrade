@@ -1,5 +1,77 @@
 import { httpFetch, USER_AGENT } from "./http.js";
 
+const DNS_PROBE_TIMEOUT_MS = 3_000;
+const startedDnsProbes = new WeakSet();
+
+function monotonicMs() {
+  return typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+}
+
+/**
+ * Measures a non-blocking resolver probe while a purchase is in flight.
+ * Bun fetch does not expose per-request resource timing, so this deliberately
+ * reports resolver-probe time rather than guessing whether fetch used DNS,
+ * cache, or an existing socket from process-wide counters.
+ */
+function startDnsProbe(url, timing) {
+  if (!timing || startedDnsProbes.has(timing)) return;
+  startedDnsProbes.add(timing);
+  let host;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return;
+  }
+  if (!host) return;
+  timing.dnsHost = host;
+  timing.dnsMode = "pending";
+  if (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host.startsWith("[") ||
+    host.includes(":") ||
+    /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)
+  ) {
+    timing.dnsMode = "skipped";
+    timing.onDnsComplete?.();
+    return;
+  }
+
+  const started = monotonicMs();
+  let settled = false;
+  let timer = null;
+  const finish = (record, error) => {
+    if (settled) return;
+    settled = true;
+    if (timer) clearTimeout(timer);
+    if (record?.address) {
+      timing.dnsMs = Math.round((monotonicMs() - started) * 100) / 100;
+      timing.dnsAddress = String(record.address);
+      if (Number.isFinite(Number(record.family))) timing.dnsFamily = Number(record.family);
+    } else {
+      timing.dnsError = String(error?.message || error || "lookup failed").slice(0, 120);
+    }
+    timing.dnsMode = "probe";
+    timing.onDnsComplete?.();
+  };
+  timer = setTimeout(() => finish(null, new Error("lookup timed out")), DNS_PROBE_TIMEOUT_MS);
+  timer.unref?.();
+  try {
+    const lookup = globalThis.Bun?.dns?.lookup?.(host);
+    if (!lookup?.then) {
+      finish(null, new Error("Bun.dns.lookup unavailable"));
+      return;
+    }
+    lookup
+      .then((records) => finish(Array.isArray(records) ? records[0] : records))
+      .catch((error) => finish(null, error));
+  } catch (error) {
+    finish(null, error);
+  }
+}
+
 function trimBody(text) {
   const clean = String(text ?? "").replace(/\s+/g, " ").trim();
   return clean.length > 240 ? `${clean.slice(0, 240)}…` : clean;
@@ -72,24 +144,37 @@ export class RollercoinApi {
     return headers;
   }
 
-  async #request(path, { method = "POST", body, retryOn401 = true } = {}) {
+  async #request(path, { method = "POST", body, retryOn401 = true, timing = null } = {}) {
     const url = `${this.baseUrl}${path}`;
     this.#touch();
+    if (timing) {
+      // Keep the first attempt's dispatch time: a 401 retry must not make the
+      // "signal → purchase sent" measurement start over.
+      timing.sendAt ??= Date.now();
+      timing.attempts = Math.min(10, (Number(timing.attempts) || 0) + 1);
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await this.#fetch(url, {
+      const responsePromise = this.#fetch(url, {
         method,
         headers: this.#headers(),
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,
         redirect: "follow"
       });
+      if (timing) startDnsProbe(url, timing);
+      const response = await responsePromise;
+      if (timing) {
+        timing.responseAt = Date.now();
+      }
       const { body: parsed, text } = await readJsonResponse(response);
+      if (timing) timing.completeAt = Date.now();
 
       if (response.status === 401 && retryOn401) {
+        if (timing) timing.unauthorized = true;
         const refreshed = await this.session.refresh("http-401", { force: true });
-        if (refreshed) return this.#request(path, { method, body, retryOn401: false });
+        if (refreshed) return this.#request(path, { method, body, retryOn401: false, timing });
         return {
           ok: false,
           status: 401,
@@ -127,7 +212,7 @@ export class RollercoinApi {
     }
   }
 
-  async purchase({ itemId, itemType = "mutation_component", qty, unitPriceRaw }) {
+  async purchase({ itemId, itemType = "mutation_component", qty, unitPriceRaw, timing = null }) {
     const payload = {
       challenge: "",
       action: "marketplace",
@@ -138,8 +223,8 @@ export class RollercoinApi {
       totalPrice: unitPriceRaw * qty
     };
 
-    const result = await this.#request("/api/marketplace/purchase-item", { body: payload });
-    if (!result.ok) return result;
+    const result = await this.#request("/api/marketplace/purchase-item", { body: payload, timing });
+    if (!result.ok) return { ...result, timing };
 
     const orderId =
       result.body?.data?.usersPurchaseOrder ??
@@ -151,11 +236,12 @@ export class RollercoinApi {
       return {
         ...result,
         ok: false,
+        timing,
         error: result.body?.message || result.body?.error || "Purchase was not accepted by Rollercoin."
       };
     }
 
-    return { ...result, ok: true, orderId: String(orderId) };
+    return { ...result, ok: true, orderId: String(orderId), timing };
   }
 
   async fetchItemInfo({ itemId, itemType = "mutation_component", currency = "RLT", retryOn401 = true }) {

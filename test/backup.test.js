@@ -62,6 +62,16 @@ function addOrder(store, id, { itemId = TARGET_A, label = "NEON SHARD", status =
     status,
     at: Date.now(),
     latencyMs: status === "filled" ? 400 : null,
+    timings: {
+      signalAt: Date.now() - 400,
+      handleAt: Date.now() - 399,
+      sendAt: Date.now() - 398,
+      responseAt: Date.now() - 300,
+      completeAt: Date.now() - 280,
+      acceptedAt: status === "filled" ? Date.now() - 279 : undefined,
+      fillAt: status === "filled" ? Date.now() : undefined,
+      dnsMs: 4.5
+    },
     note: status === "failed" ? "no items obtained" : null
   });
 }
@@ -90,6 +100,7 @@ test("buildBackup exports portable rows and counts, credentials optional", () =>
     assert.equal(backup.data.orders.length, 2);
     assert.equal(backup.data.orders[0].message, "-");
     assert.equal(backup.data.orders[1].message, "no items obtained");
+    assert.equal(backup.data.orders[0].timings.dnsMs, 4.5, "latency marks travel with the loot log");
     assert.equal(backup.data.reportProducts[0].fills, 1);
     assert.equal(backup.data.reportProducts[0].failed, 1);
     assert.equal(backup.data.stats.filled, 1);

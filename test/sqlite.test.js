@@ -172,6 +172,41 @@ test("openDatabase bootstraps the schema and readonly handles reject writes", ()
   }
 });
 
+test("openDatabase adds the loot timing column to a v5 orders table", () => {
+  const dir = tempDir();
+  try {
+    const legacy = openSqlite(join(dir, "rollercoin.db"));
+    legacy.exec(`
+      CREATE TABLE orders (
+        id           TEXT PRIMARY KEY,
+        order_id     TEXT,
+        item_id      TEXT NOT NULL DEFAULT '',
+        label        TEXT NOT NULL DEFAULT '',
+        qty          INTEGER NOT NULL DEFAULT 0,
+        unit_price   REAL NOT NULL DEFAULT 0,
+        total_price  REAL NOT NULL DEFAULT 0,
+        target_price REAL NOT NULL DEFAULT 0,
+        profit_rlt   REAL NOT NULL DEFAULT 0,
+        status       TEXT NOT NULL,
+        at           INTEGER NOT NULL,
+        latency_ms   INTEGER,
+        note         TEXT,
+        message      TEXT
+      )
+    `);
+    legacy.pragma("user_version = 5");
+    legacy.close();
+
+    const db = openDatabase({ dataDir: dir, logger: null });
+    const columns = db.pragma("table_info(orders)").map((column) => column.name);
+    assert.ok(columns.includes("timings"), "the latency debugger gets its column");
+    assert.equal(db.pragma("user_version", { simple: true }), SCHEMA_VERSION);
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("openDatabase upgrades a v1 targets table without losing rows", () => {
   const dir = tempDir();
   try {

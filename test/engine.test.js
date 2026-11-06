@@ -172,4 +172,26 @@ test("a filled purchase reduces the book stock immediately", async () => {
 
   const filledEntry = harness.store.state.history.find((entry) => entry.status === "filled");
   assert.equal(filledEntry.message, "-", "filled loot rows show a dash");
+  assert.ok(filledEntry.timings, "filled loot rows carry latency marks");
+  assert.equal(filledEntry.timings.signalAt, 1_006_000);
+  assert.equal(filledEntry.timings.fillAt, 1_006_000);
+  assert.ok(filledEntry.timings.sendAt >= filledEntry.timings.signalAt);
+  assert.ok(filledEntry.timings.responseAt >= filledEntry.timings.sendAt);
+  assert.ok(filledEntry.timings.completeAt >= filledEntry.timings.responseAt);
+  assert.ok(filledEntry.timings.acceptedAt >= filledEntry.timings.completeAt);
+  assert.ok(filledEntry.timings.fillAt >= filledEntry.timings.acceptedAt);
+});
+
+test("a rejected purchase records the response boundary for the debugger", async () => {
+  const harness = createHarness();
+  harness.engine.handleFrame(harness.marketFrame());
+  await tick();
+
+  const rejected = harness.store.state.history.find((entry) => entry.status === "failed");
+  assert.ok(rejected.timings, "failed loot rows carry latency marks too");
+  assert.ok(rejected.timings.sendAt >= rejected.timings.signalAt);
+  assert.ok(rejected.timings.responseAt >= rejected.timings.sendAt);
+  assert.ok(rejected.timings.failedAt >= rejected.timings.completeAt);
+  assert.equal(rejected.timings.acceptedAt, undefined);
+  assert.equal(rejected.timings.fillAt, undefined);
 });
