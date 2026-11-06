@@ -12,6 +12,7 @@ import { buildTrend, TREND } from "../shared/trend.js";
 import { estimateFillPrice } from "../shared/depth.js";
 
 const PENDING_TIMEOUT_MS = 120_000;
+const MAX_UNMATCHED_RESULTS = 128;
 const SCAN_LOG_INTERVAL_MS = 12_000;
 /** Frames can arrive several times per second; the trend only needs a refresh now and then. */
 const TREND_REFRESH_MS = 10_000;
@@ -50,6 +51,7 @@ export class Engine {
 
     this.runtime = new Map();
     this.pending = new Map();
+    this.unmatchedResults = new Map();
     this.lastOrderAt = 0;
     this.orderStamps = [];
     this.cleanupTimer = null;
@@ -674,6 +676,14 @@ export class Engine {
       runtime.lastResult = { status: "accepted", at: this.clock(), orderId, qty: meta.qty };
       this.logger.info("order", `ACCEPTED ${meta.label} ×${meta.qty} (order ${orderId})`);
       this.broadcast("order", { phase: "accepted", ...meta, orderId });
+
+      // The upstream result can beat the purchase HTTP response. Hold unmatched
+      // frames briefly, then replay one once its order id is registered.
+      const earlyResult = this.unmatchedResults.get(orderId);
+      if (earlyResult) {
+        this.unmatchedResults.delete(orderId);
+        this.#handleFill(earlyResult.event, earlyResult.receivedAt);
+      }
     } finally {
       runtime.inflight = false;
     }
@@ -699,9 +709,17 @@ export class Engine {
     if (!fill) return;
 
     const pendingMeta = fill.orderId ? this.pending.get(fill.orderId) : null;
+    if (!pendingMeta) {
+      if (fill.orderId) {
+        this.#bufferUnmatchedResult(fill.orderId, event, receivedAt);
+      } else {
+        this.logger.debug("fill", "ignoring result without an order id");
+      }
+      return;
+    }
+
     const itemId = pendingMeta?.itemId || event.itemId || null;
     const config = this.#configFor(itemId);
-    if (!pendingMeta && !config) return;
 
     const now = this.clock();
     const fillAt = Number.isFinite(receivedAt) ? receivedAt : now;
@@ -882,6 +900,41 @@ export class Engine {
       if (now - meta.at > PENDING_TIMEOUT_MS) {
         this.pending.delete(orderId);
         this.logger.warn("order", `no confirmation for ${orderId} after 120s; releasing it`);
+      }
+    }
+    this.#pruneUnmatchedResults(now);
+  }
+
+  #bufferUnmatchedResult(orderId, event, receivedAt) {
+    const now = this.clock();
+    this.#pruneUnmatchedResults(now);
+
+    const rawPayload =
+      sanitizeRawEvents({ resultEvent: event.rawPayload ?? null })?.resultEvent ?? null;
+    const bufferedEvent = { ...event, rawPayload };
+
+    // Refresh insertion order for duplicate frames and keep this diagnostic
+    // buffer bounded if the socket sends unrelated results in a burst.
+    this.unmatchedResults.delete(orderId);
+    while (this.unmatchedResults.size >= MAX_UNMATCHED_RESULTS) {
+      const oldestOrderId = this.unmatchedResults.keys().next().value;
+      if (oldestOrderId === undefined) break;
+      this.unmatchedResults.delete(oldestOrderId);
+      this.logger.debug("fill", `discarding unmatched result ${oldestOrderId} (buffer full)`);
+    }
+    this.unmatchedResults.set(orderId, {
+      event: bufferedEvent,
+      receivedAt,
+      bufferedAt: now
+    });
+    this.logger.debug("fill", `unmatched result ${orderId}; waiting briefly for purchase response`);
+  }
+
+  #pruneUnmatchedResults(now) {
+    for (const [orderId, result] of this.unmatchedResults.entries()) {
+      if (now - result.bufferedAt > PENDING_TIMEOUT_MS) {
+        this.unmatchedResults.delete(orderId);
+        this.logger.debug("fill", `discarding unmatched result ${orderId} after 120s`);
       }
     }
   }
