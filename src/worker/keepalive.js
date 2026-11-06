@@ -13,10 +13,10 @@ function jittered(ms, random, ratio) {
 /**
  * Keeps the Rollercoin edge connection warm while the sniper is armed.
  *
- * The probe is a real, public GET (not a fabricated payload) and uses the same
- * Bun-native fetch pool as purchases. It is skipped whenever a real API request
- * happened recently, backs off on failure, and pauses itself on 403/429 so it
- * can never turn into a request loop against Cloudflare.
+ * The probe sends an empty POST to the purchase endpoint and uses the same
+ * Bun-native fetch pool as purchases. Any HTTP response confirms the request
+ * reached upstream; it is skipped whenever real traffic happened recently,
+ * backs off on transport failures, and pauses on 429 responses.
  */
 export class KeepaliveService extends EventEmitter {
   constructor({
@@ -170,12 +170,12 @@ export class KeepaliveService extends EventEmitter {
     const result = await this.probeOnce();
     if (this.stopped) return;
 
-    if (result.ok) {
-      this.#schedule(this.intervalMs);
-      return;
-    }
     if (result.suspendedUntil) {
       this.#schedule(Math.max(1_000, result.suspendedUntil - this.now()), { jitter: false });
+      return;
+    }
+    if (result.ok) {
+      this.#schedule(this.intervalMs);
       return;
     }
 
@@ -201,44 +201,55 @@ export class KeepaliveService extends EventEmitter {
     timer.unref?.();
 
     try {
+      const headers = {
+        accept: "application/json",
+        "content-type": "application/json",
+        ...(origin ? { origin, referer: `${origin}/marketplace` } : {}),
+        "user-agent": USER_AGENT,
+        "accept-language": "en-US,en;q=0.9"
+      };
+      const token = this.api?.session?.getAccessToken?.();
+      if (token) headers.authorization = `Bearer ${token}`;
+      const cookie = this.api?.session?.getCookie?.();
+      if (cookie) headers.cookie = cookie;
+
       const response = await this.#fetch(this.url, {
-        method: "GET",
-        headers: {
-          accept: "application/json",
-          ...(origin ? { origin, referer: `${origin}/marketplace` } : {}),
-          "user-agent": USER_AGENT,
-          "accept-language": "en-US,en;q=0.9"
-        },
+        method: "POST",
+        headers,
+        // Empty purchase data can only be rejected by validation; it cannot
+        // place an order, while still exercising the same authenticated route.
+        body: "{}",
         signal: controller.signal,
         redirect: "follow"
       });
       this.lastStatus = response.status;
 
-      if (response.ok) {
-        // Drain the body so Bun can reuse the connection from its pool.
+      // A response of any HTTP status means the request reached upstream. Drain
+      // its body so Bun can reuse the connection from its pool when possible.
+      try {
         await response.arrayBuffer();
-        const rttMs = Math.max(0, this.now() - startedAt);
-        this.lastSuccessAt = this.now();
-        this.lastRttMs = rttMs;
-        this.consecutiveFailures = 0;
-        this.lastError = null;
-        this.logger?.debug("keepalive", `warm ${response.status} in ${rttMs}ms`);
-        return { ok: true, status: response.status, rttMs };
+      } catch {
+        // The response headers already confirm dispatch; an unreadable body
+        // only means the socket may not be reusable.
       }
 
-      if (response.body && typeof response.body.cancel === "function") {
-        try {
-          await response.body.cancel();
-        } catch {
-          /* the socket will be dropped instead of reused */
-        }
+      const completedAt = this.now();
+      const rttMs = Math.max(0, completedAt - startedAt);
+      const suspendedUntil = response.status === 429 ? completedAt + this.suspendMs : null;
+      this.lastSuccessAt = completedAt;
+      this.lastRttMs = rttMs;
+      this.consecutiveFailures = 0;
+      this.lastError = null;
+      this.suspendedUntil = suspendedUntil;
+      if (suspendedUntil) {
+        this.logger?.warn(
+          "keepalive",
+          `HTTP 429; pausing probes until ${new Date(suspendedUntil).toISOString()}`
+        );
+      } else {
+        this.logger?.debug("keepalive", `warm HTTP ${response.status} in ${rttMs}ms`);
       }
-
-      const error = `HTTP ${response.status}`;
-      const suspendedUntil =
-        response.status === 403 || response.status === 429 ? this.now() + this.suspendMs : null;
-      this.#recordFailure(error, suspendedUntil);
-      return { ok: false, status: response.status, error, suspendedUntil };
+      return { ok: true, status: response.status, rttMs, suspendedUntil };
     } catch (error) {
       if (this.stopping) return { ok: false, aborted: true };
       const message =

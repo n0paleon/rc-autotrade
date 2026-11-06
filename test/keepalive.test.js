@@ -50,7 +50,7 @@ test("config keep-alive defaults survive a missing or empty env", () => {
   const missing = loadConfig({ cwd: "/nonexistent-turu-rc", env: {} });
   assert.equal(missing.apiBase, "https://rollercoin.com");
   assert.equal(missing.keepAliveMs, 30_000);
-  assert.equal(missing.keepAliveUrl, "https://rollercoin.com/api/events/config");
+  assert.equal(missing.keepAliveUrl, "https://rollercoin.com/api/marketplace/purchase-item");
 
   const empty = loadConfig({
     cwd: "/nonexistent-turu-rc",
@@ -61,7 +61,7 @@ test("config keep-alive defaults survive a missing or empty env", () => {
     }
   });
   assert.equal(empty.keepAliveMs, 30_000);
-  assert.equal(empty.keepAliveUrl, "https://rollercoin.com/api/events/config");
+  assert.equal(empty.keepAliveUrl, "https://rollercoin.com/api/marketplace/purchase-item");
 });
 
 test("config keep-alive values are clamped and RC_KEEPALIVE_MS=0 disables probing", () => {
@@ -141,10 +141,10 @@ test("RollercoinApi sends every upstream call through the injected fetch", async
   assert.ok(api.getLastRequestAt() > 0);
 });
 
-test("KeepaliveService probes with GET, drains the body, and reports warm stats", async () => {
+test("KeepaliveService probes purchase-item with an empty POST and reports warm stats", async () => {
   const calls = [];
   const service = new KeepaliveService({
-    url: "https://rollercoin.com/api/events/config",
+    url: "https://rollercoin.com/api/marketplace/purchase-item",
     intervalMs: 30_000,
     fetchImpl: async (url, init) => {
       calls.push({ url, init });
@@ -157,8 +157,10 @@ test("KeepaliveService probes with GET, drains the body, and reports warm stats"
   assert.equal(result.ok, true);
   assert.equal(result.status, 200);
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, "https://rollercoin.com/api/events/config");
-  assert.equal(calls[0].init.method, "GET");
+  assert.equal(calls[0].url, "https://rollercoin.com/api/marketplace/purchase-item");
+  assert.equal(calls[0].init.method, "POST");
+  assert.equal(calls[0].init.body, "{}");
+  assert.equal(calls[0].init.headers["content-type"], "application/json");
   assert.equal(calls[0].init.headers.origin, "https://rollercoin.com");
 
   const stats = service.stats();
@@ -168,10 +170,10 @@ test("KeepaliveService probes with GET, drains the body, and reports warm stats"
   assert.equal(stats.lastSuccessAt, 1_000);
 });
 
-test("KeepaliveService backs off on errors and suspends on 403/429", async () => {
+test("KeepaliveService accepts HTTP errors as dispatched requests and suspends on 429", async () => {
   let status = 500;
   const service = new KeepaliveService({
-    url: "https://rollercoin.com/api/events/config",
+    url: "https://rollercoin.com/api/marketplace/purchase-item",
     intervalMs: 30_000,
     suspendMs: 60_000,
     fetchImpl: async () => jsonResponse({ error: "nope" }, status),
@@ -179,15 +181,16 @@ test("KeepaliveService backs off on errors and suspends on 403/429", async () =>
   });
 
   const failed = await service.probeOnce();
-  assert.equal(failed.ok, false);
+  assert.equal(failed.ok, true);
   assert.equal(failed.status, 500);
-  assert.equal(service.stats().consecutiveFailures, 1);
-  assert.equal(service.stats().lastError, "HTTP 500");
+  assert.equal(service.stats().consecutiveFailures, 0);
+  assert.equal(service.stats().lastError, null);
   assert.equal(service.stats().suspendedUntil, null);
 
   status = 429;
   const suspended = await service.probeOnce();
-  assert.equal(suspended.ok, false);
+  assert.equal(suspended.ok, true);
+  assert.equal(suspended.status, 429);
   assert.equal(suspended.suspendedUntil, 65_000);
   assert.equal(service.stats().suspendedUntil, 65_000);
 });
@@ -195,7 +198,7 @@ test("KeepaliveService backs off on errors and suspends on 403/429", async () =>
 test("KeepaliveService skips the probe when a real request just happened", async () => {
   let probes = 0;
   const service = new KeepaliveService({
-    url: "https://rollercoin.com/api/events/config",
+    url: "https://rollercoin.com/api/marketplace/purchase-item",
     intervalMs: 30_000,
     api: { getLastRequestAt: () => Date.now() },
     fetchImpl: async () => {
@@ -215,7 +218,7 @@ test("KeepaliveService skips the probe when a real request just happened", async
 
 test("KeepaliveService aborts an inflight probe on stop without counting it as a failure", async () => {
   const service = new KeepaliveService({
-    url: "https://rollercoin.com/api/events/config",
+    url: "https://rollercoin.com/api/marketplace/purchase-item",
     intervalMs: 30_000,
     fetchImpl: (url, { signal }) =>
       new Promise((resolve, reject) => {
@@ -238,7 +241,7 @@ test("KeepaliveService aborts an inflight probe on stop without counting it as a
 test("KeepaliveService probes on its own schedule and stops cleanly", async () => {
   let probes = 0;
   const service = new KeepaliveService({
-    url: "https://rollercoin.com/api/events/config",
+    url: "https://rollercoin.com/api/marketplace/purchase-item",
     intervalMs: 10,
     fetchImpl: async () => {
       probes += 1;

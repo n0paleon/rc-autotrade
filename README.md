@@ -945,14 +945,15 @@ salin header cookie dari request browser (minimal `cf_clearance`, sering juga `_
 | `RC_WS_URL` | `wss://nws.rollercoin.com/` | URL market socket |
 | `RC_COOKIE` | — | Cookie header awal (bisa juga dari UI) |
 | `RC_KEEPALIVE_MS` | `30000` | Interval warm probe; `0` = mati (5000–600000 ms) |
-| `RC_KEEPALIVE_URL` | `${RC_API_BASE}/api/events/config` | Endpoint probe publik |
+| `RC_KEEPALIVE_URL` | `${RC_API_BASE}/api/marketplace/purchase-item` | Endpoint probe; POST body kosong |
 | `SYSTEM_SAMPLE_MS` | `2000` | Interval sampling health worker (500–60000 ms) |
 | `MOCK` | `0` | `1` = simulator, tidak ada order nyata |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 
 Bun mengelola pool koneksi keep-alive per origin secara otomatis (tidak ada agent/dispatcher yang
 perlu dikonfigurasi). Warm probe hanya dikirim bila tidak ada request nyata dalam ~90% interval,
-memakai `GET` publik (bukan payload palsu), dan otomatis berhenti 5 menit bila menerima `403`/`429`.
+memakai `POST` ke endpoint purchase-item dengan body kosong. Respons HTTP apa pun dihitung berhasil
+karena menandakan request sudah sampai; probe berhenti 5 menit bila menerima `429`.
 
 ### Latency worker → upstream
 
@@ -1488,7 +1489,7 @@ Cakupan:
 - `bridge.test.js` — transport `GM_xmlhttpRequest` + sinkronisasi token dua arah.
 - `item-info.test.js` — auto label, fallback tanpa `rarityGroup`, deteksi tipe (rack), cache, kegagalan API.
 - `engine.test.js` — order gagal tidak menambah book; fill sukses menguranginya.
-- `keepalive.test.js` — warm probe, idle timeout, dan suspend saat `403`/`429`.
+- `keepalive.test.js` — warm probe, idle timeout, dan suspend saat `429`.
 - `latency.test.js` — rolling sample per channel, percentile, dan jitter.
 - `system.test.js` — delta CPU/event loop, batas history, DB view, dan klasifikasi health worker.
 - `db-metrics.test.js` — instrumentasi statement/transaksi, window 60 detik, slow query, ukuran file.
