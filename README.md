@@ -1541,6 +1541,7 @@ bridge. Test memakai direktori sementara dan port acak; tidak butuh akun atau ja
 ├── public/                   # aset statis (bridge.js, favicon, fonts)
 ├── dist/                     # hasil build Vite yang disajikan server.rs
 ├── docs/                     # screenshot + catatan arsitektur
+├── tools/miner-finder/       # skrip console: bandingkan miner per rasio
 ├── scripts/dev.mjs           # cargo run + Vite untuk development
 ├── mise.toml                 # pin Rust 1.99.1 + CARGO_HOME lokal
 ├── vite.config.js            # root ui/, output dist/, proxy ke PORT
