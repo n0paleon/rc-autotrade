@@ -5,9 +5,12 @@
 //! place. Every call records `last_request_at`, which the warm probe uses to
 //! decide whether a keepalive is still needed.
 //!
-//! Transport is `reqwest` with **native-tls (OpenSSL)**. `examples/diagnose_ws`
-//! proves this stack completes the handshake to the Rollercoin edge, which is
-//! the risk called out in `docs/rust-parity.md` §8.
+//! Transport is `reqwest` with **rustls** and explicit **HTTP/2**. The Cargo
+//! features are pinned with `default-features = false` so the TLS backend and
+//! the `http2` flag stay visible; `examples/diagnose_ws` proves the stack
+//! reaches the Rollercoin edge and negotiates `HTTP/2.0`. rustls has a
+//! distinctive ClientHello, so the fingerprint risk in
+//! `docs/rust-rewrite-feasibility.md` §5 is accepted rather than eliminated.
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
