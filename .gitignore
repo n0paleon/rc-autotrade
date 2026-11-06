@@ -4,6 +4,8 @@ dist/
 .npm-cache/
 .npm-logs/
 .vite/
+.cargo-home/
+/target/
 
 # runtime state & secrets
 data/

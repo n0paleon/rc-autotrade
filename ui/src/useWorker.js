@@ -7,7 +7,7 @@ import {
   LOOT_LOG_PAGE_SIZE,
   LIMITS,
   MAX_REPORT_PRODUCTS
-} from "../../src/shared/constants.js";
+} from "./lib/constants.js";
 
 const URL_KEY = "turuc.url";
 const TOKEN_KEY = "turuc.key";
