@@ -14,7 +14,8 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::task::JoinHandle;
 
-use crate::api::PurchaseRequest;
+use crate::api::{PurchaseRequest, PurchaseResult};
+use crate::dns_probe::{self, SocketMode};
 use crate::engine::{EngineEvent, OrderIntent, PurchaseOutcome};
 use crate::feed::FeedHandle;
 use crate::gateway::{self, GatewayConfig, GatewayEvent};
@@ -25,6 +26,7 @@ use crate::model::Target;
 use crate::server::AppState;
 use crate::session;
 use crate::store::Store;
+use crate::timings::Timings;
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -374,7 +376,7 @@ fn credentials(state: &Arc<AppState>) -> crate::api::Credentials {
     session::credentials(&store.state.session)
 }
 
-async fn run_purchase(state: Arc<AppState>, intent: OrderIntent) {
+async fn run_purchase(state: Arc<AppState>, mut intent: OrderIntent) {
     let request = PurchaseRequest {
         item_id: intent.item_id.clone(),
         item_type: intent.item_type.clone(),
@@ -388,6 +390,8 @@ async fn run_purchase(state: Arc<AppState>, intent: OrderIntent) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
+    let real = mock.is_none();
+
     let mut result = match mock {
         Some(mock) => mock.purchase(request.clone()).await,
         None => state.api.purchase(&credentials(&state), &request).await,
@@ -404,6 +408,11 @@ async fn run_purchase(state: Arc<AppState>, intent: OrderIntent) {
             result = state.api.purchase(&credentials(&state), &request).await;
             response_at = now_ms();
         }
+    }
+
+    if real {
+        let host = dns_probe::host_of(state.api.base_url());
+        apply_dns_telemetry(&mut intent.timings, host.as_deref(), &result);
     }
 
     let outcome = PurchaseOutcome {
@@ -427,6 +436,42 @@ async fn run_purchase(state: Arc<AppState>, intent: OrderIntent) {
         engine.on_purchase_result(&mut store, &intent, outcome)
     };
     dispatch(&state, events);
+}
+
+/// Writes the connection and resolver facts onto the order timings. A fresh
+/// connection keeps the real lookup; a pooled keep-alive socket reports
+/// `reused` with no DNS cost; IP and local upstreams are `skipped`.
+fn apply_dns_telemetry(timings: &mut Timings, host: Option<&str>, result: &PurchaseResult) {
+    timings.socket_mode = Some(result.socket.as_str().to_string());
+
+    let Some(host) = host else {
+        return;
+    };
+    timings.dns_host = Some(host.chars().take(128).collect());
+    if dns_probe::is_local(host) {
+        timings.dns_mode = Some("skipped".to_string());
+        return;
+    }
+
+    match &result.dns {
+        // hyper only resolves when it opens a connection, so this is the lookup
+        // this purchase actually paid for.
+        Some(lookup) => {
+            timings.dns_mode = Some("lookup".to_string());
+            timings.dns_ms = Some(lookup.ms);
+            timings.dns_address = lookup.address.clone();
+            timings.dns_family = lookup.family;
+            timings.dns_error = lookup.error.clone();
+        }
+        None if result.socket == SocketMode::Reused => {
+            timings.dns_mode = Some("reused".to_string());
+        }
+        // A connection was opened but the lookup did not complete (cancelled
+        // by a timeout, for example), or the upstream is not observable.
+        None => {
+            timings.dns_mode = Some("unknown".to_string());
+        }
+    }
 }
 
 /// One refresh attempt. Returns whether the access token changed.
@@ -498,5 +543,87 @@ async fn tick_session(state: &Arc<AppState>) {
     };
     if due {
         refresh_session(state).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dns_probe::DnsLookup;
+
+    fn purchase(socket: SocketMode, dns: Option<DnsLookup>) -> PurchaseResult {
+        PurchaseResult {
+            socket,
+            dns,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_new_connection_keeps_the_real_lookup() {
+        let mut timings = Timings::default();
+        let result = purchase(
+            SocketMode::New,
+            Some(DnsLookup {
+                ms: 18.25,
+                address: Some("104.18.0.1".into()),
+                family: Some(4),
+                error: None,
+            }),
+        );
+        apply_dns_telemetry(&mut timings, Some("rollercoin.com"), &result);
+        assert_eq!(timings.socket_mode.as_deref(), Some("new"));
+        assert_eq!(timings.dns_host.as_deref(), Some("rollercoin.com"));
+        assert_eq!(timings.dns_mode.as_deref(), Some("lookup"));
+        assert_eq!(timings.dns_ms, Some(18.25));
+        assert_eq!(timings.dns_address.as_deref(), Some("104.18.0.1"));
+        assert_eq!(timings.dns_family, Some(4));
+        assert_eq!(timings.dns_error, None);
+    }
+
+    #[test]
+    fn a_reused_socket_reports_no_dns_cost() {
+        let mut timings = Timings::default();
+        apply_dns_telemetry(
+            &mut timings,
+            Some("rollercoin.com"),
+            &purchase(SocketMode::Reused, None),
+        );
+        assert_eq!(timings.socket_mode.as_deref(), Some("reused"));
+        assert_eq!(timings.dns_mode.as_deref(), Some("reused"));
+        assert_eq!(timings.dns_ms, None);
+        assert_eq!(timings.dns_address, None);
+    }
+
+    #[test]
+    fn local_and_ip_upstreams_are_skipped() {
+        let mut timings = Timings::default();
+        apply_dns_telemetry(
+            &mut timings,
+            Some("127.0.0.1"),
+            &purchase(SocketMode::Unknown, None),
+        );
+        assert_eq!(timings.socket_mode.as_deref(), Some("unknown"));
+        assert_eq!(timings.dns_mode.as_deref(), Some("skipped"));
+        assert_eq!(timings.dns_host.as_deref(), Some("127.0.0.1"));
+        assert_eq!(timings.dns_ms, None);
+    }
+
+    #[test]
+    fn a_failed_lookup_keeps_its_duration_and_error() {
+        let mut timings = Timings::default();
+        let result = purchase(
+            SocketMode::New,
+            Some(DnsLookup {
+                ms: 3.5,
+                address: None,
+                family: None,
+                error: Some("lookup timed out".into()),
+            }),
+        );
+        apply_dns_telemetry(&mut timings, Some("rollercoin.com"), &result);
+        assert_eq!(timings.dns_mode.as_deref(), Some("lookup"));
+        assert_eq!(timings.dns_ms, Some(3.5));
+        assert_eq!(timings.dns_error.as_deref(), Some("lookup timed out"));
     }
 }

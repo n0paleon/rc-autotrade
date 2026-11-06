@@ -42,29 +42,51 @@ function dnsValue(t) {
 }
 
 function dnsHint(t) {
-  if (t?.dnsMode === "reused") return "Keep-alive socket reused — fetch skipped DNS";
-  if (t?.dnsMode === "cache") return "Bun DNS cache hit — no resolver round-trip";
+  if (t?.dnsMode === "reused") return "Keep-alive socket reused — this request performed no DNS";
+  if (t?.dnsMode === "cache") return "DNS cache hit — no resolver round-trip";
   if (t?.dnsMode === "pending") return "Resolver probe is still running; its result will be saved when it finishes";
   if (t?.dnsMode === "skipped") return "Host is local or already an IP address";
   if (t?.dnsMode === "probe") {
     return t.dnsError
-      ? `Bun resolver probe failed: ${t.dnsError}`
-      : `Parallel Bun resolver probe${t.dnsAddress ? ` → ${t.dnsAddress}` : ""}; fetch timing is not exposed`;
+      ? `Resolver probe failed: ${t.dnsError}`
+      : `Parallel resolver probe${t.dnsAddress ? ` → ${t.dnsAddress}` : ""} (legacy row)`;
   }
   if (t?.dnsMode === "lookup") {
-    return t.dnsAddress ? `Real lookup → ${t.dnsAddress}` : "Real resolver lookup";
+    if (t.dnsError) return `Resolver lookup failed: ${t.dnsError}`;
+    return t.dnsAddress
+      ? `Resolver lookup this request paid for → ${t.dnsAddress}`
+      : "Resolver lookup this request paid for";
   }
   if (t?.dnsError) return t.dnsError;
-  if (t?.dnsMode === "unknown") return "Request finished but DNS source is unknown";
+  if (t?.dnsMode === "unknown") return "Connection opened but the lookup did not complete";
+  if (t?.dnsHost) return "No resolver sample for this request";
   return "No sample (mock, IP host or local)";
 }
 
-function Metric({ label, value, hint, tone = "text-ink" }) {
+function socketLabel(t) {
+  if (t?.socketMode === "new") return "NEW";
+  if (t?.socketMode === "reused") return "KEEP-ALIVE";
+  if (t?.socketMode === "unknown") return "UNKNOWN";
+  return null;
+}
+
+function socketHint(t) {
+  if (t?.socketMode === "new") {
+    return "Fresh connection: this request resolved the host and opened a socket (DNS + TCP + TLS)";
+  }
+  if (t?.socketMode === "reused") {
+    return "Pooled keep-alive socket reused — no DNS, TCP or TLS on this request";
+  }
+  if (t?.socketMode === "unknown") return "IP upstream or no connection event observed";
+  return "No sample (mock or an older row)";
+}
+
+function Metric({ label, value, text, hint, tone = "text-ink" }) {
   return (
     <div className="border-2 border-line/70 bg-night-950/60 px-3 py-2.5">
       <p className="font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-faint">{label}</p>
       <p className={`mt-1 font-mono text-[18px] tabular-nums ${tone}`}>
-        {value == null ? "—" : formatPreciseMs(value)}
+        {text ?? (value == null ? "—" : formatPreciseMs(value))}
       </p>
       {hint ? <p className="mt-0.5 text-[12px] leading-snug text-faint">{hint}</p> : null}
     </div>
@@ -343,10 +365,16 @@ export function LootDetailModal({ entry, onClose }) {
                   tone="text-signal"
                 />
                 <Metric
-                  label="DNS resolver probe"
+                  label="DNS lookup"
                   value={dnsValue(t)}
                   hint={dnsHint(t)}
                   tone="text-violet"
+                />
+                <Metric
+                  label="Connection"
+                  text={socketLabel(t)}
+                  hint={socketHint(t)}
+                  tone="text-info"
                 />
               </div>
 
@@ -427,10 +455,12 @@ export function LootDetailModal({ entry, onClose }) {
               </details>
 
               <p className="mt-3 text-[11px] leading-relaxed text-faint">
-                The worker times a parallel Bun resolver probe without waiting to send the
-                purchase. Bun fetch does not expose per-request DNS timing, so this measures how
-                quickly Bun resolves the host; it does not claim whether this request reused a
-                socket or performed its own lookup.
+                The DNS tile is the resolver lookup this order actually paid for. When the purchase
+                opens a connection, the client&apos;s resolver records its real latency and address;
+                a pooled keep-alive socket skips DNS entirely, so the tile shows 0 and the
+                Connection tile says KEEP-ALIVE. IP upstreams bypass the resolver and are marked
+                skipped. Rows from the old worker keep their parallel-probe value and are labelled
+                as legacy.
               </p>
             </>
           ) : (
