@@ -1,0 +1,8 @@
+[tools]
+# Backend Rust worker. Keep this exact so CI, the VPS and this machine agree.
+rust = "1.99.1"
+
+[env]
+# Keep the crate cache inside the repo so cargo never needs write access to
+# ~/.cargo (the sandbox only allows workspace writes). Ignored by git.
+CARGO_HOME = "{{config_root}}/.cargo-home"

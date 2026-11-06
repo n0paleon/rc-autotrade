@@ -2,30 +2,30 @@
   "name": "turu-rc-worker",
   "version": "1.0.0",
   "private": true,
-  "description": "Headless Rollercoin marketplace sniper with an 8-bit arcade control deck.",
+  "description": "Headless Rollercoin marketplace sniper with an 8-bit arcade control deck: Rust backend, React deck.",
   "type": "module",
   "engines": {
     "bun": ">=1.2"
   },
   "scripts": {
     "build": "bunx --bun vite build",
-    "start": "bun run build && bun src/worker/index.js",
-    "dev": "bun scripts/dev.js",
+    "dev": "bun scripts/dev.mjs",
     "dev:ui": "node node_modules/vite/bin/vite.js",
-    "dev:worker": "bun --watch src/worker/index.js",
-    "mock": "bun run build && MOCK=1 bun src/worker/index.js",
-    "diagnose:ws": "bun scripts/diagnose-ws.js",
-    "calibrate:trend": "bun scripts/calibrate-trend.js",
-    "pretest": "bun run build",
-    "test": "bun test",
-    "key:reset": "bun src/worker/reset-token.js",
-    "pm2:start": "bun run build && pm2 startOrReload ecosystem.config.cjs --update-env"
+    "start": "bun run build && cargo run --release",
+    "mock": "bun run build && MOCK=1 cargo run --release",
+    "test": "cargo test && bun test",
+    "format": "cargo fmt",
+    "lint": "cargo clippy --all-targets",
+    "diagnose:ws": "cargo run --release --example diagnose_ws",
+    "key:reset": "cargo run --release --bin reset_token",
+    "bench:frame": "cargo run --release --example bench_frame",
+    "bench:trend": "cargo run --release --example bench_trend",
+    "pm2:start": "bun run build && cargo build --release && pm2 startOrReload ecosystem.config.cjs --update-env"
   },
   "dependencies": {
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "recharts": "^3.10.1",
-    "ws": "^8.18.0"
+    "recharts": "^3.10.1"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.4",

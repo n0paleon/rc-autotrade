@@ -1,9 +1,0 @@
-[
-    {
-        "itemId": "6571aa39ca8bfef34adcd9e9",
-        "targetPrice": 0.1,
-        "desiredQty": 10,
-        "highStockThreshold": 20,
-        "minAcceptableQty": 1
-    }
-]

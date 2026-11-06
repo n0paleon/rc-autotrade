@@ -1727,7 +1727,7 @@
 
 /* ── trend watch ─────────────────────────────────────────────────────
    The signal is advisory: amber/green/red bands mirror the state names in
-   shared/trend.js so the card and the fleet table never disagree.
+   src/trend.rs so the card and the fleet table never disagree.
    ───────────────────────────────────────────────────────────────── */
 @layer components {
   .trend-strip {
