@@ -4,9 +4,10 @@ Headless **Rollercoin marketplace sniper** dengan control deck bergaya arcade, d
 
 > Font: **Arcana** oleh vilogsign. File demo di `public/fonts/` gratis untuk penggunaan pribadi; untuk distribusi komersial, beli lisensi penuh dari author. **Chakra Petch** dan **JetBrains Mono** berlisensi OFL; file lisensinya ada di `public/fonts/`.
 
-Dulu `trade.js` harus ditempel di console browser dan ikut melambat saat tab inactive.
-Sekarang engine berjalan sebagai proses Bun terpisah; browser hanya menjadi **data plane**
-untuk login, mengatur target, memantau market, dan melihat loot.
+Awalnya `trade.js` harus ditempel di console browser dan ikut melambat saat tab inactive.
+Sekarang engine berjalan sebagai proses **Rust** terpisah; browser hanya menjadi **data plane**
+untuk login, mengatur target, memantau market, dan melihat loot. Bun/Node tidak ada di jalur
+panas — hanya dipakai untuk membangun deck React dan menjalankan test UI.
 
 ![Control deck](docs/preview.png)
 
@@ -35,6 +36,7 @@ untuk login, mengatur target, memantau market, dan melihat loot.
 - [Mock mode](#mock-mode)
 - [Testing](#testing)
 - [Struktur proyek](#struktur-proyek)
+- [Backend Rust](#backend-rust)
 - [Troubleshooting](#troubleshooting)
 
 ## Fitur
@@ -73,15 +75,15 @@ untuk login, mengatur target, memantau market, dan melihat loot.
   access key worker. Lihat [Backup dan migrasi](#backup-dan-migrasi).
 - **Live data plane** — HUD, target cards + chart, market wire, terminal event, loot log, profit
   report, health token, runtime config, sound effect, dan tampilan mobile.
-- **Worker health monitor** — tab **SYSTEM** menampilkan CPU worker dan host, heap (kompatibilitas
-  V8) + batasnya, RSS, RAM sistem (MemAvailable, bukan MemFree), swap, load average, latency event
-  loop (p50/p95/p99), active handles, plus sparkline historis. Status `HEALTHY / DEGRADED /
-  CRITICAL` dihitung dari tekanan heap, RAM, dan event loop, dan setiap transisi ikut tercatat di log.
+- **Worker health monitor** — tab **SYSTEM** menampilkan CPU worker dan host, RSS, RAM sistem
+  (MemAvailable, bukan MemFree), swap, load average, lag sampler (p50/p95/p99), uptime, plus
+  sparkline historis. Status `HEALTHY / DEGRADED / CRITICAL` dihitung dari tekanan CPU/RAM dan lag
+  sampler, dan setiap transisi ikut tercatat di log.
 - **DB performance metrics** — setiap statement SQLite di-timing (read/write, avg/p95/max, error,
   slow query), plus ukuran file DB/WAL/-shm, page/freelist, mode jurnal, cache, dan transaksi.
   Sparkline query rate membantu melihat lonjakan I/O yang menahan event loop.
 - **Mock mode** — simulator market bawaan untuk mencoba seluruh alur tanpa akun Rollercoin.
-- **Test suite** — unit test untuk rules/validation/event/store + integration test end-to-end.
+- **Test suite** — 141 test Rust (unit + HTTP + end-to-end) dan test UI di `ui/test/`.
 
 ### Loot log
 
@@ -99,18 +101,18 @@ browser; engine memakai `store.hasOrder()` (query SQLite) untuk cek duplikat, ja
 tercatat dua kali walau sudah keluar dari window.
 
 Klik salah satu baris loot untuk membuka **latency debugger**. Detail per order menyimpan
-timestamp dari frame masuk, keputusan order, `fetch()` dikirim, response headers, response body
+timestamp dari frame masuk, keputusan order, permintaan dikirim, response headers, response body
 selesai dibaca, order diterima, sampai event fulfillment (`marketplace_orders_filled`) tiba. Modal
-menampilkan empat angka utama: **signal → purchase sent**, **signal → response**, **signal →
-fulfillment**, dan **DNS resolver probe**, plus waterfall per tahap sehingga tahap paling lambat
-langsung terlihat. Probe memakai resolver Bun (`Bun.dns.lookup`) secara paralel tanpa menahan
-pengiriman purchase. Bun fetch tidak membuka timing DNS per request, jadi angka ini menunjukkan
-durasi resolver probe dan tidak menebak apakah request memakai lookup baru, cache, atau socket
-keep-alive. Jika probe selesai setelah fill, hasilnya tetap disimpan ke baris loot. Data disimpan
-sebagai JSON di kolom `orders.timings`, ikut backup/restore, dan baris lama tetap bisa dibuka dengan
-angka `latencyMs` lama saja. Modal juga menyimpan payload mentah event perubahan harga yang memicu
-order dan event hasil order bila diterima. Payload hasil tidak wajib ada; frame besar di atas 256
-KiB disimpan sebagai preview terbatas.
+menampilkan tiga angka utama: **signal → purchase sent**, **signal → response**, **signal →
+fulfillment**, plus waterfall per tahap sehingga tahap paling lambat langsung terlihat. Tahap yang
+diukur di Rust: `signalAt`, `handleAt`, `orderAt`, `dispatchAt`, `sendAt`, `responseAt`,
+`completeAt`, `acceptedAt`, `fillAt`, `fillHandledAt`, `failedAt` (lihat `src/timings.rs`).
+Klien HTTP (`reqwest`) tidak mengekspos timing DNS per request, jadi tidak ada probe DNS terpisah —
+kalau `dnsMs` tidak ada, kolomnya ditampilkan sebagai `—`. Data disimpan sebagai JSON di kolom
+`orders.timings`, ikut backup/restore, dan baris lama tetap bisa dibuka dengan angka `latencyMs`
+lama saja. Modal juga menyimpan payload mentah event perubahan harga yang memicu order dan event
+hasil order bila diterima. Payload hasil tidak wajib ada; frame besar di atas 256 KiB disimpan
+sebagai preview terbatas.
 
 ### Profit by product
 
@@ -141,15 +143,18 @@ sticky, jadi katalog yang terus tumbuh tidak memanjangkan panel.
         wss://nws.rollercoin.com                  https://rollercoin.com/api/*
 ```
 
-- **Worker** (`src/worker/`) adalah satu-satunya komponen yang menyentuh Rollercoin dan menyimpan
+- **Worker** (`src/*.rs`) adalah satu-satunya komponen yang menyentuh Rollercoin dan menyimpan
   kredensial. Ia tidak peduli tab browser aktif atau tidak.
-- **Market feed** memakai WebSocket native Bun (bukan paket `ws`), sehingga TLS handshake memakai
-  stack runtime Bun dan header `Origin`/`User-Agent`/`Cookie` tetap terkirim.
-- **Data plane** (`ui/` React + Vite → `dist/`, dilayani `ControlServer`) adalah UI + API/event
+- **Market feed** memakai WebSocket native-tls/OpenSSL (`src/gateway.rs`), sehingga ClientHello
+  menyerupai stack yang sudah terbukti bisa melewati edge Rollercoin; header
+  `Origin`/`User-Agent`/`Cookie` tetap terkirim.
+- **Data plane** (`ui/` React + Vite → `dist/`, dilayani `src/server.rs`) adalah UI + API/event
   stream yang dipakai client. UI disajikan oleh worker agar same-origin, tetapi semua kontrol
   tetap melewati bearer key.
-- **Shared rules** (`src/shared/`) berisi validasi, aturan pembelian, dan konstanta yang dipakai
-  worker maupun test.
+- **Keputusan murni** ada di `src/rules.rs`, `src/depth.rs`, `src/trend.rs`, dan `src/validation.rs`:
+  fungsi tanpa akses I/O, sehingga test dan replay memakai kode yang sama persis dengan produksi.
+- **Store** (`src/store.rs`) memakai `rusqlite` (SQLite bundled) dengan skema v7 dan mode WAL;
+  metrik statement diambil dari profile callback `trace_v2` (`src/db_metrics.rs`).
 
 ### Alur satu frame market
 
@@ -166,26 +171,30 @@ sticky, jadi katalog yang terus tumbuh tidak memanjangkan panel.
 
 ## Quick start
 
-Butuh **Bun >= 1.2** (dites di Bun 1.3). Tidak ada Node.js, node-gyp, atau native addon yang perlu
-di-compile: SQLite memakai `bun:sqlite`, HTTP memakai `fetch` bawaan Bun, dan test berjalan dengan
-`bun run test`.
-
-> **Migrasi dari versi Node:** `bun install` menghapus `better-sqlite3`/`undici`, lalu worker
-> memakai `bun:sqlite`. File `data/rollercoin.db` lama tetap dipakai karena formatnya SQLite
-> standar — tidak perlu export/import.
+Butuh **mise** (mengunci Rust 1.99.1 di `mise.toml`) dan **Bun** — Bun hanya untuk membangun deck
+dan menjalankan test UI, tidak pernah ikut jalur panas. SQLite memakai `rusqlite` bundled, HTTP/WSS
+memakai `reqwest` + `tokio-tungstenite` dengan `native-tls` (OpenSSL), dan test berjalan dengan
+`cargo test`.
 
 ```bash
-bun install
+mise install              # pasang Rust 1.99.1 sesuai mise.toml
+bun install               # dependency UI
 cp .env.example .env      # opsional; edit bila perlu
-bun start                 # build React → dist/, lalu jalankan worker
+bun start                 # build React → dist/, lalu jalankan worker release
 ```
+
+Tanpa mise? `cargo` yang cukup baru biasanya bisa, tetapi versi yang diuji adalah yang dipin.
+Skrip `bun start`/`bun run test` memakai `cargo` dari `PATH`; kalau mise sudah aktif
+(`mise activate`), itu otomatis toolchain 1.99.1. Kalau belum, jalankan `mise exec -- bun start`
+supaya versi yang dipakai tetap yang dipin.
 
 Saat pertama kali berjalan, worker mencetak access key satu kali:
 
 ```text
-  ┌─ ACCESS KEY — SHOWN ONCE, SAVE IT NOW ──────────────────┐
-  │ <43-character key>                                      │
-  └─────────────────────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────────────────┐
+  │ A new worker access key was generated. Copy it now:          │
+  └──────────────────────────────────────────────────────────────┘
+  <43-character key>
 ```
 
 Buka `http://127.0.0.1:8787`, tempel key tersebut, lalu tekan **PRESS START**. Biarkan
@@ -195,76 +204,78 @@ ulang. Lihat [Key tersimpan di browser](#key-tersimpan-di-browser) untuk detail 
 Mau mencoba tanpa akun? Jalankan simulator:
 
 ```bash
-bun run mock              # build React + worker dalam mode simulasi
+bun run mock              # build React + worker release dengan MOCK=1
 ```
 
-Satu perintah menyalakan worker dan Vite sekaligus:
+Satu perintah menyalakan backend dan Vite sekaligus:
 
 ```bash
-bun run dev               # worker di 127.0.0.1:8787 + Vite di 127.0.0.1:5173
+bun run dev               # cargo run (debug) di 8787 + Vite di 5173
 ```
 
 Butuh memisahkan prosesnya? Jalankan di dua terminal:
 
 ```bash
-bun run dev:worker        # worker di 127.0.0.1:8787
+cargo run                 # backend di 127.0.0.1:8787
 bun run dev:ui            # Vite di 5173, proxy /api dan /ws ke 8787
 ```
 
 | Perintah | Yang jalan | UI | Worker | Cocok untuk |
 | --- | --- | --- | --- | --- |
-| `bun run dev` | `scripts/dev.js` → worker `--watch` + Vite | Vite 5173, hot reload | 8787, hot restart | kerja full-stack sehari-hari |
-| `bun run dev:ui` | Vite saja | Vite 5173, hot reload | **tidak dijalankan** — butuh worker terpisah di 8787 | mengerjakan UI/CSS saja |
-| `bun run dev:worker` | worker `--watch` saja | `dist/` statis di 8787, tanpa hot reload | 8787, hot restart | mengerjakan engine/API/gateway |
-| `bun start` | build lalu worker | `dist/` statis di 8787 | 8787, tanpa watch | uji hasil build seperti production |
+| `bun run dev` | `scripts/dev.mjs` → `cargo run` + Vite | Vite 5173, hot reload | 8787, debug build | kerja full-stack sehari-hari |
+| `bun run dev:ui` | Vite saja | Vite 5173, hot reload | **tidak dijalankan** — butuh backend terpisah | mengerjakan UI/CSS saja |
+| `cargo run` | backend debug saja | `dist/` statis di 8787, tanpa hot reload | 8787 | mengerjakan engine/API/gateway |
+| `bun start` | build lalu `cargo run --release` | `dist/` statis di 8787 | 8787, release | uji hasil build seperti production |
 | `bun run mock` | build lalu worker `MOCK=1` | `dist/` statis di 8787 | feed simulasi | demo/offline tanpa akun |
+| `bun run test` | `cargo test` + `bun test` | — | — | sebelum commit |
 
 - `dev` **tidak** menjalankan `build`. Worker di 8787 menyajikan `dist/` yang mungkin lama; untuk
   melihat UI terbaru saat memakai `dev`, buka **http://127.0.0.1:5173** (Vite yang menyajikan source
   dan proxy `/api` + `/ws` ke 8787).
-- `dev:worker` memakai `--watch`, jadi perubahan `src/worker/**` otomatis restart. Perubahan UI
-  **tidak** ikut ter-build; jalankan `bun run build` lalu refresh 8787.
-- `dev:ui` hanya menyalakan Vite. Kalau worker belum jalan di 8787, login/API akan gagal.
+- Perubahan Rust butuh rebuild: `cargo run` otomatis mengompilasi ulang sebelum start. Kalau mau
+  restart otomatis, pasang `cargo-watch` dan jalankan `cargo watch -x run` di terminal terpisah.
+- `dev:ui` hanya menyalakan Vite. Kalau backend belum jalan di 8787, login/API akan gagal.
 - Vite **wajib** dijalankan dengan Node, bukan Bun (karena itu `dev` men-spawn Vite via `node`).
   Proxy WS milik Vite memanggil `socket.destroySoon()`, API `net.Socket` yang tidak ada di socket
   upgrade Bun, sehingga `/ws` yang gagal (worker belum listen, atau balasan HTTP biasa atas upgrade)
   mematikan dev server dengan `TypeError: socket.destroySoon is not a function`. Karena itu juga
   `dev` menunggu port 8787 terbuka dulu sebelum menyalakan Vite.
-- Jangan menjalankan `dev` dan `dev:worker` bersamaan: keduanya berebut port 8787.
-- Kalau salah satu child di `dev` mati, `scripts/dev.js` mematikan pasangannya; Ctrl+C kini
-  menutup keduanya dengan cepat.
+- Jangan menjalankan `dev` dan `start` bersamaan: keduanya berebut port 8787.
+- Kalau salah satu child di `dev` mati, `scripts/dev.mjs` mematikan pasangannya; Ctrl+C menutup
+  keduanya dengan cepat.
 
 Mock mode mengisi dua target contoh, membuat harga naik-turun, dan mengirim fill palsu sehingga
-seluruh dashboard bisa diuji offline. Script `bun run mock` memakai environment assignment Bun
-shell, jadi tetap jalan di Windows.
+seluruh dashboard bisa diuji offline. Detailnya di [Mock mode](#mock-mode).
 
 ## Jalankan dengan PM2
 
-PM2 hanya supervisor; proses worker-nya sendiri dijalankan dengan interpreter **Bun**
-(`ecosystem.config.cjs` → `interpreter: "bun"`). Build React tetap harus dibuat karena `dist/`
-tidak disimpan di repo.
+PM2 bisa menjadi **satu-satunya process manager** — tidak perlu menulis unit systemd atau menjalankan
+binary manual. PM2 hanya supervisor; proses worker adalah **binary Rust** (`ecosystem.config.cjs` →
+`interpreter: "none"`). `dist/` dan `target/` tidak disimpan di repo, jadi keduanya harus dibangun
+dulu di server.
 
-> PM2 masih berjalan di atas Node.js; yang dipindahkan ke Bun adalah worker-nya. Kalau server
-> benar-benar tanpa Node, jalankan worker langsung dengan `bun src/worker/index.js` atau lewat
-> systemd (`ExecStart=/usr/local/bin/bun src/worker/index.js`).
+> PM2 sendiri berjalan di atas Node.js (hanya supervisor; binary tetap Rust). `pm2 startup` di Linux
+> memang mendaftarkan service systemd di balik layar, tapi kamu tidak perlu mengelolanya — cukup
+> `pm2 save` + perintah sudo yang dicetak sekali, lalu semua restart/stop lewat PM2.
 >
-> Setelah mengubah `interpreter` di `ecosystem.config.cjs`, `pm2 restart` tidak mengganti
-> interpreter proses lama. Jalankan `pm2 delete rc-autotrade && pm2 start ecosystem.config.cjs`.
+> Setelah mengganti `script`/interpreter di `ecosystem.config.cjs`, `pm2 restart` tidak mengganti
+> proses lama. Jalankan `pm2 delete rc-autotrade && pm2 start ecosystem.config.cjs`.
 
 1. Hentikan worker manual yang sedang berjalan (`Ctrl+C`) agar port `8787` bebas.
 2. Install PM2 sekali:
    ```bash
    bun install -g pm2
    ```
-3. Install dependency dan build UI:
+3. Install dependency, build UI, dan build binary:
    ```bash
    bun install --frozen-lockfile
    bun run build
+   cargo build --release
    ```
 4. Start process:
    ```bash
    pm2 start ecosystem.config.cjs
-   # atau: bun run pm2:start  (build + start/reload)
+   # atau: bun run pm2:start  (build UI + release binary + start/reload)
    ```
 5. Verifikasi:
    ```bash
@@ -274,11 +285,13 @@ tidak disimpan di repo.
    ```
 6. Aktifkan auto-start setelah reboot:
    ```bash
-   pm2 save
-   pm2 startup
-   # jalankan command sudo yang dicetak PM2, lalu:
-   pm2 save
+   pm2 save            # simpan daftar proses
+   pm2 startup         # cetak satu perintah sudo; jalankan sekali
+   pm2 save            # simpan lagi setelah startup terpasang
    ```
+
+`pm2 stop`/`pm2 restart` mengirim sinyal yang ditangani worker, jadi shutdown tetap rapi (flush
+market cache + `store.close()`); `kill_timeout` 8 detik di config memberi ruang untuk itu.
 
 > Saat pertama kali berjalan, access key dicetak ke log `pm2 logs rc-autotrade`. Simpan key-nya,
 > lalu jangan bagikan isi log. Setelah state ada, key tidak dicetak lagi.
@@ -289,6 +302,7 @@ tidak disimpan di repo.
 git pull
 bun install --frozen-lockfile
 bun run build
+cargo build --release
 pm2 restart rc-autotrade --update-env
 ```
 
@@ -319,12 +333,13 @@ Catatan:
 | --- | --- |
 | Key pertama kali | Dicetak di terminal, hanya sekali |
 | Key tetap | Set `WORKER_TOKEN` (minimal 16 karakter) di `.env` |
-| Key hilang | **Stop worker**, lalu `bun run key:reset` |
+| Key hilang | **Stop worker**, lalu `bun run key:reset` (binary `reset_token`) |
 | Rotasi dari UI | Tab **LINK → ROTATE KEY** (ditolak bila `WORKER_TOKEN` dipin) |
 | Ganti key | Semua socket lama dicabut (`4003`) dan client harus login ulang |
 
 > `bun run key:reset` harus dijalankan saat worker berhenti. Kalau worker masih hidup, state
-> in-memory-nya bisa menimpa key baru saat shutdown.
+> in-memory-nya bisa menimpa key baru saat shutdown. Perintah ini juga menolak berjalan bila
+> `WORKER_TOKEN` dipin di `.env` — hapus dulu baris itu, karena boot berikutnya akan menimpanya.
 
 #### Key tersimpan di browser
 
@@ -421,8 +436,8 @@ Perilaku pembelian:
 tanpa pernah mengirim order. `planOrder()` tidak berubah: `targetPrice` tetap satu-satunya gerbang
 beli, dan panel ini murni informasi.
 
-Modelnya ada di `src/shared/trend.js` (fungsi murni, tanpa akses store/clock) dan
-`src/shared/depth.js` untuk estimasi harga eksekusi. Input trend **bukan lagi ask termurah**,
+Modelnya ada di `src/trend.rs` (fungsi murni, tanpa akses store/clock) dan
+`src/depth.rs` untuk estimasi harga eksekusi. Input trend **bukan lagi ask termurah**,
 melainkan depth-weighted fill price:
 
 0. Setiap frame, `estimateFillPrice()` menelusuri `list` (lalu `rest`) untuk `desiredQty` unit dan
@@ -469,9 +484,9 @@ errorBandPct = clamp(rawBandPct × factor, 2%, 20%)
 bandPct      = clamp(errorBandPct, 2%, 10%)
 ```
 
-`factor` dibaca dari `src/shared/trend-calibration.js` (lihat bagian kalibrasi di bawah); nilainya 1
-bila worker belum pernah dikalibrasi. Field `bandSource` menyebut mana yang dipakai (`calibrated`
-atau `formula`).
+`factor` dibekukan di `src/trend.rs` (`calibration_factor`): **1,20** untuk sumber `top` dan
+**1,13** untuk `depth`, hasil pengukuran 14 hari data produksi. Field `bandSource` menyebut mana
+yang dipakai (`calibrated` atau `formula`).
 
 | State | Syarat | Arti |
 | --- | --- | --- |
@@ -536,15 +551,15 @@ status quo, jadi tetap boleh walau datanya tipis — target yang 50% di bawah le
 ditinjau meski confidence-nya rendah. Model tidak pernah mengusulkan "beli" dan tidak pernah
 menyebut angka; `planOrder()` tetap satu-satunya yang bisa mengirim order.
 
-### Kalibrasi band (`bun run calibrate:trend`)
+### Kalibrasi band (dibekukan di kode)
 
 `errorBandPct` punya dua sumber. Yang pertama rumus di atas, selalu tersedia dan hanya kira-kira
-benar. Yang kedua hasil pengukuran: `scripts/calibrate-trend.js` me-replay `price_points` yang
-tersimpan, membandingkan tiap estimasi dengan error yang benar-benar terjadi, lalu menulis faktor
-koreksi ke `src/shared/trend-calibration.js`:
+benar. Yang kedua hasil pengukuran: pada porting dulu, `price_points` yang tersimpan di-replay,
+tiap estimasi dibandingkan dengan error yang benar-benar terjadi, lalu faktor koreksi ditulis ke
+`src/trend.rs`:
 
 ```
-factor = kuantil_target(error / rawBandPct)      // default target 0.80
+factor = kuantil_target(error / rawBandPct)      // target 0.80
 ```
 
 Faktornya satu untuk semua bucket, bukan kurva. Kurva per bucket terlihat lebih rapi di atas kertas,
@@ -554,21 +569,16 @@ faktor membawa informasi yang sama dengan varians jauh lebih kecil, dan tidak bi
 per sumber (`top` / `depth`) hanya dipakai bila sumber itu punya ≥ 200 sampel; kalau tidak, ia
 mewarisi `pooled`.
 
-```bash
-bun run calibrate:trend                       # 14 hari terakhir, kuantil 80%
-bun run calibrate:trend --days=7 --target=0.9
-```
+Nilainya sekarang **konstanta**: 1,20 untuk `top` dan 1,13 untuk `depth`. Mengubahnya berarti
+mengubah `calibration_factor()` di `src/trend.rs` lalu menjalankan `cargo test` (fixture paritas
+trend akan menangkap pergeseran angka). Tool kalibrasi interaktif versi lama tidak lagi disertakan;
+kalau kamu ingin mengkalibrasi ulang, replay `price_points` dari SQLite dengan model yang sama,
+lalu ganti konstanta itu.
 
-Skrip menolak menulis bila replay menghasilkan < 200 sampel (tabel dari beberapa lusin titik lebih
-buruk daripada rumus), mencetak coverage rumus vs hasil kalibrasi, dan menghitung **holdout**: faktor
-diukur pada 70% data tertua lalu diuji pada 30% terbaru, supaya angka in-sample yang bagus tidak
-menipu. Contoh pada replay terakhir: rumus menutup 76,1% error, setelah kalibrasi (faktor 1,20 untuk
-`top`, 1,13 untuk `depth`) 81,8%, holdout 89,1%. Jalankan ulang setelah beberapa hari data terkumpul
-— angkanya akan membaik dengan sendirinya.
-
-Skrip yang sama juga menguji klaim arah. Setiap kali dijalankan ia mencetak hit rate label
-`direction` pada horizon 60 menit dan base rate-nya, supaya kalimat "ini bukan ramalan" di bawah
-bisa diverifikasi ulang, bukan diwarisi.
+Angka dari kalibrasi terakhir: rumus menutup 76,1% error, setelah faktor 81,8%, holdout 89,1%.
+Hit rate arah juga diukur saat itu: sign `slopePctPerHour` benar 51,6% pada horizon 60 menit dan
+label non-flat 48,5%, sementara base rate 30,6% naik / 69,4% turun — selalu menebak "turun" justru
+lebih akurat. Angka ini adalah hasil pengukuran sekali, bukan yang dicetak ulang tiap run.
 
 ### Arah slope (`direction`)
 
@@ -576,8 +586,7 @@ bisa diverifikasi ulang, bukan diwarisi.
 Label ini **deskripsi tiga jam terakhir, bukan ramalan**. Pada replay terakhir: sign
 `slopePctPerHour` benar 51,6% pada horizon 60 menit dan label non-flat 48,5%, sementara base rate
 30,6% naik / 69,4% turun — selalu menebak "turun" justru lebih akurat. Panel tidak memakainya untuk
-keputusan apa pun; angka ini dicetak setiap kali `bun run calibrate:trend` dijalankan, jadi klaimnya
-bisa diverifikasi ulang.
+keputusan apa pun; angka ini berasal dari pengukuran kalibrasi terakhir, bukan ramalan.
 
 Kolom **Signal** (state) dan **Next step** (`action`) sengaja dipisah: yang pertama menjawab "di
 mana posisi target", yang kedua "apa yang harus dilakukan". Panel menampilkan tab **at/above trend** (target ≥ trend, gap terbesar di atas — yang paling perlu
@@ -622,7 +631,7 @@ Jika dipanggil untuk target yang sudah ada, endpoint sekaligus memperbaiki label
 ## Mekanisme parameter target (deep dive)
 
 Form target hanya meminta empat angka, tetapi keputusan beli diambil oleh satu fungsi murni —
-`planOrder()` di `src/shared/rules.js` — yang hanya melihat **harga listing termurah**, **stok
+`planOrder()` di `src/rules.rs` — yang hanya melihat **harga listing termurah**, **stok
 listing termurah**, dan config. Tidak ada order book agregat, tidak ada averaging, dan tidak ada
 pembatalan order. Bagian ini menjelaskan urutan gerbangnya, arti tiap field, dan kombinasi yang
 sering membuat order "tidak jalan".
@@ -641,7 +650,7 @@ sering membuat order "tidak jalan".
 
 ### Satu frame = satu keputusan
 
-`engine.js` memanggil `planOrder()` untuk setiap frame market yang cocok. Rantai keputusannya:
+`src/engine.rs` memanggil `planOrder()` untuk setiap frame market yang cocok. Rantai keputusannya:
 
 ```text
 frame market (item cocok, currency RLT)
@@ -668,7 +677,7 @@ qty = clamp(floor(qty), 1 .. min(available, 10 000))
 notional = unitPrice × qty
 ```
 
-Setelah `planOrder()` memutuskan `buy`, masih ada gerbang runtime di `engine.js` yang bisa menahan
+Setelah `planOrder()` memutuskan `buy`, masih ada gerbang runtime di `src/engine.rs` yang bisa menahan
 order: `paused`, order lain yang belum selesai (`inflight`), backoff setelah rejection
 (5s → 10s → 20s → 40s, maksimal 60s), cooldown `delayPerOrder`, batas `maxOrdersPerMinute`, dan
 ketersediaan access token (kecuali `dryRun`). Gerbang-gerbang ini **tidak** mengubah qty.
@@ -845,9 +854,9 @@ rate limit, backoff, no-token); kondisi itu terlihat di log `scan`/`order` dan d
 
 | Bagian | Lokasi |
 | --- | --- |
-| Keputusan beli murni | `planOrder()` di `src/shared/rules.js` |
-| Validasi & normalisasi field | `validateTarget()` di `src/shared/validation.js` |
-| Gerbang runtime + eksekusi | `#handleMarket()` / `#submit()` di `src/worker/engine.js` |
+| Keputusan beli murni | `plan_order()` di `src/rules.rs` |
+| Validasi & normalisasi field | `validate_target()` di `src/validation.rs` |
+| Gerbang runtime + eksekusi | `handle_frame()` / `submit()` di `src/engine.rs` |
 | Preview `maxSpendPerFill` | `TargetModal` di `ui/src/components/Modals.jsx` |
 | Penanda `HOT` di card | `runtimeHot()` di `ui/src/lib/format.js` |
 
@@ -955,6 +964,9 @@ perlu dikonfigurasi). Warm probe hanya dikirim bila tidak ada request nyata dala
 memakai `POST` ke endpoint purchase-item dengan body kosong. Respons HTTP apa pun dihitung berhasil
 karena menandakan request sudah sampai; probe berhenti 5 menit bila menerima `429`.
 
+> Di versi Rust, pooling ditangani `reqwest`/hyper di dalam proses; tidak ada konfigurasi yang
+> perlu disentuh.
+
 ### Latency worker → upstream
 
 Worker mengukur RTT ke Rollercoin secara pasif di empat channel — tidak ada request tambahan
@@ -986,41 +998,43 @@ Tab **SYSTEM** menampilkan:
 
 | Metrik | Sumber / arti |
 | --- | --- |
-| `Worker CPU` | `process.cpuUsage()` delta ÷ wall time — persen dari satu core |
-| `Host CPU` | Delta `os.cpus()` — persen dari seluruh core |
-| `Heap` | `heapUsed / heap_size_limit` dari V8 |
-| `RSS` | Resident set size proses worker |
-| `External` | Buffer/native memory di luar heap V8 |
+| `Worker CPU` | Delta `/proc/self/stat` ÷ wall time — persen dari satu core |
+| `Host CPU` | Delta `/proc/stat` — persen dari seluruh core |
+| `Heap` | Tidak tersedia di Rust; field tetap dikirim `null` agar deck lama tidak rusak |
+| `RSS` | Resident set size proses worker (`/proc/self/statm`) |
+| `External` | `null` (tidak ada memori native terpisah seperti Buffer V8) |
 | `System RAM` | `MemTotal − MemAvailable` (bukan `MemFree`, agar page cache tidak dihitung) |
-| `Load 1m` | `os.loadavg()[0]`, dinormalisasi per core untuk indikator warna |
-| `Loop p95` | Histogram `monitorEventLoopDelay` — indikator event loop tersendat |
+| `Load 1m` | `/proc/loadavg`, dinormalisasi per core untuk indikator warna |
+| `Loop p95` | Jitter sampler 100 ms — mendeteksi runtime yang tersendat (bukan event loop JS) |
 | `DB` / `WAL` | Ukuran file `rollercoin.db`, `-wal`, dan `-shm` di disk |
 | `Q/S` | Statement SQLite per detik sejak sampel terakhir |
 | `DB p95` | Persentil 95 durasi statement dalam 60 detik (lihat bagian performa database) |
-| `Handles` | `process.getActiveResourcesInfo().length` |
+| `Handles` | `null` — Rust tidak punya handle JS; jumlah thread tersedia lewat `process.runtime`/proc |
 
-Status health: `HEALTHY` → `DEGRADED` pada heap ≥ 80%, RAM ≥ 88%, event-loop p95 ≥ 100 ms, DB p95
-≥ 25 ms, WAL ≥ 64 MB, ada error SQLite, atau CPU worker ≥ 95%; `CRITICAL` pada heap ≥ 92%, RAM ≥
-96%, p95 ≥ 250 ms, DB p95 ≥ 100 ms, atau WAL ≥ 256 MB. Transisi ke `DEGRADED`/`CRITICAL` (dan
-pemulihannya) ditulis ke log scope
-`system`, jadi tetap terlihat walau tidak ada browser yang terbuka. Panel live lewat broadcast
-`system` tiap 5 detik dan juga mem-poll `GET /api/system` tiap 10 detik sebagai fallback.
+Status health: `HEALTHY` → `DEGRADED` pada RAM ≥ 88%, lag sampler p95 ≥ 100 ms, DB p95 ≥ 25 ms,
+WAL ≥ 64 MB, ada error SQLite, atau CPU worker ≥ 95%; `CRITICAL` pada RAM ≥ 96%, p95 ≥ 250 ms,
+DB p95 ≥ 100 ms, atau WAL ≥ 256 MB. Ambang heap tetap ada di kode untuk kompatibilitas field,
+tetapi tidak pernah aktif karena nilainya `null`. Transisi ke `DEGRADED`/`CRITICAL` (dan
+pemulihannya) ditulis ke log scope `system`, jadi tetap terlihat walau tidak ada browser yang
+terbuka. Panel live lewat broadcast `system` tiap 5 detik dan juga mem-poll `GET /api/system` tiap
+10 detik sebagai fallback.
 
 ### Performa database (SQLite)
 
-Database memakai `bun:sqlite` — SQLite yang sudah tertanam di Bun, tanpa native addon atau
-node-gyp. File `data/rollercoin.db` tetap format SQLite standar, jadi database lama dari versi
-Node/better-sqlite3 langsung terbaca dan bisa dibuka dengan `sqlite3` CLI.
+Database memakai `rusqlite` dengan fitur `bundled` — SQLite 3.x dikompilasi langsung ke dalam binary,
+tanpa native addon atau node-gyp. File `data/rollercoin.db` tetap format SQLite standar, jadi database
+lama dari versi Node/better-sqlite3/Bun langsung terbaca dan bisa dibuka dengan `sqlite3` CLI.
 
-Semua statement yang melewati `Store` diukur. `DbMetrics` membungkus `db.prepare()` dan
-`db.transaction()` **sebelum** prepared statement hot-path dibuat, lalu mencatat durasi setiap
-`run` / `get` / `all` dengan `performance.now()`. Yang dikumpulkan:
+Semua statement yang melewati `Store` diukur. Alih-alih membungkus `prepare()`, versi Rust memakai
+profile callback `sqlite3_trace_v2` (fitur `trace`) sehingga setiap statement—termasuk yang gagal dan
+`SQLITE_BUSY`—tercatat dengan `std::time::Instant`. Prepared statement hot-path memakai
+`prepare_cached`. Yang dikumpulkan:
 
 | Blok | Isi |
 | --- | --- |
 | `files` | Ukuran `rollercoin.db`, `-wal`, `-shm`, dan totalnya |
 | `storage` | `page_size`, `page_count`, `freelist_count`, payload bytes, free bytes, utilisasi halaman |
-| `sqlite` | `driver` (`bun:sqlite`), `sqlite_version`, `journal_mode`, `synchronous`, `cache_size`, `wal_autocheckpoint`, `busy_timeout` |
+| `sqlite` | `driver` (`rusqlite`), `sqlite_version`, `journal_mode`, `synchronous`, `cache_size`, `wal_autocheckpoint`, `busy_timeout` |
 | `queries` | Total statement, read/write/pragma/schema, error, `SQLITE_BUSY`, avg/max/last ms, rate per detik |
 | `window` | Agregat 60 detik terakhir: count per jenis, avg/max/p95 ms, error, slow |
 | `transactions` | Jumlah commit/rollback, total dan max wall time |
@@ -1087,9 +1101,9 @@ Error validasi memakai status `422` dan `fields`, misalnya:
 
 - URL: `ws://<host>:<port>/ws`
 - Auth: subprotocol `rcw.v1, <access-key>` (fallback query `?token=...`)
-- Key salah: handshake tetap diterima (Bun belum bisa mengirim HTTP 403 pada upgrade socket), lalu
-  server menutup socket dengan code `4001`. Rotasi key memakai `4003` agar client langsung reconnect
-  dengan key baru.
+- Key salah: handshake **ditolak HTTP 401 sebelum upgrade** (tidak ada socket yang dibuka), lalu
+  client menampilkan pesan auth. Bila key dicabut saat socket sudah hidup, server menutupnya dengan
+  code `4001`; rotasi key memakai `4003` agar client langsung reconnect dengan key baru.
 - Client boleh mengirim `{ "type": "ping", "t": 123 }`; server membalas `{ "type": "pong", ... }`.
 - Event server: `hello`, `snapshot`, `log`, `market`, `order`, `history`, `stats`, `report`,
   `session`, `gateway`, `settings`, `configs`, `latency`, `system`, `history-cleared`.
@@ -1431,7 +1445,7 @@ Yang perlu diketahui tentang proses ini:
   dulu dipakai fitur auto adjust price. Database v1–v3 dimigrasikan otomatis saat boot
   (`ALTER TABLE ... DROP COLUMN`), tanpa kehilangan target yang sudah ada.
 - Titik harga 1 menit disimpan 14 hari lalu dipangkas otomatis (saat boot dan tiap 6 jam). Ubah
-  `PRICE_RETENTION_DAYS` di `src/shared/constants.js` kalau butuh histori lebih panjang.
+  `PRICE_RETENTION_DAYS` di `src/constants.rs` kalau butuh histori lebih panjang.
 - Database lama dari versi JSON dimigrasikan otomatis saat boot pertama: `state.json` dan
   `loot-log.json` diimpor lalu di-rename menjadi `*.migrated-<timestamp>` (tidak dihapus).
   Jangan commit atau backup isi `data/` ke tempat publik.
@@ -1472,33 +1486,27 @@ Mock juga dipakai oleh integration test, jadi `bun run test` tidak membutuhkan a
 ## Testing
 
 ```bash
-bun run test
+bun run test        # cargo test + bun test
+cargo test          # backend saja
+bun test            # UI saja (ui/test)
 ```
 
-`pretest` otomatis menjalankan `bun run build` (Vite lewat Bun) terlebih dahulu, jadi integration
-test selalu memakai UI React yang sedang aktif.
+Backend: **141 test** — 135 unit, 4 HTTP, 2 end-to-end. Yang dikunci:
 
-Cakupan:
+- `validation`, `rules`, `depth`, `events` — schema target, gerbang harga/qty/partial, rate limiter,
+  konversi micro-RLT, normalisasi frame market/fill.
+- `trend` — fixture paritas: 294 frame produksi (7 event asli + 287 sintetis) harus menghasilkan
+  state/level/proximity/band yang identik dengan model acuan.
+- `engine` — dry-run, gate runtime, cooldown, rate cap, backoff, pending/unmatched fill, hydrate/flush.
+- `store` — token hash, paging cursor + search, market cache, timings, agregat laporan.
+- `gateway`, `api`, `session`, `keepalive` — reconnect, refresh 401, warm probe/backoff/429.
+- `system`, `db_metrics`, `backup`, `item_info`, `mock`, `server` — procfs, trace SQLite, JSON v1 +
+  `VACUUM INTO`, resolver label, simulator, auth/422/CORS/security headers.
+- `tests/wiring.rs` — feed → purchase → fill lewat mock upstream, tanpa network.
+- `tests/http_api.rs` — health publik, auth, 422, auto-enrich, header keamanan.
 
-- `validation.test.js` — schema target, URL, duplikat, settings, session.
-- `rules.test.js` — price/qty/high-stock/partial, rate limiter, konversi micro-RLT.
-- `events.test.js` — normalisasi frame market, fill, dan frame lain.
-- `store.test.js` — key generation/rotation, persistensi SQLite, migrasi JSON, market cache, JWT exp,
-  loot log permanen (paging cursor + search nama produk).
-- `engine-cache.test.js` — snapshot hasil hydrate hanya untuk tampilan dan tidak memicu order.
-- `bridge.test.js` — transport `GM_xmlhttpRequest` + sinkronisasi token dua arah.
-- `item-info.test.js` — auto label, fallback tanpa `rarityGroup`, deteksi tipe (rack), cache, kegagalan API.
-- `engine.test.js` — order gagal tidak menambah book; fill sukses menguranginya.
-- `keepalive.test.js` — warm probe, idle timeout, dan suspend saat `429`.
-- `latency.test.js` — rolling sample per channel, percentile, dan jitter.
-- `system.test.js` — delta CPU/event loop, batas history, DB view, dan klasifikasi health worker.
-- `db-metrics.test.js` — instrumentasi statement/transaksi, window 60 detik, slow query, ukuran file.
-- `report.test.js` — agregat profit per produk melewati batas window in-memory loot log.
-- `format.test.js` — formatter UI (label itemType, URL marketplace, byte/percent/ms presisi).
-- `session.test.js` — jadwal refresh token dan fallback token opaque.
-- `integration.test.js` — spawn worker mock, auth, CRUD, settings, CORS, session push, item-info, WS, fill.
-
-Total 112 test; integration test memakai port acak dan data directory sementara.
+UI: `ui/test/` menguji formatter, penyimpanan key (localStorage vs sessionStorage), dan userscript
+bridge. Test memakai direktori sementara dan port acak; tidak butuh akun atau jaringan.
 
 ---
 
@@ -1506,50 +1514,155 @@ Total 112 test; integration test memakai port acak dan data directory sementara.
 
 ```text
 .
-├── ui/                      # data plane React + Vite
-│   ├── index.html           # entry + SVG icon sprite
+├── Cargo.toml / Cargo.lock   # backend Rust (crate `rollercoin-worker`)
+├── src/                      # seluruh backend
+│   ├── main.rs               # bootstrap, banner, graceful shutdown
+│   ├── lib.rs                # modul publik (dipakai test & examples)
+│   ├── bin/reset_token.rs    # `bun run key:reset`
+│   ├── runtime.rs            # wiring feed → engine → purchase, sesi, keepalive
+│   ├── engine.rs             # matching, gate runtime, eksekusi order
+│   ├── trend.rs rules.rs depth.rs validation.rs events.rs timings.rs
+│   ├── gateway.rs api.rs session.rs keepalive.rs feed.rs
+│   ├── store.rs db.rs db_metrics.rs backup.rs
+│   ├── server.rs             # control plane HTTP/WS + dist/
+│   ├── system.rs item_info.rs mock.rs latency.rs
+│   ├── config.rs logger.rs model.rs constants.rs redact.rs raw_events.rs
+├── examples/                 # bench_frame, bench_trend, diagnose_ws, replay
+├── tests/                    # wiring.rs, http_api.rs
+├── ui/                       # deck React + Vite
+│   ├── index.html
 │   └── src/
-│       ├── App.jsx          # dashboard, panels, cards
-│       ├── useWorker.js     # snapshot/WS/actions state
-│       ├── useToasts.js
-│       ├── components/      # PriceChart (Recharts), modals
-│       ├── lib/             # client, format, sound
-│       └── styles.css       # entry Tailwind v4 + token desain
-├── public/                  # aset statis (bridge.js, favicon, fallback)
-├── dist/                    # hasil build Vite yang disajikan worker
-├── src/
-│   ├── shared/
-│   │   ├── constants.js
-│   │   ├── rules.js         # planOrder + rate limiter
-│   │   └── validation.js
-│   └── worker/
-│       ├── index.js         # bootstrap, graceful shutdown
-│       ├── config.js        # env loader
-│       ├── logger.js        # console + socket log buffer
-│       ├── store.js         # SQLite-backed state, token hash
-│       ├── http.js          # Bun fetch + user agent
-│       ├── api.js           # Rollercoin HTTP client
-│       ├── keepalive.js     # warm probe with backoff/suspend
-│       ├── session.js       # token refresh scheduler
-│       ├── gateway.js       # Bun native WSS client + reconnect
-│       ├── mock.js          # simulator upstream
-│       ├── engine.js        # matching + order execution + 24h minute history
-│       ├── item-info.js     # auto label/rarity resolver
-│       ├── events.js        # upstream frame normalizer
-│       ├── system.js        # CPU/heap/event-loop/host health sampler
-│       ├── db.js            # bun:sqlite wrapper (pragma/transaction/named params)
-│       ├── db-metrics.js    # SQLite statement timing, file/WAL and slow-query probe
-│       ├── backup.js        # export/import portable + raw snapshot (VACUUM INTO)
-│       ├── server.js        # control plane HTTP/WS + static UI
-│       └── reset-token.js
-├── test/
-├── docs/                    # screenshot
-├── vite.config.js           # root ui/, output dist/
-├── package.json
-├── bun.lock
-├── trade.js                 # script asli (referensi)
-├── test.json                # contoh konfigurasi
-└── .env.example
+│       ├── App.jsx           # dashboard, panels, cards
+│       ├── useWorker.js      # snapshot/WS/actions state
+│       ├── components/       # PriceChart (Recharts), modals
+│       ├── lib/              # client, format, constants, sound
+│       └── styles.css        # entry Tailwind v4 + token desain
+├── ui/test/                  # test UI (bun test)
+├── public/                   # aset statis (bridge.js, favicon, fonts)
+├── dist/                     # hasil build Vite yang disajikan server.rs
+├── docs/                     # screenshot + catatan arsitektur
+├── scripts/dev.mjs           # cargo run + Vite untuk development
+├── mise.toml                 # pin Rust 1.99.1 + CARGO_HOME lokal
+├── vite.config.js            # root ui/, output dist/, proxy ke PORT
+├── ecosystem.config.cjs      # PM2 menjalankan binary Rust
+└── package.json              # perintah build/test, bukan runtime backend
+```
+
+---
+
+## Backend Rust
+
+Seluruh backend adalah crate Rust di root repo (`src/`, `examples/`, `tests/`). Tidak ada runtime
+JavaScript di jalur panas: SQLite lewat `rusqlite` bundled, HTTP/WSS lewat `reqwest` +
+`tokio-tungstenite` dengan `native-tls`, dan event loop adalah Tokio. Deck React tetap, disajikan
+dari `dist/` yang sama.
+
+| Tanggung jawab | Modul |
+| --- | --- |
+| Wiring proses, sesi, keepalive, shutdown | `src/runtime.rs`, `src/main.rs` |
+| Matching + eksekusi order | `src/engine.rs` |
+| Feed market WebSocket | `src/gateway.rs`, `src/feed.rs` |
+| HTTP client + refresh token | `src/api.rs`, `src/session.rs`, `src/keepalive.rs` |
+| State & riwayat SQLite | `src/store.rs`, `src/db.rs` |
+| Metrik statement SQLite | `src/db_metrics.rs` |
+| Backup JSON + snapshot | `src/backup.rs` |
+| Health worker/host | `src/system.rs` |
+| Control plane HTTP/WS + deck | `src/server.rs` |
+| Model trend, aturan, depth, validasi | `src/trend.rs`, `src/rules.rs`, `src/depth.rs`, `src/validation.rs` |
+| Label/rarity item | `src/item_info.rs` |
+| Simulator | `src/mock.rs` |
+| Config & log | `src/config.rs`, `src/logger.rs` |
+
+**Verifikasi porting (historis).** Sebelum worker JS dihapus, hasilnya dibandingkan langsung:
+**294 frame produksi diputar di kedua engine dan keputusannya identik** (43 memicu beli), dan deck
+React yang sama terbukti berjalan di atas backend Rust baik live maupun `MOCK=1`. Rincian per modul,
+endpoint, dan biaya per frame ada di [docs/rust-backend.md](docs/rust-backend.md); alasan teknis dan
+angka bottleneck ada di [docs/rust-rewrite-feasibility.md](docs/rust-rewrite-feasibility.md).
+
+**Perbedaan yang disengaja** dari worker JS (detail di doc yang sama): import `state.json` legacy
+tidak ada, `save()` menulis langsung tanpa debounce, `runtime` bernilai `null` sampai frame pertama,
+tidak ada rate-limit 429 untuk percobaan access key yang salah, metrik heap/event-loop dikirim
+`null`, timestamp log dalam UTC, dan faktor kalibrasi trend dibekukan di kode.
+
+### Deploy
+
+Build di server yang sama dengan runtime-nya (binary menautkan glibc dan `libssl.so.3`, jadi build di
+distro lain bisa gagal jalan). Prasyarat: **Bun** (hanya untuk build deck), **Rust** (`mise install`
+atau cargo ≥ 1.85), dan paket runtime **`libssl3`** (Debian/Ubuntu: `apt install libssl3`; RHEL:
+`openssl-libs`).
+
+```bash
+git clone <repo> && cd rollercoin
+mise install                   # atau pastikan cargo tersedia
+bun install --frozen-lockfile  # dependency UI
+cp .env.example .env           # isi WORKER_TOKEN / cookie bila perlu
+bun run build                  # UI → dist/
+cargo build --release          # binary → target/release/rollercoin-worker
+```
+
+Jalankan dari root repo (binary mencari `dist/` dan `.env` relatif ke working directory):
+
+```bash
+PORT=8787 RC_DATA_DIR=./data ./target/release/rollercoin-worker
+```
+
+Dengan **PM2** (butuh Node untuk PM2-nya sendiri):
+
+```bash
+bun install -g pm2
+bun run pm2:start              # build dek + release binary + startOrReload
+pm2 save && pm2 startup        # auto-start setelah reboot
+```
+
+Dengan **systemd** (tanpa Node/Bun saat runtime):
+
+```ini
+[Unit]
+Description=TURU.RC worker
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/rollercoin
+ExecStart=/opt/rollercoin/target/release/rollercoin-worker
+Environment=PORT=8787
+Environment=RC_DATA_DIR=./data
+Restart=always
+RestartSec=2
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`SIGINT` dan `SIGTERM` sama-sama memicu shutdown rapi (flush market cache + `store.close()`), jadi
+`systemctl stop`, `pm2 stop`, dan Ctrl+C berhenti dengan bersih tanpa meninggalkan WAL besar.
+
+Update setelah pull:
+
+```bash
+git pull
+bun install --frozen-lockfile
+bun run build
+cargo build --release
+# pm2: pm2 restart rc-autotrade --update-env  |  systemd: systemctl restart turu-rc
+```
+
+Perubahan UI saja cukup `bun run build` — `dist/` dibaca per request, tanpa restart. Perubahan Rust
+butuh build + restart. Binary release sekitar 16 MB (13 MB setelah `strip`), mencapai banner dalam
+<50 ms; build pertama mengunduh crate ke `.cargo-home/` (~230 MB, gitignored).
+
+### Perintah maintenance
+
+```bash
+bun run key:reset        # rotasi access key (worker harus berhenti)
+bun run format           # cargo fmt
+bun run lint             # cargo clippy --all-targets (masih ada warning gaya, bukan error)
+bun run test             # cargo test + bun test
+bun run diagnose:ws      # probe DNS/TCP/TLS/WS ke upstream
+bun run bench:frame      # bench engine.handle_frame
+bun run bench:trend      # bench rebuild model trend
 ```
 
 ---
@@ -1559,23 +1672,23 @@ Total 112 test; integration test memakai port acak dan data directory sementara.
 | Gejala | Penyebab / solusi |
 | --- | --- |
 | `ACCESS DENIED` saat login | Key salah atau sudah dirotasi. Cek terminal; reset dengan `bun run key:reset` (worker harus berhenti). |
-| `429` saat login | Terlalu banyak key salah. Tunggu 1 menit. |
-| Halaman menampilkan “REACT DECK READY” atau 404 | Worker lama masih menyajikan `public/`. Restart dengan `Ctrl+C` lalu `bun start` agar worker menyajikan `dist/` React. |
+| Tidak ada `429` walau salah key berkali-kali | Backend Rust belum punya rate limit percobaan key (perbedaan yang disengaja); `429` hanya datang dari Rollercoin sendiri. |
+| Halaman menampilkan “REACT DECK READY” atau 404 | `dist/` belum dibangun atau binary dijalankan dari luar root repo. Jalankan `bun run build`, lalu start dari root repo supaya `dist/` dan `.env` ketemu. |
 | `LINK LOST` | Control WebSocket putus. Worker mati? Cek proses/port. |
 | `FEED DOWN` / `SYNCING` | Worker hidup tetapi socket Rollercoin belum tersambung. Cek log, token, jaringan. |
-| Log gateway `TLS handshake failed` | Token **tidak** terlibat: TLS selesai sebelum URL/`?token=` dikirim, jadi token valid sekalipun bisa kena. Jalankan `bun scripts/diagnose-ws.js` di terminal yang sama dengan `npm run dev` untuk memisahkan DNS/TCP, CA/`node:tls`, `fetch`, dan WebSocket native Bun. Hentikan worker dulu agar dua socket tidak memakai sesi yang sama. Jika semua probe hijau, error lama biasanya berasal dari proses worker basi atau gangguan edge sesaat. Bandingkan juga `bun --revision` lokal vs production. Token dan Bearer sekarang diredaksi dari log/`lastError`. |
+| Log gateway `TLS handshake failed` | Token **tidak** terlibat: TLS selesai sebelum URL/`?token=` dikirim, jadi token valid sekalipun bisa kena. Jalankan `bun run diagnose:ws` di terminal terpisah (probe DNS/TCP/TLS/HTTPS/WebSocket memakai stack yang sama dengan worker: `native-tls`/OpenSSL) untuk memisahkan tiap tahap. Hentikan worker dulu agar dua socket tidak memakai sesi yang sama. Jika semua probe hijau, error lama biasanya berasal dari proses worker basi atau gangguan edge sesaat. Token dan Bearer diredaksi dari log/`lastError`. |
 | `NO TOKEN` | Belum ada sesi Rollercoin. Buka tab LINK dan tempel token. |
 | `AUTH ERR` | Token ditolak Rollercoin. Tempel sesi baru; cek cookie/UA bila perlu. |
 | Purchase `403` / HTML challenge | Cloudflare. Isi cookie dari browser; pastikan IP/UA wajar. |
 | Bridge `CORS` / `Failed to fetch` | Console mode memakai `fetch` halaman dan bisa diblokir CSP/Private Network Access. Pakai **USERSCRIPT · AUTO** (memakai `GM_xmlhttpRequest`). Pastikan URL bridge `http://127.0.0.1:<port>`, worker hidup, dan userscript di-generate ulang. Error `401` sekarang juga mengirim header CORS, jadi restart worker agar pesan aslinya terlihat. |
-| `EADDRINUSE` | Port dipakai. `PORT=8788 bun start` atau hentikan proses lain. |
-| Ctrl+C lama / worker tidak keluar | Di bawah `bun --watch`, timer exit yang di-`unref` bisa menjadi satu-satunya pending work setelah server ditutup, sehingga watcher menunggu sampai Ctrl+C kedua. Versi ini memakai timer exit yang di-ref, watchdog 5 detik, dan Ctrl+C kedua memaksa `process.exit(1)`. Kalau masih macet, cek `ss -ltnp 'sport = :8787'` untuk proses lama. |
+| `EADDRINUSE` | Port dipakai. Pakai `PORT=9000 bun start`, atau hentikan proses yang memegang 8787 (`ss -ltnp 'sport = :8787'`). |
+| `mise ERROR ... Read-only file system` | Hanya terjadi saat perintah dijalankan di sandbox agen yang tidak boleh menulis ke `~/.local`/`~/.cargo`. Di terminal biasa `mise install` berjalan normal; alternatifnya jalankan binary release langsung. |
 | Key hilang | `bun run key:reset`, lalu restart worker dan login dengan key baru. |
 | Harga terlihat, order tidak jalan | Target terlalu rendah, stok di bawah minimum, pause/dry-run aktif, cooldown, atau batas order/menit. Cocokkan dengan [reason code](#reason-code-yang-muncul-di-log) di log `scan` dan cek state card. |
 | Label tetap `ITEM xxxx` / `Item not found` | Item ID tidak ditemukan untuk tipe yang dicoba, atau `item-info` gagal (sesi/Cloudflare/jaringan). Buka edit target dan klik **RETRY**; worker akan mencoba `mutation_component`, `miner`, `rack`, `battery`. `rarityGroup` yang tidak ada akan fallback ke nama item. |
 | Chart masih kosong | Mode live mulai tanpa history; tunggu beberapa menit. Worker restart menghapus history in-memory. Mock mode mengisi 24 jam awal agar semua timeframe terisi. |
 | BOOK di ticker tidak turun setelah fill | Fill sukses menurunkan book segera; frame market berikutnya bisa mengembalikannya jika memang ada stok baru. Order gagal tidak pernah menambah book. Meter BOOK di card sudah diganti success rate. |
-| Tab browser inactive | Tidak masalah lagi; engine berjalan di Bun. Hanya UI yang berhenti menggambar. |
+| Tab browser inactive | Tidak masalah; engine berjalan di Rust. Hanya UI yang berhenti menggambar. |
 
 ### Batasan yang disengaja
 
