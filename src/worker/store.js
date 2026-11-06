@@ -169,6 +169,11 @@ function sanitizeHistory(entries, limit = MAX_HISTORY) {
           : status === "failed"
             ? note || "failed"
             : "-";
+      const latencyValue =
+        entry.latencyMs == null ||
+        (typeof entry.latencyMs === "string" && entry.latencyMs.trim() === "")
+          ? NaN
+          : Number(entry.latencyMs);
       return {
         id: String(entry.id ?? ""),
         orderId: entry.orderId ? String(entry.orderId) : null,
@@ -181,7 +186,7 @@ function sanitizeHistory(entries, limit = MAX_HISTORY) {
         profitRlt: asSigned(entry.profitRlt),
         status,
         at: asFinite(entry.at, Date.now()),
-        latencyMs: Number.isFinite(Number(entry.latencyMs)) ? Number(entry.latencyMs) : null,
+        latencyMs: Number.isFinite(latencyValue) ? latencyValue : null,
         timings: sanitizeTimings(entry.timings),
         rawEvents: sanitizeRawEvents(entry.rawEvents),
         note,
