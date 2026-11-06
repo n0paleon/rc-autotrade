@@ -54,6 +54,9 @@ pub struct AppState {
     pub started_at: i64,
     pub port: AtomicU16,
     pub hub: broadcast::Sender<Value>,
+    /// Bumped when the worker access key is rotated so open control sockets
+    /// can be closed with code 4003 (the deck reconnects with the new key).
+    pub auth_epoch: tokio::sync::watch::Sender<u64>,
     /// Coalesces concurrent session refreshes (feed 401 + scheduled tick).
     pub refresh_lock: tokio::sync::Mutex<()>,
 }
@@ -71,7 +74,8 @@ impl AppState {
         system: Arc<Mutex<SystemMonitor>>,
         logger: Arc<Logger>,
     ) -> Self {
-        let (hub, _) = broadcast::channel(256);
+        let (hub, _) = broadcast::channel(1_024);
+        let (auth_epoch, _) = tokio::sync::watch::channel(0u64);
         let state = Self {
             store: Mutex::new(store),
             engine: Mutex::new(engine),
@@ -87,6 +91,7 @@ impl AppState {
             port: AtomicU16::new(config.port),
             config,
             hub,
+            auth_epoch,
             refresh_lock: tokio::sync::Mutex::new(()),
         };
         // Every log line also reaches connected decks, like `logger.setSink`.
@@ -225,6 +230,24 @@ fn upstream_host(url: &str) -> String {
         .and_then(|rest| rest.split('/').next())
         .unwrap_or(url)
         .to_string()
+}
+
+/// Reopens the market feed after a credential change.
+///
+/// `force` mirrors the Bun worker's `mustReplace` rule: manual/bridge session
+/// changes always reconnect (the open socket still uses the old token), while a
+/// scheduled refresh only reconnects a feed that is already down.
+pub async fn reconnect_gateway(state: &Arc<AppState>, reason: &str, force: bool) {
+    let gateway = state
+        .gateway
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    if let Some(gateway) = gateway {
+        if force || gateway.status() != "online" {
+            gateway.reconnect(reason).await;
+        }
+    }
 }
 
 fn epoch_ms() -> i64 {
@@ -743,39 +766,41 @@ async fn post_session(
     state.wake_keepalive("session updated");
 
     if changed {
-        let gateway = state
-            .gateway
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        if let Some(gateway) = gateway {
-            if gateway.status() != "online" {
-                gateway.reconnect("session updated").await;
-            }
-        }
+        // Manual credential replacement must re-handshake even when the feed
+        // still reports "online": that socket is authenticated with the old
+        // token. The Bun worker did the same for `reason === "manual"`.
+        reconnect_gateway(&state, "session updated", true).await;
     }
 
     Json(json!({ "ok": true, "changed": changed, "session": status })).into_response()
 }
 
 async fn delete_session(_auth: Auth, State(state): State<Arc<AppState>>) -> Response {
-    let mut store = state.store.lock().unwrap_or_else(|e| e.into_inner());
-    let patch = validation::SessionPatch {
-        clear_access_token: true,
-        clear_refresh_token: true,
-        clear_cookie: true,
-        ..Default::default()
+    let (changed, status) = {
+        let mut store = state.store.lock().unwrap_or_else(|e| e.into_inner());
+        let before = store.state.session.access_token.clone();
+        let patch = validation::SessionPatch {
+            clear_access_token: true,
+            clear_refresh_token: true,
+            clear_cookie: true,
+            ..Default::default()
+        };
+        if let Err(message) = store.apply_session_patch(patch) {
+            return error_body(StatusCode::INTERNAL_SERVER_ERROR, &message);
+        }
+        (
+            before != store.state.session.access_token,
+            store.session_status(),
+        )
     };
-    if let Err(message) = store.apply_session_patch(patch) {
-        return error_body(StatusCode::INTERNAL_SERVER_ERROR, &message);
-    }
-    let status = store.session_status();
-    drop(store);
     state.logger.info(
         "session",
         "Rollercoin session cleared from the control deck",
     );
     state.broadcast("session", status.clone());
+    if changed {
+        reconnect_gateway(&state, "session cleared", true).await;
+    }
     Json(json!({ "ok": true, "session": status })).into_response()
 }
 
@@ -801,6 +826,10 @@ async fn rotate_auth(_auth: Auth, State(state): State<Arc<AppState>>) -> Respons
         "auth",
         "worker access key rotated; revoking control sockets",
     );
+    // Close every open control socket with 4003; the deck treats that code as
+    // "reconnect with the new key" (4001 stays reserved for a bad key).
+    let next = *state.auth_epoch.borrow() + 1;
+    state.auth_epoch.send_replace(next);
     Json(json!({
         "ok": true,
         "token": token,
@@ -1192,6 +1221,9 @@ async fn push_session(
             store.session_status()
         };
         state.broadcast("session", status);
+        // A bridge push replaces the live token, so the feed must re-handshake
+        // or it keeps running (and eventually failing) on the previous one.
+        reconnect_gateway(&state, "bridge session", true).await;
     }
 
     Json(json!({ "ok": true, "accepted": accepted, "session": session })).into_response()
@@ -1258,6 +1290,37 @@ async fn ws_handler(
         .on_upgrade(move |socket| handle_socket(socket, state, authorized))
 }
 
+fn current_snapshot(state: &AppState) -> Value {
+    let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
+    let engine = state.engine.lock().unwrap_or_else(|e| e.into_inner());
+    state.snapshot(&store, &engine)
+}
+
+fn gateway_snapshot(state: &AppState) -> Option<Value> {
+    state
+        .gateway
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .map(|gateway| gateway.stats_json())
+}
+
+fn system_snapshot(state: &AppState) -> Value {
+    state
+        .system
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .snapshot()
+}
+
+fn latency_snapshot(state: &AppState) -> Value {
+    state
+        .latency
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .snapshot()
+}
+
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>, authorized: bool) {
     if !authorized {
         let mut socket = socket;
@@ -1276,11 +1339,19 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, authorized: bool
 
     let (mut sender, mut receiver) = socket.split();
     let mut updates = state.hub.subscribe();
+    let mut auth_rx = state.auth_epoch.subscribe();
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
+    heartbeat.tick().await; // the first tick is immediate
+    // Live counters belong to the socket, not to a global clock. All three
+    // panels are pushed once every five seconds: pushing `gateway` on every
+    // frame re-rendered the HUD continuously for no benefit, and the Bun worker
+    // used the same 5 s `statsTimer` cadence.
+    let mut telemetry_tick = tokio::time::interval(Duration::from_secs(5));
+    telemetry_tick.tick().await; // the first tick is immediate
+    let mut alive = true;
 
     let hello = {
-        let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
-        let engine = state.engine.lock().unwrap_or_else(|e| e.into_inner());
-        let mut snapshot = state.snapshot(&store, &engine);
+        let mut snapshot = current_snapshot(&state);
         snapshot["ok"] = Value::Bool(false);
         let hello = json!({
             "type": "hello",
@@ -1315,6 +1386,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, authorized: bool
     loop {
         tokio::select! {
             incoming = receiver.next() => {
+                if let Some(Ok(_)) = &incoming {
+                    alive = true;
+                }
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
                         if text.len() > 4096 {
@@ -1335,11 +1409,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, authorized: bool
                                 }
                             }
                             Some("refresh") => {
-                                let snapshot = {
-                                    let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
-                                    let engine = state.engine.lock().unwrap_or_else(|e| e.into_inner());
-                                    state.snapshot(&store, &engine)
-                                };
+                                let snapshot = current_snapshot(&state);
                                 let frame = json!({ "type": "snapshot", "data": snapshot, "at": epoch_ms() });
                                 if sender.send(Message::Text(frame.to_string().into())).await.is_err() {
                                     break;
@@ -1365,9 +1435,59 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, authorized: bool
                             break;
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        // The deck must not silently miss a batch and keep
+                        // rendering stale counters until the next page load.
+                        state.logger.debug(
+                            "socket",
+                            format!("control socket lagged by {skipped} frame(s); sending a fresh snapshot"),
+                        );
+                        let snapshot = current_snapshot(&state);
+                        let frame = json!({ "type": "snapshot", "data": snapshot, "at": epoch_ms() });
+                        if sender.send(Message::Text(frame.to_string().into())).await.is_err() {
+                            break;
+                        }
+                    }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
+            }
+            _ = telemetry_tick.tick() => {
+                if let Some(gateway) = gateway_snapshot(&state) {
+                    let frame = json!({ "type": "gateway", "data": gateway, "at": epoch_ms() });
+                    if sender.send(Message::Text(frame.to_string().into())).await.is_err() {
+                        break;
+                    }
+                }
+                let system = json!({ "type": "system", "data": system_snapshot(&state), "at": epoch_ms() });
+                if sender.send(Message::Text(system.to_string().into())).await.is_err() {
+                    break;
+                }
+                let latency = json!({ "type": "latency", "data": latency_snapshot(&state), "at": epoch_ms() });
+                if sender.send(Message::Text(latency.to_string().into())).await.is_err() {
+                    break;
+                }
+            }
+            _ = heartbeat.tick() => {
+                // Same 30 s liveness probe the Bun worker ran over every
+                // control socket; it also keeps idle connections warm.
+                if !alive {
+                    break;
+                }
+                alive = false;
+                if sender.send(Message::Ping(Vec::new().into())).await.is_err() {
+                    break;
+                }
+            }
+            _ = auth_rx.changed() => {
+                // 4003 tells the deck to reconnect immediately (a key rotation
+                // invalidates the current socket); 4001 stays for bad keys.
+                let _ = sender
+                    .send(Message::Close(Some(CloseFrame {
+                        code: 4003,
+                        reason: "access key rotated".into(),
+                    })))
+                    .await;
+                break;
             }
         }
     }

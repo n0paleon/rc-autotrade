@@ -93,8 +93,57 @@ pub struct Worker {
     pub keepalive: Arc<KeepaliveService>,
     feed_task: JoinHandle<()>,
     ticker: JoinHandle<()>,
+    stats_task: JoinHandle<()>,
     keepalive_task: Option<JoinHandle<()>>,
     system_tasks: Vec<JoinHandle<()>>,
+}
+
+/// Cadence of the background health sampler. Broadcasts live in the control
+/// socket now; this task only samples and logs health transitions so a
+/// struggling worker still leaves a trace with no deck connected.
+pub const HEALTH_TICK_MS: u64 = 5_000;
+
+/// Logs health transitions, matching `ControlServer.#trackSystemHealth` from
+/// the Bun worker.
+fn track_health(state: &Arc<AppState>, health_level: &mut String) {
+    let system = state
+        .system
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .snapshot();
+    let level = system
+        .pointer("/health/level")
+        .and_then(Value::as_str)
+        .unwrap_or("ok")
+        .to_string();
+    if level == *health_level {
+        return;
+    }
+    let reasons = system
+        .pointer("/health/reasons")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .filter(|text| !text.is_empty())
+        .unwrap_or_else(|| "unknown".to_string());
+    match level.as_str() {
+        "critical" => state
+            .logger
+            .warn("system", format!("worker health critical — {reasons}")),
+        "warn" => state
+            .logger
+            .warn("system", format!("worker health degraded — {reasons}")),
+        _ if *health_level == "warn" || *health_level == "critical" => {
+            state.logger.info("system", "worker health recovered")
+        }
+        _ => {}
+    }
+    *health_level = level;
 }
 
 fn mock_items(state: &Arc<AppState>) -> Vec<MockItem> {
@@ -205,6 +254,8 @@ impl Worker {
             logger: state.logger.clone(),
             latency: state.latency.clone(),
             last_request_at: state.api.last_request_at_handle(),
+            // Same `reqwest::Client` (and therefore the same pool) as purchases.
+            http: state.api.http_client(),
         });
         {
             let mut slot = state
@@ -245,11 +296,23 @@ impl Worker {
             }
         });
 
+        let stats_state = state.clone();
+        let stats_task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(HEALTH_TICK_MS));
+            interval.tick().await; // the first tick is immediate
+            let mut health_level = "ok".to_string();
+            loop {
+                interval.tick().await;
+                track_health(&stats_state, &mut health_level);
+            }
+        });
+
         Self {
             feed,
             keepalive,
             feed_task,
             ticker,
+            stats_task,
             keepalive_task,
             system_tasks,
         }
@@ -268,6 +331,7 @@ impl Worker {
         tokio::time::sleep(Duration::from_millis(150)).await;
         self.feed_task.abort();
         self.ticker.abort();
+        self.stats_task.abort();
     }
 }
 
@@ -386,16 +450,22 @@ pub async fn refresh_session(state: &Arc<AppState>) -> bool {
             .error
             .clone()
             .unwrap_or_else(|| "refresh failed".into());
-        {
+        let status = {
             let mut store = state
                 .store
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             store.mark_session_error(&message);
-        }
+            store.session_status()
+        };
         state
             .logger
             .warn("session", format!("refresh failed: {message}"));
+        // The deck used to learn about a failed refresh from the session
+        // manager's `updated` event; without this push the Link/HUD panels
+        // kept showing the last successful status until a manual refresh.
+        state.broadcast("session", status);
+        state.wake_keepalive("session refresh failed");
         return false;
     }
 
@@ -409,6 +479,12 @@ pub async fn refresh_session(state: &Arc<AppState>) -> bool {
     };
     state.logger.info("session", "access token renewed");
     state.broadcast("session", status);
+    state.wake_keepalive("session refreshed");
+    if changed {
+        // A refresh that happens while the feed is down must reopen it with the
+        // new token; a live feed keeps its socket (same rule as the Bun worker).
+        crate::server::reconnect_gateway(state, "session refreshed", false).await;
+    }
     changed
 }
 

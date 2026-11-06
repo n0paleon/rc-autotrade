@@ -75,7 +75,7 @@ Rollercoin session — two of either will duplicate orders.
 | `src/worker/index.js` (wiring) | `src/runtime.rs` | ported + end-to-end test |
 | `src/worker/gateway.js` | `src/gateway.rs` | ported (native-tls) + tests |
 | `src/worker/latency.js` | `src/latency.rs` | ported + tests |
-| `src/worker/api.js` + `http.js` | `src/api.rs` | ported (native-tls) + tests |
+| `src/worker/api.js` + `http.js` | `src/api.rs` | ported (rustls + HTTP/2) + tests |
 | `src/worker/session.js` | `src/session.rs` | helpers ported + tests (scheduler in wiring) |
 | `src/worker/keepalive.js` | `src/keepalive.rs` | ported + tests |
 | `src/worker/backup.js` | `src/backup.rs` | ported + tests (JSON v1 + `VACUUM INTO`) |
@@ -151,10 +151,16 @@ Bun worker.
     `db_metrics.rs` without wrapping a single call site. Failed prepares and
     `SQLITE_BUSY` are not visible from profile events and stay zero unless the
     store reports them via `mark_error`/`mark_busy`.
+11. **The warm probe shares the order client's pool.** Bun's global `fetch`
+    pooled sockets per origin, so the old probe kept the purchase connection
+    hot for free. A `reqwest::Client` owns its pool, so `KeepaliveConfig` takes
+    `ApiClient::http_client()`; a probe with its own client would warm a
+    second, unused socket and orders would still pay TCP + TLS after an idle
+    gap. `tests/connection_pool.rs` locks this in by counting connections.
 
 ## 6. Verification during the port
 
-- `cargo test`: **141 tests** (135 unit + 4 HTTP + 2 end-to-end). Rules, depth,
+- `cargo test`: **144 tests** (136 unit + 4 HTTP + 3 end-to-end + 1 pool). Rules, depth,
   timings, raw events, redaction, validation, config, logger, DB schema, store
   round-trips/paging/timings merge, server helpers, **trend parity fixtures**,
   events normalisation, nine engine scenarios, six API-client scenarios against
@@ -236,6 +242,14 @@ Bun worker.
   field map, settings patch, history/report, pinned-token 409.
 - Control socket via a Bun client: `hello` → `snapshot` → `pong` with a valid
   key; close code **4001** with a bad key.
+- Realtime parity: the control socket owns the telemetry ticker. `gateway`,
+  `system` and `latency` are pushed together once every 5 s (the Bun
+  `statsTimer` cadence); pushing `gateway` per frame re-rendered the HUD
+  continuously, so it was deliberately coalesced. A manual session change bumps
+  `gateway.reconnects`, so the feed re-handshakes with the new token.
+- Failed no-item orders keep the attempted `qty`/`unitPrice`/`targetPrice` and
+  the full dispatch→result `latencyMs` in the loot row, matching the Bun
+  `failureMeta = pendingMeta` path (covered by an engine test).
 - React deck opened in a real browser against the Rust worker: login with the
   access key, target list rendered, `PAUSED` state from the DB, no console
   errors. Screenshot: `.qa/rust-ui.png` (local, gitignored).
@@ -303,7 +317,7 @@ hardening rather than parity work:
 3. **Recalibration tool** — the trend calibration factor is a constant; a Rust
    replay tool could recompute it from `price_points` instead of editing code.
 
-## 10. TLS fingerprint risk — resolved for now
+## 10. TLS stack and fingerprint risk
 
 The old `ws` client (via `node:tls`) could fail the TLS handshake to the
 Rollercoin edge while Bun's native stack succeeded. The Rust worker therefore
@@ -313,21 +327,36 @@ proved connectivity first:
 bun run diagnose:ws      # cargo run --release --example diagnose_ws
 ```
 
-Measured from this machine against `wss://nws.rollercoin.com/` (OpenSSL via
-native-tls, ALPN `http/1.1`):
+Measured from this machine against the edge (the TCP/TLS rows use the
+native-tls probe that also drives the gateway; the HTTPS row now runs through
+the `reqwest`/rustls client):
 
 | Step | Result |
 | --- | --- |
 | DNS | 3 A records in 52 ms |
 | TCP connect | 67 ms |
 | TLS handshake | 76 ms, cert 927 B DER |
-| HTTPS GET `rollercoin.com` | 200 OK in 681 ms |
+| HTTPS GET `rollercoin.com` | 200 OK over HTTP/2 |
 | WS upgrade without a token | **401 Unauthorized** (TLS + upgrade path works) |
 
-So **native-tls (OpenSSL)** is the chosen stack for `api.rs` and the future
-gateway. `rustls` stays untested on purpose: it has a distinctive ClientHello
-and the upstream is behind Cloudflare. If a future failure points at
-fingerprinting, the fallback is BoringSSL bindings, not a rewrite.
+The gateway (WebSocket) keeps **native-tls (OpenSSL)**, the stack that
+completed the handshake above. The HTTP order client uses **rustls**, chosen
+over native-tls for portability. `rustls` has a distinctive ClientHello, so
+the fingerprint risk in `docs/rust-rewrite-feasibility.md` §5 is **accepted,
+not eliminated**: the live probe reaches the edge and upgrades, but if
+Cloudflare ever challenges it, switch `reqwest` back to `native-tls` or move to
+BoringSSL bindings.
+
+HTTP/2 is explicit, not inherited. Keep the dependency as:
+
+```toml
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "charset", "http2", "system-proxy", "rustls"] }
+```
+
+`default-features = false` keeps the TLS backend visible (reqwest 0.13 defaults
+to rustls, but relying on that hid the backend once already). The `http2`
+feature enables ALPN negotiation; `cargo run --example diagnose_ws` prints the
+protocol (`HTTP/2.0`) next to the HTTPS status.
 
 ## 11. Why the port order matters
 

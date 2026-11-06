@@ -5,9 +5,12 @@
 //! place. Every call records `last_request_at`, which the warm probe uses to
 //! decide whether a keepalive is still needed.
 //!
-//! Transport is `reqwest` with **native-tls (OpenSSL)**. `examples/diagnose_ws`
-//! proves this stack completes the handshake to the Rollercoin edge, which is
-//! the risk called out in `docs/rust-parity.md` §8.
+//! Transport is `reqwest` with **rustls** and explicit **HTTP/2**. The Cargo
+//! features are pinned with `default-features = false` so the TLS backend and
+//! the `http2` flag stay visible; `examples/diagnose_ws` proves the stack
+//! reaches the Rollercoin edge and negotiates `HTTP/2.0`. rustls has a
+//! distinctive ClientHello, so the fingerprint risk in
+//! `docs/rust-rewrite-feasibility.md` §5 is accepted rather than eliminated.
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
@@ -135,8 +138,9 @@ impl ApiClient {
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .timeout(Duration::from_millis(timeout_ms.max(1_000)))
-            // Preserve the keep-alive pool: the order path must not pay a new
-            // TLS handshake because an idle connection was dropped early.
+            // reqwest already defaults to a 90 s idle timeout and an unlimited
+            // number of idle sockets per host; the real requirement is that the
+            // warm probe shares *this* client, not that the timeout is repeated.
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_nodelay(true)
             .build()
@@ -184,6 +188,13 @@ impl ApiClient {
     /// the client.
     pub fn last_request_at_handle(&self) -> std::sync::Arc<AtomicI64> {
         self.last_request_at.clone()
+    }
+
+    /// The underlying `reqwest::Client`, cloned by handle. Clones share one
+    /// connection pool, which is what lets the warm probe keep the *order*
+    /// connection hot instead of warming a second, unused socket.
+    pub fn http_client(&self) -> reqwest::Client {
+        self.http.clone()
     }
 
     fn touch(&self) {

@@ -120,7 +120,7 @@ async fn main() {
     }
     println!();
 
-    // 4. HTTPS through the same OpenSSL stack.
+    // 4. HTTPS through the reqwest stack (rustls, HTTP/2 via ALPN).
     let client = reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(TIMEOUT)
@@ -131,7 +131,12 @@ async fn main() {
             match client.get(HTTP_URL).send().await {
                 Ok(response) => ok(
                     "https get",
-                    format!("{} in {:?}", response.status(), started.elapsed()),
+                    format!(
+                        "{} {:?} in {:?}",
+                        response.status(),
+                        response.version(),
+                        started.elapsed()
+                    ),
                 ),
                 Err(error) => fail("https get", error.to_string()),
             }

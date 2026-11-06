@@ -266,6 +266,98 @@ async fn feed_to_fill_round_trip() {
 }
 
 #[tokio::test]
+async fn control_socket_pushes_live_telemetry() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::connect_async;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    const TOKEN: &str = "test-token-123456";
+
+    let dir = temp_dir();
+    let logger = Arc::new(Logger::new("error"));
+    let mut store = Store::open(dir.clone(), logger.clone()).expect("store");
+    rollercoin_worker::runtime::seed_mock_state(&mut store, &logger).expect("seed");
+    store.ensure_worker_token(TOKEN).expect("token");
+
+    let engine = Engine::new(Arc::new(now_ms), logger.clone());
+    let latency = Arc::new(Mutex::new(LatencyTracker::new(120, Arc::new(now_ms))));
+    let api = Arc::new(ApiClient::with_default_timeout("http://127.0.0.1:1"));
+    let item_info = Arc::new(rollercoin_worker::item_info::ItemInfoService::new(
+        api.clone(),
+        logger.clone(),
+    ));
+    let system = Arc::new(Mutex::new(SystemMonitor::new(500, store.db_metrics())));
+    let mut cfg = config(
+        dir.clone(),
+        "ws://127.0.0.1:1/ws".into(),
+        "http://127.0.0.1:1".into(),
+    );
+    cfg.mock = true;
+    cfg.mock_interval_ms = 200;
+    cfg.keep_alive_ms = 0;
+    let state = Arc::new(AppState::new(
+        cfg, store, engine, api, item_info, latency, system, logger,
+    ));
+
+    let app = rollercoin_worker::server::router(state.clone(), dir.join("dist"));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let worker = Worker::start(state.clone());
+
+    let mut request = format!("ws://{address}/ws").into_client_request().unwrap();
+    request.headers_mut().insert(
+        "sec-websocket-protocol",
+        axum::http::HeaderValue::from_static("rcw.v1, test-token-123456"),
+    );
+    let (mut socket, _) = connect_async(request).await.expect("control socket");
+
+    let mut system_seen = false;
+    let mut gateway_seen = false;
+    let mut latency_seen = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    while !(system_seen && gateway_seen && latency_seen) {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let Ok(Some(Ok(message))) = tokio::time::timeout(remaining, socket.next()).await else {
+            break;
+        };
+        let WsMessage::Text(text) = message else {
+            continue;
+        };
+        let Ok(frame) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        match frame.get("type").and_then(Value::as_str) {
+            Some("system") => system_seen = true,
+            Some("gateway") => gateway_seen = true,
+            Some("latency") => latency_seen = true,
+            _ => {}
+        }
+    }
+
+    assert!(system_seen, "no periodic `system` push reached the socket");
+    assert!(
+        gateway_seen,
+        "no periodic `gateway` push reached the socket"
+    );
+    assert!(
+        latency_seen,
+        "no periodic `latency` push reached the socket"
+    );
+
+    server.abort();
+    worker.stop().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn mock_mode_trades_without_any_upstream() {
     let dir = temp_dir();
     let logger = Arc::new(Logger::new("error"));
