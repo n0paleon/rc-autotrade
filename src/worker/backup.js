@@ -23,6 +23,8 @@ import {
   MAX_REPORT_PRODUCTS
 } from "../shared/constants.js";
 import { roundPrice } from "../shared/rules.js";
+import { decodeRawEvents, encodeRawEvents, sanitizeRawEvents } from "../shared/raw-events.js";
+import { decodeTimings, encodeTimings, sanitizeTimings } from "../shared/timings.js";
 import { validateSettings, validateTarget } from "../shared/validation.js";
 import { SCHEMA_VERSION } from "./schema.js";
 
@@ -155,6 +157,8 @@ function orderFromRow(row) {
     status: row.status,
     at: row.at,
     latencyMs: row.latency_ms,
+    timings: decodeTimings(row.timings),
+    rawEvents: decodeRawEvents(row.raw_events),
     note: row.note,
     message: row.message
   };
@@ -310,6 +314,8 @@ function normalizeOrder(entry, warnings, index) {
     status,
     at,
     latencyMs: entry.latencyMs == null ? null : wholeNumber(entry.latencyMs, 0, 86_400_000),
+    timings: sanitizeTimings(entry.timings),
+    rawEvents: sanitizeRawEvents(entry.rawEvents),
     note,
     message
   };
@@ -703,10 +709,10 @@ const TARGET_UPSERT = `
 const ORDER_INSERT = `
   INSERT OR REPLACE INTO orders
     (id, order_id, item_id, label, qty, unit_price, total_price, target_price,
-     profit_rlt, status, at, latency_ms, note, message)
+     profit_rlt, status, at, latency_ms, timings, raw_events, note, message)
   VALUES
     (@id, @order_id, @item_id, @label, @qty, @unit_price, @total_price, @target_price,
-     @profit_rlt, @status, @at, @latency_ms, @note, @message)
+     @profit_rlt, @status, @at, @latency_ms, @timings, @raw_events, @note, @message)
 `;
 
 const PRODUCT_INSERT = `
@@ -868,6 +874,8 @@ export function restoreBackup(
         status: order.status === "failed" ? "failed" : "filled",
         at: timeOr(order.at, now),
         latency_ms: order.latencyMs == null ? null : wholeNumber(order.latencyMs),
+        timings: encodeTimings(order.timings),
+        raw_events: encodeRawEvents(order.rawEvents),
         note: order.note ?? null,
         message: order.message ?? null
       });

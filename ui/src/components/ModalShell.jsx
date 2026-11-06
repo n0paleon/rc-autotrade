@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 export function Icon({ name, className = "h-4 w-4 shrink-0" }) {
   return (
@@ -114,7 +115,10 @@ export function ModalShell({
     };
   }, []);
 
-  return (
+  // Render outside the dashboard tree: animated ancestors leave an identity
+  // transform behind, which would turn `fixed` into "relative to the page"
+  // and let tall modals overflow the viewport.
+  return createPortal(
     <div className="fixed inset-0 z-[70] flex items-end justify-center pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] sm:items-center sm:p-6">
       <div
         className={`absolute inset-0 bg-night-950/85 backdrop-blur-sm modal-backdrop${closing ? " is-closing" : ""}`}
@@ -150,6 +154,7 @@ export function ModalShell({
           </div>
         ) : null}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

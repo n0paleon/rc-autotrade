@@ -7,7 +7,7 @@
  * decides whether a real migration is needed.
  */
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 7;
 
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS orders (
   status       TEXT NOT NULL,
   at           INTEGER NOT NULL,
   latency_ms   INTEGER,
+  timings      TEXT,
+  raw_events   TEXT,
   note         TEXT,
   message      TEXT
 );

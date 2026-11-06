@@ -5,6 +5,7 @@ import {
   PRICE_HISTORY_LIMIT,
   PRICE_POINT_WRITE_INTERVAL_MS
 } from "../shared/constants.js";
+import { sanitizeRawEvents } from "../shared/raw-events.js";
 import { normalizeUpstreamEvent } from "./events.js";
 import { planOrder, roundPrice } from "../shared/rules.js";
 import { buildTrend, TREND } from "../shared/trend.js";
@@ -394,6 +395,10 @@ export class Engine {
   }
 
   handleFrame(frame) {
+    // `frame.at` is stamped by the gateway when the socket message arrives, so
+    // the debugger measures from the signal itself, not from the moment the
+    // engine happens to run its handler.
+    const receivedAt = Number.isFinite(frame?.at) ? frame.at : this.clock();
     let event;
     try {
       event = normalizeUpstreamEvent(frame?.raw ?? frame);
@@ -402,18 +407,19 @@ export class Engine {
       return;
     }
     if (!event) return;
+    event.rawPayload = frame?.raw ?? frame;
 
     if (event.kind === "market" && event.itemId) {
-      this.#handleMarket(event);
+      this.#handleMarket(event, receivedAt);
       return;
     }
 
     if (event.kind === "fill") {
-      this.#handleFill(event);
+      this.#handleFill(event, receivedAt);
     }
   }
 
-  #handleMarket(event) {
+  #handleMarket(event, receivedAt = null) {
     const config = this.#configFor(event.itemId);
     if (!config) return;
     if (event.currency && event.currency !== "RLT") return;
@@ -430,6 +436,10 @@ export class Engine {
     if (!best) return;
 
     const now = this.clock();
+    // Keep the two cheap marks on every tick; the full timing object is only
+    // allocated when this frame actually becomes an order.
+    const signalAt = Number.isFinite(receivedAt) ? receivedAt : now;
+    const handleAt = now;
     const runtime = this.#runtime(event.itemId);
     runtime.lastPrice = best.unitPrice;
     runtime.lastStock = best.quantity;
@@ -547,6 +557,12 @@ export class Engine {
     this.lastOrderAt = now;
     runtime.lastOrderAt = now;
     runtime.orders += 1;
+    const timings = {
+      signalAt,
+      handleAt,
+      orderAt: this.clock(),
+      signalCmd: event.cmd || null
+    };
 
     const meta = {
       itemId: config.itemId,
@@ -557,8 +573,15 @@ export class Engine {
       unitPrice: best.unitPrice,
       targetPrice,
       notional: plan.notional,
-      at: now
+      at: now,
+      timings
     };
+    // Keep source frames out of the live order broadcast; persist them only
+    // on the eventual loot row.
+    Object.defineProperty(meta, "rawPriceEvent", {
+      configurable: true,
+      value: event.rawPayload
+    });
 
     if (settings.dryRun) {
       this.#handleDryRun(meta, plan);
@@ -575,6 +598,7 @@ export class Engine {
       `SEND ${meta.label} ×${plan.qty} @ ${best.unitPrice.toFixed(6)} RLT (${plan.notional.toFixed(6)} total)${plan.doubled ? " [HIGH STOCK ×2]" : ""}`
     );
 
+    timings.dispatchAt = this.clock();
     this.#submit(meta).catch((error) => {
       this.logger.error("order", `unexpected submit failure: ${error?.message || error}`);
       runtime.inflight = false;
@@ -583,31 +607,68 @@ export class Engine {
 
   async #submit(meta) {
     const runtime = this.#runtime(meta.itemId);
+    const timing = meta.timings || null;
+    if (timing && timing.sendAt == null) timing.sendAt = this.clock();
+    let historyId = null;
+    let dnsFinished = false;
+    const publishDnsUpdate = (id) => {
+      if (!id || !this.store.updateHistoryTimings?.(id, timing)) return;
+      const entry = this.store.state.history.find((row) => row.id === String(id));
+      if (entry) this.broadcast("history", entry);
+    };
+    const persistLateDns = () => {
+      dnsFinished = true;
+      if (historyId) publishDnsUpdate(historyId);
+    };
+    const attachDnsHistory = (id) => {
+      historyId = id ? String(id) : null;
+      if (historyId && dnsFinished) publishDnsUpdate(historyId);
+    };
+    if (timing) {
+      // Keep the callback out of broadcasts and the persisted timing JSON.
+      Object.defineProperty(timing, "onDnsComplete", {
+        configurable: true,
+        value: persistLateDns
+      });
+    }
     try {
       const result = await this.api.purchase({
         itemId: meta.itemId,
         itemType: meta.itemType,
         qty: meta.qty,
-        unitPriceRaw: meta.unitPriceRaw
+        unitPriceRaw: meta.unitPriceRaw,
+        timing
       });
+      if (timing && result?.timing && result.timing !== timing) Object.assign(timing, result.timing);
+
+      const settledAt = this.clock();
+      if (timing) {
+        // Injected/test API clients do not report their own marks; keep the
+        // debugger usable by filling the response boundary with the clock.
+        timing.responseAt ??= settledAt;
+        timing.completeAt ??= settledAt;
+      }
 
       if (!result.ok || !result.orderId) {
         const reason = result.error || "marketplace rejected the order";
         runtime.failureStreak = (runtime.failureStreak || 0) + 1;
         const backoff = Math.min(60_000, 5_000 * 2 ** Math.min(runtime.failureStreak - 1, 3));
         runtime.blockedUntil = this.clock() + backoff;
+        if (timing) timing.failedAt = this.clock();
         this.logger.warn(
           "order",
           `REJECTED ${meta.label} ×${meta.qty}: ${reason} — backing off ${Math.round(backoff / 1000)}s`
         );
         runtime.lastResult = { status: "rejected", at: this.clock(), reason };
-        this.#recordFailure(meta, reason);
+        attachDnsHistory(this.#recordFailure(meta, reason));
         this.broadcast("order", { phase: "failed", ...meta, reason });
         return;
       }
 
+      if (timing) timing.acceptedAt = this.clock();
       const orderId = String(result.orderId);
-      this.pending.set(orderId, { ...meta, orderId });
+      this.pending.set(orderId, { ...meta, orderId, rawPriceEvent: meta.rawPriceEvent });
+      attachDnsHistory(orderId);
       runtime.failureStreak = 0;
       runtime.blockedUntil = 0;
       runtime.lastResult = { status: "accepted", at: this.clock(), orderId, qty: meta.qty };
@@ -633,7 +694,7 @@ export class Engine {
     });
   }
 
-  #handleFill(event) {
+  #handleFill(event, receivedAt = null) {
     const fill = event.fill;
     if (!fill) return;
 
@@ -643,6 +704,10 @@ export class Engine {
     if (!pendingMeta && !config) return;
 
     const now = this.clock();
+    const fillAt = Number.isFinite(receivedAt) ? receivedAt : now;
+    const fillTimings = pendingMeta?.timings
+      ? { ...pendingMeta.timings, fillAt, fillHandledAt: now }
+      : null;
     const label = pendingMeta?.label || labelFor(config, itemId);
     const targetPrice = pendingMeta?.targetPrice ?? config?.targetPrice ?? null;
 
@@ -679,6 +744,11 @@ export class Engine {
         status: "filled",
         at: now,
         latencyMs: pendingMeta ? now - pendingMeta.at : null,
+        timings: fillTimings,
+        rawEvents: sanitizeRawEvents({
+          priceEvent: pendingMeta?.rawPriceEvent ?? null,
+          resultEvent: event.rawPayload ?? null
+        }),
         note: null,
         message: "-"
       };
@@ -707,7 +777,25 @@ export class Engine {
     if (fill.status === ORDER_STATUS.FAILED && fill.count === 0 && fill.priceRaw === 0) {
       if (fill.orderId) this.pending.delete(fill.orderId);
       this.logger.warn("fill", `FAILED ${label} — no items were obtained (order ${fill.orderId || "?"})`);
-      this.#recordFailure(pendingMeta || { itemId, label, qty: 0, unitPrice: 0, targetPrice }, "no items obtained", fill.orderId);
+      const failureMeta = pendingMeta
+        ? {
+            ...pendingMeta,
+            timings: fillTimings,
+            rawEvents: sanitizeRawEvents({
+              priceEvent: pendingMeta.rawPriceEvent ?? null,
+              resultEvent: event.rawPayload ?? null
+            })
+          }
+        : {
+            itemId,
+            label,
+            qty: 0,
+            unitPrice: 0,
+            targetPrice,
+            timings: null,
+            rawEvents: sanitizeRawEvents({ priceEvent: null, resultEvent: event.rawPayload ?? null })
+          };
+      this.#recordFailure(failureMeta, "no items obtained", fill.orderId);
       this.broadcast("order", {
         phase: "failed",
         itemId,
@@ -727,6 +815,9 @@ export class Engine {
     stats.failed += 1;
     const runtime = this.#runtime(meta.itemId);
     runtime.failures = (runtime.failures || 0) + 1;
+    const now = this.clock();
+    const timings = meta.timings ? { ...meta.timings } : null;
+    if (timings && timings.failedAt == null) timings.failedAt = now;
     const entry = {
       id: orderId || randomUUID(),
       orderId,
@@ -738,8 +829,13 @@ export class Engine {
       targetPrice: Number(meta.targetPrice) || 0,
       profitRlt: 0,
       status: "failed",
-      at: this.clock(),
-      latencyMs: meta.at ? this.clock() - meta.at : null,
+      at: now,
+      latencyMs: meta.at ? now - meta.at : null,
+      timings,
+      rawEvents: sanitizeRawEvents(meta.rawEvents ?? {
+        priceEvent: meta.rawPriceEvent ?? null,
+        resultEvent: meta.rawResultEvent ?? null
+      }),
       note: String(reason || "failed").slice(0, 160),
       message: String(reason || "failed").slice(0, 160)
     };
@@ -747,6 +843,7 @@ export class Engine {
     this.broadcast("history", entry);
     this.broadcast("stats", stats);
     this.broadcast("report", this.store.reportView());
+    return entry.id;
   }
 
   #takeRateSlot(now, maxPerMinute) {

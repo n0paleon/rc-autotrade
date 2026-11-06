@@ -98,6 +98,20 @@ case-insensitive, wildcard `%`/`_` di-escape) sehingga mencakup seluruh log perm
 browser; engine memakai `store.hasOrder()` (query SQLite) untuk cek duplikat, jadi fill lama tidak
 tercatat dua kali walau sudah keluar dari window.
 
+Klik salah satu baris loot untuk membuka **latency debugger**. Detail per order menyimpan
+timestamp dari frame masuk, keputusan order, `fetch()` dikirim, response headers, response body
+selesai dibaca, order diterima, sampai event fulfillment (`marketplace_orders_filled`) tiba. Modal
+menampilkan empat angka utama: **signal → purchase sent**, **signal → response**, **signal →
+fulfillment**, dan **DNS resolver probe**, plus waterfall per tahap sehingga tahap paling lambat
+langsung terlihat. Probe memakai resolver Bun (`Bun.dns.lookup`) secara paralel tanpa menahan
+pengiriman purchase. Bun fetch tidak membuka timing DNS per request, jadi angka ini menunjukkan
+durasi resolver probe dan tidak menebak apakah request memakai lookup baru, cache, atau socket
+keep-alive. Jika probe selesai setelah fill, hasilnya tetap disimpan ke baris loot. Data disimpan
+sebagai JSON di kolom `orders.timings`, ikut backup/restore, dan baris lama tetap bisa dibuka dengan
+angka `latencyMs` lama saja. Modal juga menyimpan payload mentah event perubahan harga yang memicu
+order dan event hasil order bila diterima. Payload hasil tidak wajib ada; frame besar di atas 256
+KiB disimpan sebagai preview terbatas.
+
 ### Profit by product
 
 Agregat per produk tampil di bawah loot log: total profit, spend, margin, lalu tabel per produk
@@ -1034,7 +1048,7 @@ Authorization: Bearer <access-key>
 | `GET` | `/api/health` | Health publik (tanpa auth) |
 | `GET` | `/api/state` | Snapshot lengkap: config, runtime, stats, report, session, 50 loot terbaru (`history` + `historyTotal`) |
 | `GET` | `/api/report` | Agregat profit per produk all-time (`totals` + `items`) |
-| `GET` | `/api/history?q=&status=&limit=&offset=&beforeAt=&beforeId=` | Halaman loot log permanen: `q` cari nama produk/item id, `status` = `filled`/`failed`, limit max 200, cursor `beforeAt`+`beforeId` untuk halaman lama |
+| `GET` | `/api/history?q=&status=&limit=&offset=&beforeAt=&beforeId=` | Halaman loot log permanen: `q` cari nama produk/item id, `status` = `filled`/`failed`, limit max 200, cursor `beforeAt`+`beforeId` untuk halaman lama; tiap baris membawa `timings` dan `rawEvents` untuk debugger |
 | `GET` | `/api/item-info?itemId=&itemType=` | Resolve label/rarity/itemType dari marketplace |
 | `GET` | `/api/configs` | Daftar target + runtime |
 | `PUT` | `/api/configs` | Ganti seluruh daftar (`[ ... ]` atau `{ "configs": [ ... ] }`) |

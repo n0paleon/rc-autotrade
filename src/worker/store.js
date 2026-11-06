@@ -11,6 +11,8 @@ import {
   PRICE_RETENTION_DAYS
 } from "../shared/constants.js";
 import { roundPrice } from "../shared/rules.js";
+import { decodeRawEvents, encodeRawEvents, sanitizeRawEvents } from "../shared/raw-events.js";
+import { decodeTimings, encodeTimings, sanitizeTimings } from "../shared/timings.js";
 import { validateSettings, validateTargets } from "../shared/validation.js";
 import { closeDatabase, openDatabase } from "./db.js";
 
@@ -180,6 +182,8 @@ function sanitizeHistory(entries, limit = MAX_HISTORY) {
         status,
         at: asFinite(entry.at, Date.now()),
         latencyMs: Number.isFinite(Number(entry.latencyMs)) ? Number(entry.latencyMs) : null,
+        timings: sanitizeTimings(entry.timings),
+        rawEvents: sanitizeRawEvents(entry.rawEvents),
         note,
         message
       };
@@ -362,10 +366,10 @@ export class Store {
       orderInsert: db.prepare(`
         INSERT INTO orders
           (id, order_id, item_id, label, qty, unit_price, total_price, target_price,
-           profit_rlt, status, at, latency_ms, note, message)
+           profit_rlt, status, at, latency_ms, timings, raw_events, note, message)
         VALUES
           (@id, @order_id, @item_id, @label, @qty, @unit_price, @total_price, @target_price,
-           @profit_rlt, @status, @at, @latency_ms, @note, @message)
+           @profit_rlt, @status, @at, @latency_ms, @timings, @raw_events, @note, @message)
         ON CONFLICT(id) DO UPDATE SET
           order_id = excluded.order_id,
           item_id = excluded.item_id,
@@ -378,12 +382,16 @@ export class Store {
           status = excluded.status,
           at = excluded.at,
           latency_ms = excluded.latency_ms,
+          timings = excluded.timings,
+          raw_events = excluded.raw_events,
           note = excluded.note,
           message = excluded.message
       `),
       ordersRecent: db.prepare("SELECT * FROM orders ORDER BY at DESC, rowid DESC LIMIT ?"),
       ordersAll: db.prepare("SELECT * FROM orders ORDER BY at ASC, rowid ASC"),
       ordersClear: db.prepare("DELETE FROM orders"),
+      orderTimingsGet: db.prepare("SELECT timings FROM orders WHERE id = ?"),
+      orderTimingsUpdate: db.prepare("UPDATE orders SET timings = ? WHERE id = ?"),
       orderExists: db.prepare("SELECT 1 AS hit FROM orders WHERE id = ?"),
       // The loot lookup used by GET /api/history. `q` is an escaped LIKE
       // pattern ('' disables the filter) and `status` is '' | 'filled' | 'failed'.
@@ -848,6 +856,8 @@ export class Store {
       status: entry.status === "failed" ? "failed" : "filled",
       at: entry.at ?? Date.now(),
       latency_ms: entry.latencyMs ?? null,
+      timings: encodeTimings(entry.timings),
+      raw_events: encodeRawEvents(entry.rawEvents),
       note: entry.note ?? null,
       message: entry.message ?? null
     });
@@ -882,6 +892,8 @@ export class Store {
       status: row.status,
       at: row.at,
       latencyMs: row.latency_ms,
+      timings: decodeTimings(row.timings),
+      rawEvents: decodeRawEvents(row.raw_events),
       note: row.note,
       message: row.message
     };
@@ -1161,6 +1173,24 @@ export class Store {
   hasOrder(id) {
     if (!id) return false;
     return Boolean(this.stmts.orderExists.get(String(id)));
+  }
+
+  /** Updates late, non-blocking diagnostics without rewriting the loot row. */
+  updateHistoryTimings(id, rawTimings) {
+    if (!id) return false;
+    const key = String(id);
+    const existing = this.stmts.orderTimingsGet.get(key);
+    if (!existing) return false;
+    const timings = sanitizeTimings({
+      ...(decodeTimings(existing.timings) || {}),
+      ...(rawTimings && typeof rawTimings === "object" ? rawTimings : {})
+    });
+    if (!timings) return false;
+    const result = this.stmts.orderTimingsUpdate.run(encodeTimings(timings), key);
+    if (!result.changes) return false;
+    const entry = this.state.history.find((row) => row.id === key);
+    if (entry) entry.timings = timings;
+    return true;
   }
 
   /** Total number of loot-log rows currently stored (all-time, not just the live window). */

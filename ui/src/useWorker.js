@@ -73,6 +73,22 @@ function clearStoredToken() {
  */
 const LOOT_LIVE_WINDOW = 80;
 
+function upsertLootHistory(previous, entry) {
+  if (!previous) return previous;
+  const history = Array.isArray(previous.history) ? previous.history : [];
+  const index = history.findIndex((item) => item.id === entry.id);
+  if (index >= 0) {
+    const updated = [...history];
+    updated[index] = { ...updated[index], ...entry };
+    return { ...previous, history: updated };
+  }
+  return {
+    ...previous,
+    history: [entry, ...history].slice(0, LOOT_LIVE_WINDOW),
+    historyTotal: (Number(previous.historyTotal) || 0) + 1
+  };
+}
+
 function messageForError(error) {
   if (error?.status === 401) return "ACCESS DENIED — this key was rejected. Check the worker terminal.";
   if (error?.status === 403) return "ACCESS DENIED — forbidden.";
@@ -226,15 +242,7 @@ export function useWorker({ notify }) {
 
           if (data.phase === "filled") {
             const entry = { ...data };
-            setSnapshot((previous) => {
-              if (!previous) return previous;
-              if (previous.history?.some((item) => item.id === entry.id)) return previous;
-              return {
-                ...previous,
-                history: [entry, ...(previous.history || [])].slice(0, LOOT_LIVE_WINDOW),
-                historyTotal: (Number(previous.historyTotal) || 0) + 1
-              };
-            });
+            setSnapshot((previous) => upsertLootHistory(previous, entry));
             notifyRef.current?.(
               "success",
               "LOOT SECURED",
@@ -259,15 +267,7 @@ export function useWorker({ notify }) {
         }
         case "history": {
           if (!data?.id) break;
-          setSnapshot((previous) => {
-            if (!previous) return previous;
-            if (previous.history?.some((item) => item.id === data.id)) return previous;
-            return {
-              ...previous,
-              history: [data, ...(previous.history || [])].slice(0, LOOT_LIVE_WINDOW),
-              historyTotal: (Number(previous.historyTotal) || 0) + 1
-            };
-          });
+          setSnapshot((previous) => upsertLootHistory(previous, data));
           break;
         }
         case "stats":

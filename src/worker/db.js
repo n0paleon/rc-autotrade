@@ -393,6 +393,16 @@ function dropAutoTargetColumns(db) {
 }
 
 /**
+ * Keep order diagnostics self-healing even if a build stamped user_version
+ * before its migration step was present during a hot reload.
+ */
+function ensureOrderDiagnosticColumns(db) {
+  const columns = new Set(db.pragma("table_info(orders)").map((row) => row.name));
+  if (!columns.has("timings")) db.exec("ALTER TABLE orders ADD COLUMN timings TEXT");
+  if (!columns.has("raw_events")) db.exec("ALTER TABLE orders ADD COLUMN raw_events TEXT");
+}
+
+/**
  * Forward-only schema upgrades, keyed by the version they upgrade from.
  * v1/v2 only added the auto target columns; that feature is gone, so both
  * steps are no-ops kept for the ladder. The column drop lives outside this
@@ -413,6 +423,21 @@ const MIGRATIONS = {
     }
     if (!columns.includes("fill_approx")) {
       db.exec("ALTER TABLE price_points ADD COLUMN fill_approx INTEGER NOT NULL DEFAULT 0");
+    }
+  },
+  // v6 keeps the per-order latency marks (signal → send → response → fill)
+  // next to the loot row so the debugger works after a restart.
+  5: (db) => {
+    const columns = db.pragma("table_info(orders)").map((row) => row.name);
+    if (!columns.includes("timings")) {
+      db.exec("ALTER TABLE orders ADD COLUMN timings TEXT");
+    }
+  },
+  // v7 stores the price-change and optional order-result source frames.
+  6: (db) => {
+    const columns = db.pragma("table_info(orders)").map((row) => row.name);
+    if (!columns.includes("raw_events")) {
+      db.exec("ALTER TABLE orders ADD COLUMN raw_events TEXT");
     }
   }
 };
@@ -449,6 +474,7 @@ export function openDatabase({ dataDir, logger, filename = DB_FILENAME }) {
 
   db.exec(SCHEMA_SQL);
   migrate(db, version);
+  ensureOrderDiagnosticColumns(db);
   dropAutoTargetColumns(db);
   if (version !== SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
 
