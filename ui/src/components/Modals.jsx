@@ -159,18 +159,20 @@ export function TargetModal({ config, onClose, worker, notify }) {
     if (Object.keys(localErrors).length > 0) return;
 
     setBusy(true);
+    const saving = worker.saveTarget(target, config?.itemId);
+    close();
     try {
-      await worker.saveTarget(target, config?.itemId);
+      await saving;
       notify("success", editing ? "TARGET UPDATED" : "TARGET DEPLOYED", auto.label || shortId(target.itemId));
-      close();
     } catch (error) {
       if (error.fields && Object.keys(error.fields).length > 0) {
-        setErrors(error.fields);
-        notify("error", "CHECK THE FIELDS", "The worker rejected one or more values.");
+        const details = Object.entries(error.fields)
+          .map(([field, message]) => `${field}: ${message}`)
+          .join(" · ");
+        notify("error", "CHECK THE FIELDS", details);
       } else {
         notify("error", "SAVE FAILED", error.message);
       }
-      setBusy(false);
     }
   };
 
