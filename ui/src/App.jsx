@@ -1128,7 +1128,7 @@ const LOOT_PAGE_SIZE = 50;
 const LOOT_MAX_ROWS = 500;
 const LOOT_SEARCH_DEBOUNCE_MS = 250;
 
-function LootLog({ history, historyTotal, onReset, request }) {
+function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
   const [entries, setEntries] = useState([]);
@@ -1154,8 +1154,23 @@ function LootLog({ history, historyTotal, onReset, request }) {
     setEntries(seed);
     setError("");
     setLoading(false);
-    setHasMore(true);
+    setHasMore(idsRef.current.size < (Number(historyTotal) || 0));
   }, [query]);
+
+  // A reset or backup restore replaces the permanent history. Re-seed this
+  // locally paged view from the optimistic snapshot as soon as that mutation
+  // starts, and again if it rolls back.
+  useEffect(() => {
+    const seed = (Array.isArray(history) ? history : []).filter(Boolean);
+    idsRef.current = new Set(seed.map((entry) => entry.id));
+    setDraft("");
+    setQuery("");
+    setEntries(seed);
+    setTotal(Number(historyTotal) || 0);
+    setHasMore(idsRef.current.size < (Number(historyTotal) || 0));
+    setLoading(false);
+    setError("");
+  }, [historyRevision]);
 
   // Keep the counter in sync with the worker (new fills bump it; a reset
   // drops it to zero and clears whatever was loaded, search included).
@@ -1608,6 +1623,7 @@ function LinkPanel({ snapshot, now, worker, notify, onEditSession, onBridge, onC
   const session = snapshot.session || {};
   const settings = snapshot.settings || {};
   const [refreshing, setRefreshing] = useState(false);
+  const [rotating, setRotating] = useState(false);
   const chip = sessionChip(session, now);
   const remaining = session.expiresAt ? session.expiresAt - now : null;
   let meterWidth = 100;
@@ -1656,6 +1672,14 @@ function LinkPanel({ snapshot, now, worker, notify, onEditSession, onBridge, onC
     }
   };
 
+  const rotate = async () => {
+    try {
+      await onRotate(() => setRotating(true));
+    } finally {
+      setRotating(false);
+    }
+  };
+
   return (
     <section className="panel" data-accent="violet">
       <div className="panel-head">
@@ -1700,7 +1724,9 @@ function LinkPanel({ snapshot, now, worker, notify, onEditSession, onBridge, onC
         </div>
         <div className="grid grid-cols-2 gap-2">
           <button className="btn btn-ghost btn-sm" type="button" onClick={onBridge}>Token bridge</button>
-          <button className="btn btn-danger-ghost btn-sm" type="button" onClick={onRotate}>Rotate key</button>
+          <button className="btn btn-danger-ghost btn-sm" type="button" onClick={rotate} disabled={rotating} data-busy={rotating ? "true" : undefined} aria-busy={rotating}>
+            {rotating ? "Rotating…" : "Rotate key"}
+          </button>
         </div>
         <button
           className="btn btn-danger-ghost btn-sm btn-block"
@@ -2141,6 +2167,7 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
   const [delay, setDelay] = useState(String(settings.delayPerOrder ?? 200));
   const [maxOrders, setMaxOrders] = useState(String(settings.maxOrdersPerMinute ?? 60));
   const [saving, setSaving] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
 
   useEffect(() => {
     setDelay(String(settings.delayPerOrder ?? 200));
@@ -2168,6 +2195,15 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
       await worker.saveSettings(patch);
     } catch (error) {
       notify("error", "CONFIG FAILED", error.message);
+    }
+  };
+
+  const reconnect = async () => {
+    setReconnecting(true);
+    try {
+      await onReconnect();
+    } finally {
+      setReconnecting(false);
     }
   };
 
@@ -2220,8 +2256,8 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
             <code className="font-mono text-[12px] text-ink-dim">v{snapshot.version || "1.0.0"}</code>
           </div>
         </div>
-        <button className="btn btn-ghost btn-sm btn-block" type="button" onClick={onReconnect}>
-          <Icon name="i-refresh" className="h-3 w-3" /> Reconnect feed
+        <button className="btn btn-ghost btn-sm btn-block" type="button" onClick={reconnect} disabled={reconnecting} data-busy={reconnecting ? "true" : undefined} aria-busy={reconnecting}>
+          <Icon name="i-refresh" className="h-3 w-3" /> {reconnecting ? "Reconnecting…" : "Reconnect feed"}
         </button>
 
         <div className="space-y-2 border-2 border-line bg-night-950/60 p-3">
@@ -2457,7 +2493,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
     }
   };
 
-  const rotateKey = async () => {
+  const rotateKey = async (onPending) => {
     if (snapshot.accessKeyPinned) {
       notify("warn", "KEY IS PINNED", "WORKER_TOKEN controls this key. Change the env var to rotate.");
       return;
@@ -2469,6 +2505,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       danger: true
     });
     if (!confirmed) return;
+    onPending?.();
     try {
       const result = await worker.rotateAccessKey();
       setModal({ type: "key", token: result.token });
@@ -2520,6 +2557,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
         <LootLog
           history={snapshot.history || []}
           historyTotal={snapshot.historyTotal}
+          historyRevision={worker.historyRevision}
           onReset={resetStats}
           request={worker.request}
         />
