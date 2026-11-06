@@ -894,10 +894,14 @@ impl Engine {
                 FailureMeta {
                     item_id: item_id.clone(),
                     label: label.clone(),
-                    qty: 0,
-                    unit_price: 0.0,
-                    target_price: target_price.unwrap_or(0.0),
-                    at: now,
+                    // Keep the attempted order in the loot row. The upstream
+                    // result is empty (count/price 0), but the log must still
+                    // show what we tried to buy and how long it took, exactly
+                    // like `failureMeta = pendingMeta` in the Bun engine.
+                    qty: pending_meta.qty,
+                    unit_price: pending_meta.unit_price,
+                    target_price: target_price.unwrap_or(pending_meta.target_price),
+                    at: pending_meta.at,
                     timings: Some(fill_timings),
                     raw_price_event: Some(pending_meta.raw_price_event.clone()),
                     raw_result_event: Some(raw.clone()),
@@ -1737,6 +1741,48 @@ mod tests {
             .engine
             .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_006_500, true);
         assert_eq!(submissions(&retry).len(), 1);
+    }
+
+    #[test]
+    fn no_items_failure_keeps_the_attempted_order_details() {
+        let mut h = harness();
+        let events =
+            h.engine
+                .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_001, true);
+        let intent = submissions(&events)[0].clone();
+
+        h.now.store(1_000_120, Ordering::SeqCst);
+        h.engine.on_purchase_result(
+            &mut h.store,
+            &intent,
+            PurchaseOutcome {
+                ok: true,
+                order_id: Some("order-empty".into()),
+                accepted_at: Some(1_000_120),
+                ..Default::default()
+            },
+        );
+
+        h.now.store(1_000_400, Ordering::SeqCst);
+        let failed = h.engine.handle_frame(
+            &mut h.store,
+            &fill_frame("order-empty", 0, 0, ORDER_STATUS_FAILED),
+            1_000_400,
+            true,
+        );
+        assert!(failed.iter().any(|event| matches!(
+            event,
+            EngineEvent::Broadcast { kind: "order", data } if data["phase"] == "failed"
+        )));
+
+        let entry = h.store.state.history.first().expect("failure row");
+        assert_eq!(entry.status, "failed");
+        assert_eq!(entry.qty, intent.qty);
+        assert!((entry.unit_price - intent.unit_price).abs() < 1e-12);
+        assert!((entry.target_price - intent.target_price).abs() < 1e-12);
+        // `latencyMs` spans dispatch → result, not the instant the failure row
+        // was written (the Bun engine used the pending order's `at`).
+        assert_eq!(entry.latency_ms, Some(1_000_400 - intent.at));
     }
 
     #[test]
