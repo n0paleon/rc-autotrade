@@ -154,7 +154,7 @@ Bun worker.
 
 ## 6. Verification during the port
 
-- `cargo test`: **141 tests** (135 unit + 4 HTTP + 2 end-to-end). Rules, depth,
+- `cargo test`: **143 tests** (136 unit + 4 HTTP + 3 end-to-end). Rules, depth,
   timings, raw events, redaction, validation, config, logger, DB schema, store
   round-trips/paging/timings merge, server helpers, **trend parity fixtures**,
   events normalisation, nine engine scenarios, six API-client scenarios against
@@ -236,6 +236,14 @@ Bun worker.
   field map, settings patch, history/report, pinned-token 409.
 - Control socket via a Bun client: `hello` → `snapshot` → `pong` with a valid
   key; close code **4001** with a bad key.
+- Realtime parity: the control socket owns the telemetry ticker. `gateway`,
+  `system` and `latency` are pushed together once every 5 s (the Bun
+  `statsTimer` cadence); pushing `gateway` per frame re-rendered the HUD
+  continuously, so it was deliberately coalesced. A manual session change bumps
+  `gateway.reconnects`, so the feed re-handshakes with the new token.
+- Failed no-item orders keep the attempted `qty`/`unitPrice`/`targetPrice` and
+  the full dispatch→result `latencyMs` in the loot row, matching the Bun
+  `failureMeta = pendingMeta` path (covered by an engine test).
 - React deck opened in a real browser against the Rust worker: login with the
   access key, target list rendered, `PAUSED` state from the DB, no console
   errors. Screenshot: `.qa/rust-ui.png` (local, gitignored).
