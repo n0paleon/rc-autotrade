@@ -1,45 +1,40 @@
 # Miner finder (browser console)
 
-Script sekali pakai untuk membandingkan **miner** di marketplace Rollercoin dan
-mengurutkannya berdasarkan rasio power per RLT. Ini bukan bagian dari worker:
-tidak ada yang mengimpornya, dan backend tidak pernah menjalankannya.
+A one-off script that compares **miners** on the Rollercoin marketplace and sorts them by power-to-RLT ratio. It is not part of the worker. Nothing imports it, and the backend never runs it.
 
-## Cara pakai
+## Usage
 
-1. Buka `https://rollercoin.com/marketplace`, pilih tab **miners**.
-2. Set filter/sort yang diinginkan (misalnya urut harga termurah).
-3. Buka DevTools → **Console**, tempel seluruh isi [`miner-finder.js`](miner-finder.js), Enter.
-4. Sebelum menjalankan, sesuaikan tiga nilai di baris paling atas:
+1. Open `https://rollercoin.com/marketplace` and select the **miners** tab.
+2. Apply the filters and sorting you want, for example, sort by lowest price.
+3. Open DevTools, go to **Console**, paste the entire contents of [`miner-finder.js`](miner-finder.js), and press Enter.
+4. Before running it, adjust the three values at the top:
 
-   | Variabel | Arti |
+   | Variable | Meaning |
    | --- | --- |
-   | `CurrentPower` | Total power akun saat ini, dalam GH/s |
-   | `CurrentBonus` | Bonus mining akun saat ini, dalam persen |
-   | `limit` | Maksimal halaman yang discrape (default 192) |
+   | `CurrentPower` | Current total account power in GH/s |
+   | `CurrentBonus` | Current account mining bonus as a percentage |
+   | `limit` | Maximum number of pages to scrape (default 192) |
 
-5. Script akan mengklik pagination sendiri, menunggu tiap halaman selesai render,
-   lalu mencetak tabel hasil yang sudah diurutkan dari rasio terbaik.
+5. The script clicks through pagination on its own, waits for each page to finish rendering, and then prints a result table sorted by the best ratio.
 
-## Kolom hasil
+## Output columns
 
-| Kolom | Arti |
+| Column | Meaning |
 | --- | --- |
-| `Name` | Nama miner |
-| `Price` | Harga listing (RLT) |
-| `Power` | Power miner (GH/s) |
-| `Bonus[%]` | Bonus mining miner (%) |
-| `Ratio` | `Addition Power / 1000 / Price` — makin besar makin baik |
-| `Cur.Pow X Add.Bonus` | Power akun × bonus miner |
-| `Mine.Pow X Tot.Bonus` | Power miner × (bonus miner + bonus akun) |
-| `Addition Power` | Total tambahan power dari miner ini |
-| `TotalPower [GH/S]` | Power akun + tambahan power |
-| `Total Bonus %` | Bonus akun + bonus miner |
+| `Name` | Miner name |
+| `Price` | Listing price in RLT |
+| `Power` | Miner power in GH/s |
+| `Bonus[%]` | Miner mining bonus in percent |
+| `Ratio` | `Addition Power / 1000 / Price`. Higher is better |
+| `Cur.Pow X Add.Bonus` | Account power x miner bonus |
+| `Mine.Pow X Tot.Bonus` | Miner power x (miner bonus + account bonus) |
+| `Addition Power` | Total additional power from this miner |
+| `TotalPower [GH/S]` | Account power + additional power |
+| `Total Bonus %` | Account bonus + miner bonus |
 
-## Batasan
+## Limitations
 
-- Selector DOM (`.item-title`, `.item-price`, `.item-addition-power`,
-  `.item-addition-bonus`, `.marketplace-pagination-btn`) bisa berubah kapan saja
-  saat Rollercoin memperbarui UI; kalau hasil kosong, periksa selector-nya dulu.
-- Maksimal 192 halaman, dan tiap halaman menunggu sampai 7 detik.
-- Miner dengan nama sama hanya dihitung sekali (dedupe berdasarkan nama).
-- Biarkan tab tetap aktif selama scraping; tab background bisa menunda render.
+- DOM selectors (`.item-title`, `.item-price`, `.item-addition-power`, `.item-addition-bonus`, and `.marketplace-pagination-btn`) can change whenever Rollercoin updates its UI. If the results are empty, check the selectors first.
+- The script scrapes at most 192 pages and waits up to 7 seconds per page.
+- Miners with the same name are counted only once.
+- Keep the tab active while scraping because background tabs can delay rendering.
