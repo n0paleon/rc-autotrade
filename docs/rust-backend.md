@@ -151,10 +151,16 @@ Bun worker.
     `db_metrics.rs` without wrapping a single call site. Failed prepares and
     `SQLITE_BUSY` are not visible from profile events and stay zero unless the
     store reports them via `mark_error`/`mark_busy`.
+11. **The warm probe shares the order client's pool.** Bun's global `fetch`
+    pooled sockets per origin, so the old probe kept the purchase connection
+    hot for free. A `reqwest::Client` owns its pool, so `KeepaliveConfig` takes
+    `ApiClient::http_client()`; a probe with its own client would warm a
+    second, unused socket and orders would still pay TCP + TLS after an idle
+    gap. `tests/connection_pool.rs` locks this in by counting connections.
 
 ## 6. Verification during the port
 
-- `cargo test`: **143 tests** (136 unit + 4 HTTP + 3 end-to-end). Rules, depth,
+- `cargo test`: **144 tests** (136 unit + 4 HTTP + 3 end-to-end + 1 pool). Rules, depth,
   timings, raw events, redaction, validation, config, logger, DB schema, store
   round-trips/paging/timings merge, server helpers, **trend parity fixtures**,
   events normalisation, nine engine scenarios, six API-client scenarios against

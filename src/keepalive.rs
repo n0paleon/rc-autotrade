@@ -92,6 +92,9 @@ pub struct KeepaliveConfig {
     pub logger: Arc<Logger>,
     pub latency: Arc<Mutex<LatencyTracker>>,
     pub last_request_at: Arc<AtomicI64>,
+    /// The order path's client. Probes must reuse its pool or the warm-up is
+    /// pointless: a separate `Client` gets a separate socket and TLS session.
+    pub http: reqwest::Client,
 }
 
 pub struct KeepaliveService {
@@ -124,13 +127,6 @@ impl KeepaliveService {
         let timeout_ms = config.timeout_ms.max(1_000);
         let suspend_ms = config.suspend_ms.max(1_000);
         let jitter_ratio = config.jitter_ratio.clamp(0.0, 0.5);
-        let http = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .timeout(Duration::from_millis(timeout_ms))
-            .pool_idle_timeout(Duration::from_secs(90))
-            .tcp_nodelay(true)
-            .build()
-            .expect("keepalive client");
 
         Arc::new(Self {
             url: config.url.trim().to_string(),
@@ -139,7 +135,7 @@ impl KeepaliveService {
             suspend_ms,
             jitter_ratio,
             max_backoff_ms: interval_ms.max(MAX_BACKOFF_MS),
-            http,
+            http: config.http,
             credentials: config.credentials,
             should_probe: config.should_probe,
             logger: config.logger,
@@ -485,6 +481,7 @@ mod tests {
             logger: Arc::new(Logger::new("error")),
             latency: tracker,
             last_request_at: Arc::new(AtomicI64::new(0)),
+            http: reqwest::Client::new(),
         })
     }
 
@@ -554,6 +551,7 @@ mod tests {
             logger: Arc::new(Logger::new("error")),
             latency: tracker(),
             last_request_at: last.clone(),
+            http: reqwest::Client::new(),
         });
         let delay = config_service.tick().await;
         assert!(delay > 0);
@@ -576,6 +574,7 @@ mod tests {
             logger: Arc::new(Logger::new("error")),
             latency: tracker(),
             last_request_at: Arc::new(AtomicI64::new(0)),
+            http: reqwest::Client::new(),
         });
         assert!(!service.enabled());
         let result = service.probe_once().await;

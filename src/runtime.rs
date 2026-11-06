@@ -254,6 +254,8 @@ impl Worker {
             logger: state.logger.clone(),
             latency: state.latency.clone(),
             last_request_at: state.api.last_request_at_handle(),
+            // Same `reqwest::Client` (and therefore the same pool) as purchases.
+            http: state.api.http_client(),
         });
         {
             let mut slot = state
