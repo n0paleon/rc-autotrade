@@ -97,9 +97,27 @@ function messageForError(error) {
   return error?.message || "Something went wrong while contacting the worker.";
 }
 
+function nextMutationVersion(versions, key) {
+  const version = (versions.current.get(key) || 0) + 1;
+  versions.current.set(key, version);
+  return version;
+}
+
+function normalizeTargetId(itemId) {
+  const value = String(itemId || "").trim();
+  if (!/^https?:\/\//i.test(value)) return value;
+  try {
+    return new URL(value).pathname.split("/").filter(Boolean).at(-1) || value;
+  } catch {
+    return value;
+  }
+}
+
 export function useWorker({ notify }) {
   const clientRef = useRef(null);
   const logIdsRef = useRef(new Set());
+  const configMutationVersions = useRef(new Map());
+  const settingsMutationVersions = useRef(new Map());
   const notifyRef = useRef(notify);
   const gatewayRef = useRef(null);
   const chattyRef = useRef(false);
@@ -419,55 +437,182 @@ export function useWorker({ notify }) {
     []
   );
 
-  const mergeConfigs = useCallback((configs) => {
-    setSnapshot((previous) => (previous ? { ...previous, configs } : previous));
+  const updateConfigSnapshot = useCallback((itemId, config, insertAt = null) => {
+    const key = String(itemId || "").toLowerCase();
+    setSnapshot((previous) => {
+      if (!previous || !Array.isArray(previous.configs)) return previous;
+      const index = previous.configs.findIndex(
+        (entry) => entry.itemId.toLowerCase() === key
+      );
+      const configs = [...previous.configs];
+      if (config === null) {
+        if (index < 0) return previous;
+        configs.splice(index, 1);
+      } else if (index >= 0) {
+        configs[index] = config;
+      } else {
+        const position = Number.isInteger(insertAt)
+          ? Math.max(0, Math.min(insertAt, configs.length))
+          : configs.length;
+        configs.splice(position, 0, config);
+      }
+      return { ...previous, configs };
+    });
   }, []);
+
+  const updateSettingsOptimistically = useCallback(
+    async (patch, path, options) => {
+      const keys = Object.keys(patch);
+      const previousSettings = { ...(snapshot?.settings || {}) };
+      const versions = new Map(
+        keys.map((key) => [key, nextMutationVersion(settingsMutationVersions, key)])
+      );
+
+      setSnapshot((previous) =>
+        previous
+          ? { ...previous, settings: { ...(previous.settings || {}), ...patch } }
+          : previous
+      );
+
+      try {
+        const result = await request(path, options);
+        if (result?.settings) {
+          setSnapshot((previous) => {
+            if (!previous) return previous;
+            const settings = { ...(previous.settings || {}) };
+            for (const key of keys) {
+              if (settingsMutationVersions.current.get(key) !== versions.get(key)) continue;
+              settings[key] = result.settings[key];
+            }
+            return { ...previous, settings };
+          });
+        }
+        return result;
+      } catch (error) {
+        setSnapshot((previous) => {
+          if (!previous) return previous;
+          const settings = { ...(previous.settings || {}) };
+          for (const key of keys) {
+            if (settingsMutationVersions.current.get(key) !== versions.get(key)) continue;
+            if (Object.prototype.hasOwnProperty.call(previousSettings, key)) {
+              settings[key] = previousSettings[key];
+            } else {
+              delete settings[key];
+            }
+          }
+          return { ...previous, settings };
+        });
+        throw error;
+      }
+    },
+    [request, snapshot]
+  );
 
   const saveTarget = useCallback(
     async (target, originalId) => {
+      const itemId = originalId || normalizeTargetId(target.itemId);
+      const key = String(itemId).toLowerCase();
+      const version = nextMutationVersion(configMutationVersions, key);
+      const previousConfig = snapshot?.configs?.find(
+        (config) => config.itemId.toLowerCase() === key
+      ) || null;
+      const optimisticConfig = {
+        ...(previousConfig || {}),
+        ...target,
+        itemId,
+        runtime: previousConfig?.runtime ?? null
+      };
+      updateConfigSnapshot(itemId, optimisticConfig);
+
       const path = originalId
         ? `/api/configs/${encodeURIComponent(originalId)}`
         : "/api/configs";
-      const result = await request(path, { method: originalId ? "PATCH" : "POST", body: target });
-      mergeConfigs(result.configs);
-      setTimeout(() => clientRef.current?.resync(), 1500);
-      return result;
+      try {
+        const result = await request(path, { method: originalId ? "PATCH" : "POST", body: target });
+        const confirmed = result.configs?.find(
+          (config) => config.itemId.toLowerCase() === key
+        );
+        if (configMutationVersions.current.get(key) === version && confirmed) {
+          updateConfigSnapshot(itemId, confirmed);
+        }
+        setTimeout(() => clientRef.current?.resync(), 1500);
+        return result;
+      } catch (error) {
+        if (configMutationVersions.current.get(key) === version) {
+          updateConfigSnapshot(itemId, previousConfig);
+        }
+        throw error;
+      }
     },
-    [mergeConfigs, request]
+    [request, snapshot, updateConfigSnapshot]
   );
 
   const deleteTarget = useCallback(
     async (itemId) => {
-      const result = await request(`/api/configs/${encodeURIComponent(itemId)}`, {
-        method: "DELETE"
-      });
-      mergeConfigs(result.configs);
-      return result;
+      const key = String(itemId).toLowerCase();
+      const version = nextMutationVersion(configMutationVersions, key);
+      const previousConfig = snapshot?.configs?.find(
+        (config) => config.itemId.toLowerCase() === key
+      ) || null;
+      const previousIndex = previousConfig
+        ? snapshot.configs.findIndex((config) => config.itemId.toLowerCase() === key)
+        : null;
+      updateConfigSnapshot(itemId, null);
+      try {
+        const result = await request(`/api/configs/${encodeURIComponent(itemId)}`, {
+          method: "DELETE"
+        });
+        if (configMutationVersions.current.get(key) === version) {
+          updateConfigSnapshot(itemId, null);
+        }
+        return result;
+      } catch (error) {
+        if (configMutationVersions.current.get(key) === version) {
+          updateConfigSnapshot(itemId, previousConfig, previousIndex);
+        }
+        throw error;
+      }
     },
-    [mergeConfigs, request]
+    [request, snapshot, updateConfigSnapshot]
   );
 
   const toggleTarget = useCallback(
     async (itemId, active) => {
-      const result = await request(`/api/configs/${encodeURIComponent(itemId)}`, {
-        method: "PATCH",
-        body: { active }
-      });
-      mergeConfigs(result.configs);
-      return result;
+      const key = String(itemId).toLowerCase();
+      const version = nextMutationVersion(configMutationVersions, key);
+      const previousConfig = snapshot?.configs?.find(
+        (config) => config.itemId.toLowerCase() === key
+      ) || null;
+      if (previousConfig) updateConfigSnapshot(itemId, { ...previousConfig, active });
+      try {
+        const result = await request(`/api/configs/${encodeURIComponent(itemId)}`, {
+          method: "PATCH",
+          body: { active }
+        });
+        const confirmed = result.configs?.find(
+          (config) => config.itemId.toLowerCase() === key
+        );
+        if (configMutationVersions.current.get(key) === version && confirmed) {
+          updateConfigSnapshot(itemId, confirmed);
+        }
+        return result;
+      } catch (error) {
+        if (configMutationVersions.current.get(key) === version && previousConfig) {
+          updateConfigSnapshot(itemId, previousConfig);
+        }
+        throw error;
+      }
     },
-    [mergeConfigs, request]
+    [request, snapshot, updateConfigSnapshot]
   );
 
   const saveSettings = useCallback(
-    async (patch) => {
-      const result = await request("/api/settings", { method: "PATCH", body: patch });
-      setSnapshot((previous) =>
-        previous ? { ...previous, settings: result.settings } : previous
-      );
-      return result;
-    },
-    [request]
+    (patch) =>
+      updateSettingsOptimistically(patch, "/api/settings", {
+        method: "PATCH",
+        body: patch
+      }),
+    [updateSettingsOptimistically]
   );
 
   const refreshSession = useCallback(async () => {
@@ -568,6 +713,13 @@ export function useWorker({ notify }) {
 
   const control = useCallback(
     async (action) => {
+      if (action === "toggle") {
+        const patch = { paused: !Boolean(snapshot?.settings?.paused) };
+        return updateSettingsOptimistically(patch, "/api/control", {
+          method: "POST",
+          body: { action }
+        });
+      }
       const result = await request("/api/control", { method: "POST", body: { action } });
       if (result?.settings) {
         setSnapshot((previous) =>
@@ -576,7 +728,7 @@ export function useWorker({ notify }) {
       }
       return result;
     },
-    [request]
+    [request, snapshot, updateSettingsOptimistically]
   );
 
   const refreshLatency = useCallback(async () => {
