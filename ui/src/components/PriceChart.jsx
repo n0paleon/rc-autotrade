@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CartesianGrid,
   Line,
@@ -452,7 +452,7 @@ function PriceDetailModal({
             {status === "stale"
               ? `Stale · ${error || "retrying"}`
               : status === "loading" && data.length > 0
-                ? "Loading longer history…"
+                ? "Loading stored history…"
                 : "Source: live market feed"}
           </span>
         </div>
@@ -469,10 +469,12 @@ export default function PriceChart({ history, targetPrice, itemId, request, labe
   const [period, setPeriod] = useState(INLINE_PERIOD);
   const [bucket, setBucket] = useState(INLINE_BUCKET);
   const [stored, setStored] = useState([]);
+  const [storedDay, setStoredDay] = useState([]);
   const [status, setStatus] = useState("live");
   const [error, setError] = useState(null);
   const [attempt, setAttempt] = useState(0);
   const [open, setOpen] = useState(false);
+  const backfilled = useRef(false);
 
   const days = PRICE_PERIODS.find((option) => option.key === period)?.days ?? 1;
   const frame = PRICE_BUCKETS[bucket] ?? PRICE_BUCKETS[INLINE_BUCKET];
@@ -482,11 +484,11 @@ export default function PriceChart({ history, targetPrice, itemId, request, labe
   const inlinePeriodLabel =
     PRICE_PERIODS.find((option) => option.key === INLINE_PERIOD)?.label ?? "1D";
 
-  // The card never fetches: its 1D slice lives in the live history. Longer
-  // ranges are loaded only while the detail dialog is open and needs them.
+  // Every period, 1D included, can be repaired from SQLite: the live window is
+  // only 24h of in-memory closes, while the database keeps the retained week.
   useEffect(() => {
     if (!open) return undefined;
-    if (days <= 1 || !request || !itemId) {
+    if (!request || !itemId) {
       setStored([]);
       setError(null);
       setStatus("live");
@@ -524,10 +526,34 @@ export default function PriceChart({ history, targetPrice, itemId, request, labe
     return () => clearTimeout(timer);
   }, [open, status]);
 
-  const inlineData = useMemo(
-    () => bucketPrice(history || [], { days: 1, bucketMs: inlineFrame.ms }),
-    [history, inlineFrame.ms]
-  );
+  // The card needs no request of its own: the snapshot already hydrates its
+  // one-day window from SQLite, and the worker pushes a sampled close every
+  // minute an item is quiet. Only a card that starts with an empty window
+  // (target re-added while the worker was down) asks the API to repair it.
+  useEffect(() => {
+    if (backfilled.current || !request || !itemId) return undefined;
+    if (Array.isArray(history) && history.length > 0) {
+      backfilled.current = true;
+      return undefined;
+    }
+    backfilled.current = true;
+    let alive = true;
+    request(`/api/price-history?itemId=${encodeURIComponent(itemId)}&days=1`)
+      .then((data) => {
+        if (alive) setStoredDay(Array.isArray(data?.points) ? data.points : []);
+      })
+      .catch(() => {
+        if (alive) setStoredDay([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [history, itemId, request]);
+
+  const inlineData = useMemo(() => {
+    const source = storedDay.length ? mergePriceSeries(storedDay, history || []) : history || [];
+    return bucketPrice(source, { days: 1, bucketMs: inlineFrame.ms });
+  }, [history, storedDay, inlineFrame.ms]);
   const inlineSeries = useMemo(
     () => breakPriceGaps(inlineData, inlineFrame.ms),
     [inlineData, inlineFrame.ms]
@@ -547,8 +573,8 @@ export default function PriceChart({ history, targetPrice, itemId, request, labe
         : ["dataMin", "dataMax"];
 
   const merged = useMemo(
-    () => (days <= 1 ? history || [] : mergePriceSeries(stored, history)),
-    [days, stored, history]
+    () => (stored.length ? mergePriceSeries(stored, history || []) : history || []),
+    [stored, history]
   );
   const data = useMemo(
     () => bucketPrice(merged, { days, bucketMs: frame.ms }),
