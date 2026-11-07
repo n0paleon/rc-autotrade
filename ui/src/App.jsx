@@ -91,10 +91,16 @@ const MemoActivityChart = memo(function ActivityChart({ request }) {
   );
 });
 
-function TargetPriceChart({ history, targetPrice, itemId, request }) {
+function TargetPriceChart({ history, targetPrice, itemId, request, label }) {
   return (
     <Suspense fallback={<ChartSkeleton />}>
-      <PriceChart history={history} targetPrice={targetPrice} itemId={itemId} request={request} />
+      <PriceChart
+        history={history}
+        targetPrice={targetPrice}
+        itemId={itemId}
+        request={request}
+        label={label}
+      />
     </Suspense>
   );
 }
@@ -778,6 +784,7 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
         targetPrice={targetPrice}
         itemId={config.itemId}
         request={request}
+        label={label}
       />
 
       <div

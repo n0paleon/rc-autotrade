@@ -64,6 +64,30 @@ export function bucketPrice(
 }
 
 /**
+ * Stands in for a missing bucket so a line chart can break instead of drawing a
+ * straight segment across a quiet stretch. Recharts joins every point in a
+ * numeric series; a single `p: null` marker tells it to stop the stroke there.
+ */
+export function breakPriceGaps(series, bucketMs) {
+  const size = Number(bucketMs);
+  const points = Array.isArray(series) ? series : [];
+  if (!Number.isFinite(size) || size <= 0) return points;
+  const out = [];
+  let previous = null;
+  for (const point of points) {
+    const at = Number(point?.t);
+    const price = Number(point?.p);
+    if (!Number.isFinite(at) || !Number.isFinite(price)) continue;
+    if (previous !== null && at - previous > size * 1.5) {
+      out.push({ t: previous + size, p: null });
+    }
+    out.push({ t: at, p: price });
+    previous = at;
+  }
+  return out;
+}
+
+/**
  * Merges the fetched long-range series with the live 24h window. Live points
  * win on the same minute, so a polled snapshot never overwrites a fresh tick.
  */

@@ -2,6 +2,7 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 
 import {
+  breakPriceGaps,
   bucketPrice,
   mergePriceSeries,
   PRICE_BUCKETS,
@@ -108,6 +109,41 @@ test("summarizePrice reports first, last, change, high and low", () => {
     high: null,
     low: null
   });
+});
+
+test("breakPriceGaps inserts a null break across a quiet stretch", () => {
+  const series = breakPriceGaps(
+    [
+      { t: 0, p: 0.1 },
+      { t: MINUTE, p: 0.2 },
+      { t: 5 * MINUTE, p: 0.3 }
+    ],
+    MINUTE
+  );
+
+  assert.deepEqual(series, [
+    { t: 0, p: 0.1 },
+    { t: MINUTE, p: 0.2 },
+    { t: 2 * MINUTE, p: null },
+    { t: 5 * MINUTE, p: 0.3 }
+  ]);
+});
+
+test("breakPriceGaps skips invalid rows and still breaks the gap", () => {
+  const series = breakPriceGaps(
+    [
+      { t: 0, p: 0.1 },
+      { t: MINUTE, p: Number.NaN },
+      { t: 2 * MINUTE, p: 0.2 }
+    ],
+    MINUTE
+  );
+
+  assert.deepEqual(series, [
+    { t: 0, p: 0.1 },
+    { t: MINUTE, p: null },
+    { t: 2 * MINUTE, p: 0.2 }
+  ]);
 });
 
 test("exposes the requested period and bucket options", () => {
