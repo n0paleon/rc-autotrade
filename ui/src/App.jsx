@@ -313,7 +313,7 @@ function Header({ snapshot, status, latency, now, soundOn, onSound, onLogout, on
         </div>
         <div className="ml-auto flex items-center gap-1 sm:gap-1.5">
           <button
-            className={`btn btn-sm ${settings.paused ? "btn-primary" : ""}`}
+            className={`btn btn-sm max-sm:w-10 max-sm:px-0 ${settings.paused ? "btn-primary" : ""}`}
             type="button"
             onClick={onTogglePause}
             disabled={pausing}
@@ -593,7 +593,7 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
           <div className="mt-1 flex flex-wrap items-center gap-2">
             <span className="type-badge shrink-0" data-type={itemType} title="Marketplace item type">{itemTypeLabel(itemType)}</span>
             <button
-              className="-my-1 inline-flex min-h-6 items-center gap-1 whitespace-nowrap py-1 font-mono text-[12px] text-muted transition-colors hover:text-gold"
+              className="tap-pad -my-1 inline-flex min-h-6 items-center gap-1 whitespace-nowrap py-1 font-mono text-[12px] text-muted transition-colors hover:text-gold"
               type="button"
               title="Copy item ID"
               onClick={async () => {
@@ -605,7 +605,7 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
               <Icon name="i-copy" className="h-3 w-3" />
             </button>
             <a
-              className="-m-1.5 inline-flex h-6 w-6 items-center justify-center text-muted transition-colors hover:text-info"
+              className="tap-pad -m-1.5 inline-flex h-6 w-6 items-center justify-center text-muted transition-colors hover:text-info"
               href={marketplaceUrl(itemType, config.itemId)}
               target="_blank"
               rel="noopener noreferrer"
@@ -766,10 +766,10 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
           {lastText(config)}
         </span>
         <div className="flex shrink-0 items-center gap-1">
-          <button className="icon-btn h-9 w-9 sm:h-8 sm:w-8" type="button" aria-label="Edit target" title="Edit target" onClick={() => onEdit(config)}>
+          <button className="icon-btn h-10 w-10 sm:h-8 sm:w-8" type="button" aria-label="Edit target" title="Edit target" onClick={() => onEdit(config)}>
             <Icon name="i-edit" className="h-3.5 w-3.5" />
           </button>
-          <button className="icon-btn icon-btn-danger h-9 w-9 sm:h-8 sm:w-8" type="button" aria-label="Delete target" title="Delete target" onClick={() => onDelete(config)}>
+          <button className="icon-btn icon-btn-danger h-10 w-10 sm:h-8 sm:w-8" type="button" aria-label="Delete target" title="Delete target" onClick={() => onDelete(config)}>
             <Icon name="i-trash" className="h-3.5 w-3.5" />
           </button>
         </div>
@@ -796,7 +796,7 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onT
 
 
   return (
-    <section className="panel min-w-0 max-xl:order-3 xl:col-start-1 xl:row-start-3" data-accent="cyan">
+    <section className="panel min-w-0 max-lg:order-3 lg:col-start-1 lg:row-start-3" data-accent="cyan">
       <div className="panel-head flex-wrap gap-y-2">
         <h2 className="panel-title">
           <Icon name="i-target" className="h-4 w-4 text-info" />
@@ -866,7 +866,7 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onT
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4 p-4 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 p-4 xl:grid-cols-2">
           {filtered.length === 0 ? (
             <div className="col-span-full flex flex-col items-center gap-2 py-10 text-center">
               <p className="font-mono text-[13px] font-semibold uppercase tracking-[0.14em] text-ink-dim">No matches</p>
@@ -965,7 +965,7 @@ function ReportPanel({ report, notify }) {
   };
 
   return (
-    <section className="panel min-w-0 max-xl:order-2 xl:col-start-1 xl:row-start-2" data-accent="gold">
+    <section className="panel min-w-0 max-lg:order-2 lg:col-start-1 lg:row-start-2" data-accent="gold">
       <div className="panel-head flex-wrap gap-y-2">
         <h2 className="panel-title">
           <Icon name="i-coin" className="h-4 w-4 text-gold" /> Profit by product
@@ -1029,7 +1029,7 @@ function ReportPanel({ report, notify }) {
             </div>
           </div>
 
-          <ul className="report-scroll divide-y divide-line/40 md:hidden">
+          <ul className="report-scroll divide-y divide-line/40 xl:hidden">
             {items.map((item) => (
               <li className="px-4 py-3" key={item.itemId || item.label}>
                 <div className="flex items-start justify-between gap-3">
@@ -1058,7 +1058,7 @@ function ReportPanel({ report, notify }) {
             ))}
           </ul>
 
-          <div className="report-scroll hidden min-w-0 md:block">
+          <div className="report-scroll hidden min-w-0 xl:block">
             <table className="w-full min-w-[880px] border-collapse text-left font-mono text-[13px] tabular-nums">
               <thead className="sticky top-0 z-10 bg-night-900">
                 <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
@@ -1303,7 +1303,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
 
   return (
     <>
-    <section className="panel flex h-[380px] min-w-0 flex-col max-xl:order-1 xl:col-start-1 xl:row-start-1" data-accent="gold">
+    <section className="panel flex h-[clamp(17rem,52dvh,24rem)] min-w-0 flex-col max-lg:order-1 md:h-[380px] lg:col-start-1 lg:row-start-1" data-accent="gold">
       <div className="panel-head shrink-0 flex-wrap gap-y-2">
         <h2 className="panel-title">
           <Icon name="i-coin" className="h-4 w-4 text-gold" /> Loot log
@@ -1344,7 +1344,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
         </div>
       ) : (
         <>
-          <ul className="min-h-0 flex-1 divide-y divide-line/40 overflow-y-auto overscroll-contain md:hidden">
+          <ul className="min-h-0 flex-1 divide-y divide-line/40 overflow-y-auto overscroll-contain xl:hidden">
             {entries.map((entry) => (
               <li
                 className={`flex cursor-pointer items-start justify-between gap-3 px-4 py-2.5 transition-colors hover:bg-night-850/60${isRecent(entry.at, 6000) ? " loot-entry" : ""}`}
@@ -1384,7 +1384,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
               </li>
             ))}
           </ul>
-          <div className="hidden min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain md:block">
+          <div className="hidden min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain xl:block">
             <table className="w-full min-w-[760px] border-collapse text-left font-mono text-[13px] tabular-nums">
               <thead className="sticky top-0 z-10 bg-night-900">
                 <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
@@ -1547,7 +1547,7 @@ function FeedPanel({ logs, onClear, notify }) {
         </div>
         <div className="flex items-center gap-1">
           <button
-            className={`btn btn-sm ${isTailing ? "btn-signal" : ""}`}
+            className={`btn btn-sm max-sm:w-10 max-sm:px-0 ${isTailing ? "btn-signal" : ""}`}
             type="button"
             title={isTailing ? "Stop tailing and hold this line" : "Tail newest log lines"}
             aria-pressed={isTailing}
@@ -2297,7 +2297,7 @@ function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSes
     { id: "system", label: "SYSTEM" }
   ];
   return (
-    <aside className="flex min-w-0 flex-col gap-3 max-xl:order-4 xl:sticky xl:top-24 xl:col-start-2 xl:row-start-1 xl:row-span-3 xl:max-h-[calc(100dvh-6rem)] xl:self-start xl:overflow-y-auto">
+    <aside className="flex min-w-0 flex-col gap-3 max-lg:order-4 lg:sticky lg:top-24 lg:col-start-2 lg:row-start-1 lg:row-span-3 lg:max-h-[calc(100dvh-6rem)] lg:self-start lg:overflow-y-auto">
       <div className="tab-rail" role="tablist" aria-label="Control panels">
         {tabs.map((item) => (
           <button
@@ -2557,7 +2557,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           onEdit={(config) => setModal({ type: "target", config })}
         />
       </div>
-      <main className="deck-enter deck-enter-3 mx-auto mt-4 grid w-full max-w-[1600px] gap-4 px-3 pb-10 sm:px-4 lg:px-6 xl:grid-cols-[minmax(0,1fr)_380px] xl:items-start">
+      <main className="deck-enter deck-enter-3 mx-auto mt-4 grid w-full max-w-[1600px] gap-4 px-3 pb-10 sm:px-4 lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start lg:px-6 xl:grid-cols-[minmax(0,1fr)_380px]">
         <LootLog
           history={snapshot.history || []}
           historyTotal={snapshot.historyTotal}
@@ -2599,7 +2599,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       </main>
       <div className="pixel-stripe mt-8" aria-hidden="true" />
       <footer className="border-t-2 border-line bg-night-950/70">
-        <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-1 px-3 py-4 font-mono text-[12px] uppercase tracking-[0.08em] text-faint sm:flex-row sm:items-center sm:justify-between sm:px-4 lg:px-6">
+        <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-1 px-3 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] font-mono text-[12px] uppercase tracking-[0.08em] text-faint sm:flex-row sm:items-center sm:justify-between sm:px-4 lg:px-6">
           <span>
             <span id="footer-mode" className="text-gold">{snapshot.worker?.mock ? "MOCK" : "LIVE"}</span> · WORKER v
             <span id="footer-version">{snapshot.version || "1.0.0"}</span>

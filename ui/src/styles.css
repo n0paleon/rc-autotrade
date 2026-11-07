@@ -1055,6 +1055,20 @@
       2px 2px 0 #05030f;
   }
 
+  /* Shared segmented control used by the charts. The dense 24px box is a
+     pointing-device affordance; fingers get a real target below. */
+  .seg-tab {
+    @apply inline-flex h-6 min-w-6 items-center justify-center px-1.5 font-mono text-[12px] uppercase tracking-[0.08em];
+    transition:
+      color 100ms linear,
+      background-color 100ms linear,
+      transform 100ms linear;
+  }
+
+  .seg-tab:active {
+    transform: translateY(1px);
+  }
+
   @media (max-width: 359px) {
     .pixel-tab {
       padding-inline: 2px;
@@ -1898,6 +1912,70 @@
     .trend-table .trend-mom,
     .trend-table .trend-conf-cell {
       display: none;
+    }
+  }
+
+  /* ── input-mode sizing ──────────────────────────────────────────────
+     Dense controls are for cursors. A finger needs a real target and a
+     form field needs 16px type, or iOS zooms the whole viewport on focus.
+     Width alone is not the signal: tablets are wide and still touch. */
+  @media (max-width: 639px), (any-pointer: coarse) {
+    .seg-tab {
+      height: 2.5rem;
+      min-width: 2.5rem;
+      padding-inline: 0.5rem;
+    }
+
+    .btn {
+      min-height: 2.5rem;
+    }
+
+    .icon-btn {
+      min-width: 2.5rem;
+      min-height: 2.5rem;
+    }
+
+    .pixel-tab {
+      min-height: 2.75rem;
+    }
+
+    .type-filter,
+    .trend-filter {
+      min-height: 2.5rem;
+    }
+
+    .trend-filter {
+      padding-inline: 0.625rem;
+      font-size: 12px;
+    }
+
+    .input,
+    .input-sm {
+      font-size: 1rem;
+    }
+
+    .input-sm {
+      min-height: 2.5rem;
+      padding-block: 0.25rem;
+    }
+  }
+
+  @media (any-pointer: coarse) {
+    .tap-pad {
+      position: relative;
+    }
+
+    .tap-pad::after {
+      content: "";
+      position: absolute;
+      inset: -8px;
+    }
+  }
+
+  /* A fixed background repaints badly under mobile browser chrome. */
+  @media (hover: none) {
+    .deck-bg {
+      background-attachment: scroll;
     }
   }
 }
