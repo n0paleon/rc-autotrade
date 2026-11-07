@@ -18,6 +18,7 @@ A headless Rollercoin marketplace sniper with an arcade-style control deck built
 - **Access-key control plane.** The worker exposes HTTP and WebSocket endpoints protected by a bearer key. The key is generated once on first boot or pinned through `WORKER_TOKEN`.
 - **Dynamic targets.** Add, edit, delete, arm, and disarm targets from the UI without restarting. Labels and rarity colors are resolved automatically from `item-info`.
 - **Charts and success rate.** Price cards use Recharts with 1m, 5m, 15m, and 1h timeframes, a target line, tooltips, and 24 hours of history.
+- **Market activity chart.** Every market frame is counted into 5-minute buckets kept for a week, so the deck can chart how busy the feed was over 1, 3, or 7 days at 5m, 15m, 30m, 1h, or 2h bars, aligned to your local clock.
 - **Session manager.** Access and refresh tokens are stored in SQLite. The access token is refreshed before expiry, and requests are retried once after a 401 response.
 - **Token bridge.** A Tampermonkey userscript or console snippet keeps Rollercoin tokens in sync every 30 seconds.
 - **Safety rails.** Includes a global cooldown between orders, an orders-per-minute cap, backoff after rejected purchases, dry-run mode, strict validation, and a PAUSE/START control in the header.

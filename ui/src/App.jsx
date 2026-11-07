@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import EventChart from "./components/EventChart.jsx";
 import PriceChart from "./components/PriceChart.jsx";
 import TrendPanel, { TrendChip } from "./components/TrendPanel.jsx";
 import { Icon, ModalShell } from "./components/ModalShell.jsx";
@@ -2546,6 +2547,9 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       <Ticker configs={snapshot.configs || []} mock={snapshot.worker?.mock} />
       <div className="deck-enter deck-enter-2 mx-auto w-full max-w-[1600px] px-3 pt-4 sm:px-4 lg:px-6">
         <Hud snapshot={snapshot} now={now} eps={eps} />
+      </div>
+      <div className="deck-enter deck-enter-3 mx-auto mt-4 w-full max-w-[1600px] px-3 sm:px-4 lg:px-6">
+        <EventChart request={worker.request} />
       </div>
       <div className="deck-enter deck-enter-3 mx-auto mt-4 w-full max-w-[1600px] px-3 sm:px-4 lg:px-6">
         <TrendPanel
