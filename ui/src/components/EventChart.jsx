@@ -83,7 +83,7 @@ function Segmented({ label, options, value, onChange }) {
             type="button"
             role="tab"
             aria-selected={value === option.key}
-            className={`inline-flex h-6 min-w-6 items-center justify-center px-1.5 font-mono text-[12px] uppercase tracking-[0.08em] transition-[color,background-color,transform] duration-100 active:translate-y-px ${
+            className={`seg-tab ${
               value === option.key
                 ? "bg-pink font-bold text-[#2a0018]"
                 : "text-faint hover:bg-night-850 hover:text-ink-dim"
@@ -217,7 +217,7 @@ export default function EventChart({ request }) {
         </div>
 
         <div
-          className="relative mt-2 h-[168px]"
+          className="relative mt-2 h-[140px] sm:h-[168px]"
           role="img"
           aria-label={`Market activity over ${days} day${days === 1 ? "" : "s"} in ${frame.minutes} minute bars: ${formatInt(total)} events${
             peak ? `, busiest ${peakLabel} with ${formatInt(peak.n)}` : ""

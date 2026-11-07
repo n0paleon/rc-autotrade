@@ -1,6 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import EventChart from "./components/EventChart.jsx";
-import PriceChart from "./components/PriceChart.jsx";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import TrendPanel, { TrendChip } from "./components/TrendPanel.jsx";
 import { Icon, ModalShell } from "./components/ModalShell.jsx";
 import { BackupModal } from "./components/BackupModal.jsx";
@@ -15,6 +13,7 @@ import {
 } from "./components/Modals.jsx";
 import { useWorker, URL_KEY, readStoredToken, isRemembered } from "./useWorker.js";
 import { useToasts } from "./useToasts.js";
+import { useMediaQuery, useNow } from "./lib/hooks.js";
 import {
   cardState,
   fixedPrice,
@@ -50,7 +49,49 @@ import {
 } from "./lib/format.js";
 import { sound } from "./lib/sound.js";
 
-const MemoChart = memo(PriceChart);
+// Recharts is the single largest dependency and every target card mounts a
+// price chart. Loading the chart bundle on demand keeps the first paint (and
+// the login screen) free of it; the placeholders reserve the same space so
+// nothing jumps when the chunk lands.
+const EventChart = lazy(() => import("./components/EventChart.jsx"));
+const PriceChart = lazy(() => import("./components/PriceChart.jsx"));
+
+const TARGET_BATCH_MOBILE = 8;
+const TARGET_BATCH_DESKTOP = 12;
+
+function ChartSkeleton({ className = "h-[112px]" }) {
+  return <div className={`border-2 border-line bg-night-950/60 ${className}`} aria-hidden="true" />;
+}
+
+function PanelSkeleton({ height = 300 }) {
+  return (
+    <section className="panel" aria-hidden="true">
+      <div className="panel-head">
+        <span className="block h-4 w-40 bg-line/60" />
+      </div>
+      <div className="p-4">
+        <div className="border-2 border-line bg-night-950/60" style={{ height }} />
+      </div>
+    </section>
+  );
+}
+
+/** Memoised Suspense boundary: a market tick must not redraw the activity chart. */
+const MemoActivityChart = memo(function ActivityChart({ request }) {
+  return (
+    <Suspense fallback={<PanelSkeleton height={220} />}>
+      <EventChart request={request} />
+    </Suspense>
+  );
+});
+
+function TargetPriceChart({ history, targetPrice }) {
+  return (
+    <Suspense fallback={<ChartSkeleton />}>
+      <PriceChart history={history} targetPrice={targetPrice} />
+    </Suspense>
+  );
+}
 
 function useEventRate(count) {
   const [rate, setRate] = useState(0);
@@ -152,14 +193,14 @@ function BootScreen({ onLogin, busy, error }) {
             <div className="hero-coin flex h-14 w-14 shrink-0 items-center justify-center border-2 border-[#05030f] bg-gold text-[#1a1000] shadow-[0_0_0_2px_var(--color-line-strong),4px_4px_0_#05030f]">
               <svg viewBox="0 0 16 16" className="h-8 w-8" aria-hidden="true"><use href="#i-coin" /></svg>
             </div>
-            <h1 className="boot-title text-[clamp(3rem,7vw,5.4rem)]">
+            <h1 className="boot-title text-[clamp(2.6rem,7vw,5.4rem)]">
               MARKET<br /><span className="accent">SNIPER</span>
             </h1>
           </div>
-          <p className="mt-6 max-w-md text-[14px] leading-relaxed text-muted">
+          <p className="mt-4 max-w-md text-[14px] leading-relaxed text-muted sm:mt-6">
             A headless Rollercoin marketplace sniper. It watches the wire, prices your targets, and buys the dip while you sleep.
           </p>
-          <ul className="mt-6 space-y-2">
+          <ul className="mt-6 hidden space-y-2 sm:block">
             {perks.map((perk) => (
               <li key={perk.text} className="flex items-center gap-2.5 text-[13px] text-ink-dim">
                 <span className={`flex h-8 w-8 shrink-0 items-center justify-center border-2 border-[#05030f] shadow-[2px_2px_0_#05030f] ${perk.tone}`}>
@@ -169,7 +210,7 @@ function BootScreen({ onLogin, busy, error }) {
               </li>
             ))}
           </ul>
-          <div className="mt-7 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+          <div className="mt-7 hidden flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[12px] uppercase tracking-[0.08em] text-faint sm:flex">
             <span className="text-gold">8-bit loot run</span>
             <span aria-hidden="true">■</span>
             <span>Control deck v1.0</span>
@@ -256,7 +297,8 @@ function BootScreen({ onLogin, busy, error }) {
   );
 }
 
-function Header({ snapshot, status, latency, now, soundOn, onSound, onLogout, onTogglePause, pausing }) {
+function Header({ snapshot, status, latency, soundOn, onSound, onLogout, onTogglePause, pausing }) {
+  const now = useNow(1000);
   const gateway = snapshot.gateway?.status;
   let connLabel = "LINK LOST";
   let connClass = "chip-offline";
@@ -294,7 +336,7 @@ function Header({ snapshot, status, latency, now, soundOn, onSound, onLogout, on
   }
 
   return (
-    <header className="deck-enter sticky top-0 z-40 border-b-2 border-line bg-night-950/92 pt-[env(safe-area-inset-top)] backdrop-blur-md">
+    <header className="deck-enter sticky top-0 z-40 border-b-2 border-line bg-night-950 pt-[env(safe-area-inset-top)]">
       <div className="mx-auto flex min-h-14 w-full max-w-[1600px] items-center gap-3 px-3 sm:px-4 lg:px-6">
         <div className="flex min-w-0 items-center gap-2.5">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center border-2 border-[#05030f] bg-gold text-[#1a1000] shadow-[0_0_0_2px_var(--color-line-strong),3px_3px_0_#05030f] max-[359px]:hidden">
@@ -313,7 +355,7 @@ function Header({ snapshot, status, latency, now, soundOn, onSound, onLogout, on
         </div>
         <div className="ml-auto flex items-center gap-1 sm:gap-1.5">
           <button
-            className={`btn btn-sm ${settings.paused ? "btn-primary" : ""}`}
+            className={`btn btn-sm max-sm:w-10 max-sm:px-0 ${settings.paused ? "btn-primary" : ""}`}
             type="button"
             onClick={onTogglePause}
             disabled={pausing}
@@ -360,52 +402,36 @@ function Header({ snapshot, status, latency, now, soundOn, onSound, onLogout, on
 }
 
 function Ticker({ configs, mock }) {
-  const halves = [0, 1];
-  const [paused, setPaused] = useState(false);
   return (
-    <div className="deck-enter deck-enter-1 border-b-2 border-line bg-night-900/70" aria-label="Market wire">
-      <div className="mx-auto flex h-11 w-full max-w-[1600px] items-center gap-3 px-3 sm:h-9 sm:px-4 lg:px-6">
+    <div className="deck-enter deck-enter-1 hidden border-b-2 border-line bg-night-900/70 sm:block" aria-label="Market wire">
+      <div className="mx-auto flex h-9 w-full max-w-[1600px] items-center gap-3 px-3 sm:px-4 lg:px-6">
         <div className="flex shrink-0 items-center gap-1.5 font-mono text-[12px] font-bold uppercase tracking-[0.08em] text-gold">
-          <span className="led led-pulse bg-gold" />Market wire
-          <button
-            className="ticker-pause icon-btn h-10 w-10 sm:h-7 sm:w-7"
-            type="button"
-            aria-label={paused ? "Play market wire" : "Pause market wire"}
-            aria-pressed={paused}
-            title={paused ? "Resume the wire" : "Pause the wire"}
-            onClick={() => setPaused((value) => !value)}
-          >
-            <Icon name={paused ? "i-play" : "i-pause"} className="h-3 w-3" />
-          </button>
+          <span className="led bg-gold" />Market wire
         </div>
-        <div className="ticker-track min-w-0 flex-1" data-paused={paused ? "true" : undefined}>
-          <div className="ticker-content" style={{ animationDuration: `${Math.max(26, configs.length * 8)}s` }}>
-            {halves.map((half) => (
-              <div className="flex shrink-0 items-center" key={half}>
-                {configs.length === 0 ? (
-                  <span className="px-4 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
-                    No targets deployed. The market is quiet.
+        <div className="ticker-track min-w-0 flex-1">
+          <div className="ticker-content">
+            {configs.length === 0 ? (
+              <span className="px-4 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+                No targets deployed. The market is quiet.
+              </span>
+            ) : (
+              configs.map((config) => {
+                const runtime = config.runtime || {};
+                const hot = runtimeHot(config);
+                return (
+                  <span className="flex shrink-0 items-center gap-2 border-r-2 border-line/70 px-3 font-mono text-[12px]" key={config.itemId}>
+                    <span className="text-ink-dim">{config.label || `ITEM ${shortId(config.itemId)}`}</span>
+                    <span className={hot ? "text-gold" : "text-info"}>
+                      {Number.isFinite(runtime.lastPrice) ? `${fixedPrice(runtime.lastPrice)} RLT` : "—"}
+                    </span>
+                    <span className="text-[12px] uppercase tracking-[0.08em] text-violet">
+                      {Number.isFinite(runtime.lastStock) ? `Book ${formatInt(runtime.lastStock)}` : "Waiting"}
+                    </span>
+                    <span className="text-line-strong" aria-hidden="true">◆</span>
                   </span>
-                ) : (
-                  configs.map((config) => {
-                    const runtime = config.runtime || {};
-                    const hot = runtimeHot(config);
-                    return (
-                      <span className="flex shrink-0 items-center gap-2 border-r-2 border-line/70 px-3 font-mono text-[12px]" key={`${half}-${config.itemId}`}>
-                        <span className="text-ink-dim">{config.label || `ITEM ${shortId(config.itemId)}`}</span>
-                        <span className={hot ? "text-gold" : "text-info"}>
-                          {Number.isFinite(runtime.lastPrice) ? `${fixedPrice(runtime.lastPrice)} RLT` : "—"}
-                        </span>
-                        <span className="text-[12px] uppercase tracking-[0.08em] text-violet">
-                          {Number.isFinite(runtime.lastStock) ? `Book ${formatInt(runtime.lastStock)}` : "Waiting"}
-                        </span>
-                        <span className="text-line-strong" aria-hidden="true">◆</span>
-                      </span>
-                    );
-                  })
-                )}
-              </div>
-            ))}
+                );
+              })
+            )}
           </div>
         </div>
         <div className={`chip h-5 shrink-0 max-[359px]:hidden ${mock ? "chip-warn" : "chip-online"}`}>
@@ -416,7 +442,8 @@ function Ticker({ configs, mock }) {
   );
 }
 
-function Hud({ snapshot, now, eps }) {
+function Hud({ snapshot, eps }) {
+  const now = useNow(1000);
   const stats = snapshot.stats || {};
   const configs = snapshot.configs || [];
   const gateway = snapshot.gateway || {};
@@ -437,10 +464,10 @@ function Hud({ snapshot, now, eps }) {
           <span className="label">Profit</span>
           <Icon name="i-coin" className="stat-icon h-4 w-4 max-sm:hidden" />
         </div>
-        <div className={`stat-hero mt-1 text-[32px] leading-none [text-shadow:2px_2px_0_#05030f] sm:text-[36px] ${profit > 0 ? "text-gold" : "text-ink"}`} id="stat-profit">
+        <div className={`stat-hero mt-1 text-[26px] leading-none [text-shadow:2px_2px_0_#05030f] sm:text-[36px] ${profit > 0 ? "text-gold" : "text-ink"}`} id="stat-profit">
           {formatRlt(stats.profitRlt)}
         </div>
-        <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint" id="stat-profit-sub">
+        <div className="mt-1.5 font-mono text-[11px] uppercase tracking-[0.08em] text-faint sm:mt-2 sm:text-[12px]" id="stat-profit-sub">
           RLT · {formatInt(stats.bought)} items looted
         </div>
       </article>
@@ -515,9 +542,10 @@ function Hud({ snapshot, now, eps }) {
   );
 }
 
-function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
+const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete, onToggle, notify, compact = false }) {
   const canvasRef = useRef(null);
   const [toggling, setToggling] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const runtime = config.runtime || {};
   const state = cardState(config);
   const [statePulse, setStatePulse] = useState(0);
@@ -566,7 +594,7 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
 
   return (
     <article
-      className="target-card group overflow-hidden"
+      className={`target-card group overflow-hidden${compact ? " target-card-compact" : ""}`}
       data-state={state}
       data-type={itemType}
       data-item-id={config.itemId}
@@ -593,7 +621,7 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
           <div className="mt-1 flex flex-wrap items-center gap-2">
             <span className="type-badge shrink-0" data-type={itemType} title="Marketplace item type">{itemTypeLabel(itemType)}</span>
             <button
-              className="-my-1 inline-flex min-h-6 items-center gap-1 whitespace-nowrap py-1 font-mono text-[12px] text-muted transition-colors hover:text-gold"
+              className="tap-pad -my-1 inline-flex min-h-6 items-center gap-1 whitespace-nowrap py-1 font-mono text-[12px] text-muted transition-colors hover:text-gold max-sm:min-h-9"
               type="button"
               title="Copy item ID"
               onClick={async () => {
@@ -604,16 +632,6 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
               <code>{shortId(config.itemId)}</code>
               <Icon name="i-copy" className="h-3 w-3" />
             </button>
-            <a
-              className="-m-1.5 inline-flex h-6 w-6 items-center justify-center text-muted transition-colors hover:text-info"
-              href={marketplaceUrl(itemType, config.itemId)}
-              target="_blank"
-              rel="noopener noreferrer"
-              title="Open on Rollercoin marketplace"
-              aria-label={`Open ${label} on the Rollercoin marketplace`}
-            >
-              <Icon name="i-external" className="h-3 w-3" />
-            </a>
           </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2">
@@ -639,6 +657,44 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
         </div>
       </div>
 
+      {compact && !expanded ? (
+        <div className="grid grid-cols-3 gap-[2px] border-2 border-line bg-line">
+          <div className="bg-night-900/70 px-2 py-1.5">
+            <span className="label">Market</span>
+            <p className={`mt-0.5 font-mono text-[15px] font-bold leading-none tabular-nums ${hot ? "text-gold" : "text-info"}`}>
+              {Number.isFinite(runtime.lastPrice) ? fixedPrice(runtime.lastPrice) : "—"}
+            </p>
+          </div>
+          <div className="bg-night-900/70 px-2 py-1.5">
+            <span className="label">Target</span>
+            <p className="mt-0.5 font-mono text-[15px] font-bold leading-none tabular-nums text-gold">
+              {fixedPrice(targetPrice)}
+            </p>
+          </div>
+          <div className="bg-night-900/70 px-2 py-1.5">
+            <span className="label">Profit</span>
+            <p className={`mt-0.5 font-mono text-[15px] font-bold leading-none tabular-nums ${profitClass(productProfit)}`}>
+              {formatSignedRlt(productProfit)}
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      {compact ? (
+        <button
+          className="target-expand"
+          type="button"
+          aria-expanded={expanded}
+          aria-label={expanded ? `Hide details for ${label}` : `Show details for ${label}`}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <span>{expanded ? "Hide details" : "Price chart, range and fills"}</span>
+          <Icon name="i-chevron" className={`h-3 w-3 transition-transform${expanded ? " rotate-90" : ""}`} />
+        </button>
+      ) : null}
+
+      {!compact || expanded ? (
+        <>
       <TrendChip trend={runtime.trend} />
 
       <div className="grid grid-cols-2 gap-[2px] border-2 border-line bg-line">
@@ -729,7 +785,7 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
         )}
       </div>
 
-      <MemoChart history={runtime.history || []} targetPrice={targetPrice} />
+      <TargetPriceChart history={runtime.history || []} targetPrice={targetPrice} />
 
       <div
         className="space-y-1.5"
@@ -766,19 +822,39 @@ function TargetCard({ config, product, onEdit, onDelete, onToggle, notify }) {
           {lastText(config)}
         </span>
         <div className="flex shrink-0 items-center gap-1">
-          <button className="icon-btn h-9 w-9 sm:h-8 sm:w-8" type="button" aria-label="Edit target" title="Edit target" onClick={() => onEdit(config)}>
+          <a
+            className="icon-btn h-10 w-10 sm:h-8 sm:w-8"
+            href={marketplaceUrl(itemType, config.itemId)}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open on Rollercoin marketplace"
+            aria-label={`Open ${label} on the Rollercoin marketplace`}
+          >
+            <Icon name="i-external" className="h-3.5 w-3.5" />
+          </a>
+          <button className="icon-btn h-10 w-10 sm:h-8 sm:w-8" type="button" aria-label="Edit target" title="Edit target" onClick={() => onEdit(config)}>
             <Icon name="i-edit" className="h-3.5 w-3.5" />
           </button>
-          <button className="icon-btn icon-btn-danger h-9 w-9 sm:h-8 sm:w-8" type="button" aria-label="Delete target" title="Delete target" onClick={() => onDelete(config)}>
+          <button className="icon-btn icon-btn-danger h-10 w-10 sm:h-8 sm:w-8" type="button" aria-label="Delete target" title="Delete target" onClick={() => onDelete(config)}>
             <Icon name="i-trash" className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
+        </>
+      ) : null}
     </article>
   );
-}
+});
 
 function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onTypeFilter, onAdd, onEdit, onDelete, onToggle, notify }) {
+  const compact = useMediaQuery("(max-width: 1023px)");
+  const batch = compact ? TARGET_BATCH_MOBILE : TARGET_BATCH_DESKTOP;
+  const [limit, setLimit] = useState(batch);
+  // Searching or switching type restarts from the top of the list.
+  useEffect(() => {
+    setLimit(batch);
+  }, [batch, search, typeFilter]);
+
   const query = search.trim().toLowerCase();
   const filtered = configs.filter((config) => {
     if (typeFilter !== "all" && itemTypeOf(config) !== typeFilter) return false;
@@ -793,10 +869,12 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onT
     tally[type] = (tally[type] || 0) + 1;
     return tally;
   }, {});
+  const visible = filtered.slice(0, limit);
+  const hidden = filtered.length - visible.length;
 
 
   return (
-    <section className="panel min-w-0 max-xl:order-3 xl:col-start-1 xl:row-start-3" data-accent="cyan">
+    <section className="panel min-w-0 max-lg:order-1 lg:col-start-1 lg:row-start-3" data-accent="cyan">
       <div className="panel-head flex-wrap gap-y-2">
         <h2 className="panel-title">
           <Icon name="i-target" className="h-4 w-4 text-info" />
@@ -824,7 +902,7 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onT
       </div>
 
       {configs.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-1.5 border-b-2 border-line px-4 py-2.5" role="group" aria-label="Filter targets by item type">
+        <div className="type-filter-row flex flex-nowrap items-center gap-1.5 border-b-2 border-line px-4 py-2.5 sm:flex-wrap" role="group" aria-label="Filter targets by item type">
           <span className="label mr-1">Type</span>
           <button
             className="type-filter"
@@ -866,7 +944,7 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onT
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4 p-4 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 p-4 xl:grid-cols-2">
           {filtered.length === 0 ? (
             <div className="col-span-full flex flex-col items-center gap-2 py-10 text-center">
               <p className="font-mono text-[13px] font-semibold uppercase tracking-[0.14em] text-ink-dim">No matches</p>
@@ -877,7 +955,7 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onT
               </p>
             </div>
           ) : (
-            filtered.map((config) => (
+            visible.map((config) => (
               <TargetCard
                 key={config.itemId}
                 config={config}
@@ -886,11 +964,29 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onT
                 onDelete={onDelete}
                 onToggle={onToggle}
                 notify={notify}
+                compact={compact}
               />
             ))
           )}
         </div>
       )}
+      {filtered.length > 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t-2 border-line px-4 py-2.5">
+          <span className="font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+            Showing {formatInt(visible.length)} of {formatInt(filtered.length)}
+          </span>
+          {hidden > 0 ? (
+            <button
+              className="btn btn-ghost btn-sm"
+              type="button"
+              onClick={() => setLimit((value) => value + (compact ? TARGET_BATCH_MOBILE : TARGET_BATCH_DESKTOP))}
+            >
+              Show {formatInt(Math.min(hidden, compact ? TARGET_BATCH_MOBILE : TARGET_BATCH_DESKTOP))} more
+              <Icon name="i-arrow-down" className="h-3 w-3" />
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -965,7 +1061,7 @@ function ReportPanel({ report, notify }) {
   };
 
   return (
-    <section className="panel min-w-0 max-xl:order-2 xl:col-start-1 xl:row-start-2" data-accent="gold">
+    <section className="panel min-w-0 max-lg:order-3 lg:col-start-1 lg:row-start-2" data-accent="gold">
       <div className="panel-head flex-wrap gap-y-2">
         <h2 className="panel-title">
           <Icon name="i-coin" className="h-4 w-4 text-gold" /> Profit by product
@@ -1029,7 +1125,7 @@ function ReportPanel({ report, notify }) {
             </div>
           </div>
 
-          <ul className="report-scroll divide-y divide-line/40 md:hidden">
+          <ul className="report-scroll divide-y divide-line/40 xl:hidden">
             {items.map((item) => (
               <li className="px-4 py-3" key={item.itemId || item.label}>
                 <div className="flex items-start justify-between gap-3">
@@ -1058,7 +1154,7 @@ function ReportPanel({ report, notify }) {
             ))}
           </ul>
 
-          <div className="report-scroll hidden min-w-0 md:block">
+          <div className="report-scroll hidden min-w-0 xl:block">
             <table className="w-full min-w-[880px] border-collapse text-left font-mono text-[13px] tabular-nums">
               <thead className="sticky top-0 z-10 bg-night-900">
                 <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
@@ -1139,6 +1235,9 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
   const [error, setError] = useState("");
   const [detail, setDetail] = useState(null);
   const idsRef = useRef(new Set());
+  // The mobile list and the desktop table are the same data: render only the
+  // one that fits, instead of mounting both and hiding one with CSS.
+  const wide = useMediaQuery("(min-width: 1280px)");
 
   // Typing updates the box immediately; the server query is debounced so a
   // search over the permanent log is not re-run on every keystroke.
@@ -1303,7 +1402,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
 
   return (
     <>
-    <section className="panel flex h-[380px] min-w-0 flex-col max-xl:order-1 xl:col-start-1 xl:row-start-1" data-accent="gold">
+    <section className="panel flex h-[clamp(17rem,52dvh,24rem)] min-w-0 flex-col max-lg:order-2 md:h-[380px] lg:col-start-1 lg:row-start-1" data-accent="gold">
       <div className="panel-head shrink-0 flex-wrap gap-y-2">
         <h2 className="panel-title">
           <Icon name="i-coin" className="h-4 w-4 text-gold" /> Loot log
@@ -1344,7 +1443,8 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
         </div>
       ) : (
         <>
-          <ul className="min-h-0 flex-1 divide-y divide-line/40 overflow-y-auto overscroll-contain md:hidden">
+          {wide ? null : (
+          <ul className="min-h-0 flex-1 divide-y divide-line/40 overflow-y-auto overscroll-contain">
             {entries.map((entry) => (
               <li
                 className={`flex cursor-pointer items-start justify-between gap-3 px-4 py-2.5 transition-colors hover:bg-night-850/60${isRecent(entry.at, 6000) ? " loot-entry" : ""}`}
@@ -1384,7 +1484,9 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
               </li>
             ))}
           </ul>
-          <div className="hidden min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain md:block">
+          )}
+          {wide ? (
+          <div className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain">
             <table className="w-full min-w-[760px] border-collapse text-left font-mono text-[13px] tabular-nums">
               <thead className="sticky top-0 z-10 bg-night-900">
                 <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
@@ -1441,6 +1543,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
               </tbody>
             </table>
           </div>
+          ) : null}
         </>
       )}
       <div className="flex shrink-0 items-center justify-between gap-2 border-t-2 border-line px-3 py-2">
@@ -1485,7 +1588,10 @@ function FeedPanel({ logs, onClear, notify }) {
   const [frozen, setFrozen] = useState([]);
   const [unread, setUnread] = useState(0);
   const feedRef = useRef(null);
-  const shown = paused ? frozen : logs;
+  // The scrollback is capped: 400 mounted log lines cost layout on every
+  // worker event and the oldest ones are far outside the visible screen.
+  const FEED_WINDOW = 120;
+  const shown = (paused ? frozen : logs).slice(-FEED_WINDOW);
   const isTailing = tailing && !paused;
 
   const scrollToLatest = useCallback(() => {
@@ -1547,7 +1653,7 @@ function FeedPanel({ logs, onClear, notify }) {
         </div>
         <div className="flex items-center gap-1">
           <button
-            className={`btn btn-sm ${isTailing ? "btn-signal" : ""}`}
+            className={`btn btn-sm max-sm:w-10 max-sm:px-0 ${isTailing ? "btn-signal" : ""}`}
             type="button"
             title={isTailing ? "Stop tailing and hold this line" : "Tail newest log lines"}
             aria-pressed={isTailing}
@@ -1620,7 +1726,8 @@ function sessionChip(session, now) {
   return { text: "LINKED", cls: "chip chip-ok" };
 }
 
-function LinkPanel({ snapshot, now, worker, notify, onEditSession, onBridge, onClearSession, onRotate }) {
+function LinkPanel({ snapshot, worker, notify, onEditSession, onBridge, onClearSession, onRotate }) {
+  const now = useNow(1000);
   const session = snapshot.session || {};
   const settings = snapshot.settings || {};
   const [refreshing, setRefreshing] = useState(false);
@@ -2209,13 +2316,16 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
   };
 
   return (
-    <section className="panel" data-accent="pink">
+    <section className="panel @container" data-accent="pink">
       <div className="panel-head">
         <h2 className="panel-title"><Icon name="i-gear" className="h-4 w-4 text-pink" /> Runtime config</h2>
       </div>
       <div className="panel-body">
         <form className="space-y-3" onSubmit={saveNumbers}>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          {/* This panel lives in a ~360px sidebar, so the two fields stack. A
+              viewport breakpoint would put them side by side at 640px while the
+              column is still narrow, wrapping the labels unevenly. */}
+          <div className="grid grid-cols-1 gap-3 @[30rem]:grid-cols-2">
             <label className="field">
               <span>Order cooldown (ms)</span>
               <input className="input" type="number" inputMode="numeric" step="10" min="50" max="60000" value={delay} onChange={(event) => setDelay(event.target.value)} />
@@ -2288,7 +2398,7 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
   );
 }
 
-function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSession, onBridge, onClearSession, onRotate, onReset, onReconnect, onBackup, baseUrl }) {
+function SidePanel({ tab, setTab, snapshot, logs, worker, notify, onEditSession, onBridge, onClearSession, onRotate, onReset, onReconnect, onBackup, baseUrl }) {
   const tabs = [
     { id: "feed", label: "FEED" },
     { id: "link", label: "LINK" },
@@ -2297,7 +2407,7 @@ function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSes
     { id: "system", label: "SYSTEM" }
   ];
   return (
-    <aside className="flex min-w-0 flex-col gap-3 max-xl:order-4 xl:sticky xl:top-24 xl:col-start-2 xl:row-start-1 xl:row-span-3 xl:max-h-[calc(100dvh-6rem)] xl:self-start xl:overflow-y-auto">
+    <aside className="flex min-w-0 flex-col gap-3 max-lg:order-4 lg:sticky lg:top-24 lg:col-start-2 lg:row-start-1 lg:row-span-3 lg:max-h-[calc(100dvh-6rem)] lg:self-start lg:overflow-y-auto">
       <div className="tab-rail" role="tablist" aria-label="Control panels">
         {tabs.map((item) => (
           <button
@@ -2313,11 +2423,10 @@ function SidePanel({ tab, setTab, snapshot, logs, now, worker, notify, onEditSes
         ))}
       </div>
       <div key={tab} className="tab-panel flex min-w-0 flex-col gap-3">
-        {tab === "feed" ? <FeedPanel logs={logs} onClear={worker.clearLogs} notify={notify} /> : null}
+        {tab === "feed" ? <MemoFeedPanel logs={logs} onClear={worker.clearLogs} notify={notify} /> : null}
         {tab === "link" ? (
           <LinkPanel
             snapshot={snapshot}
-            now={now}
             worker={worker}
             notify={notify}
             onEditSession={onEditSession}
@@ -2380,6 +2489,14 @@ function ToastStack({ toasts, onDismiss }) {
   );
 }
 
+// These panels are expensive to reconcile and only change when their own data
+// does; memoising them keeps a market tick or a toast from redrawing the deck.
+const MemoLootLog = memo(LootLog);
+const MemoReportPanel = memo(ReportPanel);
+const MemoTargetsPanel = memo(TargetsPanel);
+const MemoTrendPanel = memo(TrendPanel);
+const MemoFeedPanel = memo(FeedPanel);
+
 function Dashboard({ worker, notify, toasts, dismissToast }) {
   const { snapshot, logs, status, latency } = worker;
   const [tab, setTab] = useState("feed");
@@ -2389,12 +2506,10 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
   const [confirmState, setConfirmState] = useState(null);
   const [soundOn, setSoundOn] = useState(sound.enabled);
   const [pausing, setPausing] = useState(false);
-  const [now, setNow] = useState(Date.now());
-
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+  // Handlers stay referentially stable so memoised cards are not invalidated by
+  // a new snapshot. The ref always points at the newest worker instance.
+  const workerRef = useRef(worker);
+  workerRef.current = worker;
 
   const eps = useEventRate(snapshot.gateway?.eventCount || 0);
   const baseUrl = worker.getConnection().baseUrl;
@@ -2417,14 +2532,14 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
     setConfirmState(null);
   };
 
-  const toggleTarget = async (config, active) => {
+  const toggleTarget = useCallback(async (config, active) => {
     try {
-      await worker.toggleTarget(config.itemId, active);
+      await workerRef.current.toggleTarget(config.itemId, active);
       notify("info", active ? "TARGET ARMED" : "TARGET DISARMED", config.label || shortId(config.itemId));
     } catch (error) {
       notify("error", "ARM FAILED", error.message);
     }
-  };
+  }, [notify]);
 
   const togglePause = async () => {
     setPausing(true);
@@ -2460,7 +2575,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
     }
   };
 
-  const deleteTarget = async (config) => {
+  const deleteTarget = useCallback(async (config) => {
     const confirmed = await askConfirm({
       title: "DELETE TARGET",
       message: `Remove ${config.label || shortId(config.itemId)} from the hunt list? Open orders are not cancelled.`,
@@ -2469,14 +2584,22 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
     });
     if (!confirmed) return;
     try {
-      await worker.deleteTarget(config.itemId);
+      await workerRef.current.deleteTarget(config.itemId);
       notify("warn", "TARGET REMOVED", config.label || shortId(config.itemId));
     } catch (error) {
       notify("error", "DELETE FAILED", error.message);
     }
-  };
+  }, [askConfirm, notify]);
 
-  const resetStats = async () => {
+  const openTargetModal = useCallback((config) => {
+    setModal({ type: "target", config });
+  }, []);
+
+  const addTargetModal = useCallback(() => {
+    setModal({ type: "target", config: null });
+  }, []);
+
+  const resetStats = useCallback(async () => {
     const confirmed = await askConfirm({
       title: "RESET LIFETIME STATS",
       message: "Wipe profit, fill counters, per-target success rates and the entire loot log? Targets and sessions are not touched.",
@@ -2485,14 +2608,14 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
     });
     if (!confirmed) return false;
     try {
-      await worker.resetStats();
+      await workerRef.current.resetStats();
       notify("warn", "STATS RESET", "Starting a fresh scoreboard.");
       return true;
     } catch (error) {
       notify("error", "RESET FAILED", error.message);
       return false;
     }
-  };
+  }, [askConfirm, notify]);
 
   const rotateKey = async (onPending) => {
     if (snapshot.accessKeyPinned) {
@@ -2537,7 +2660,6 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
         snapshot={snapshot}
         status={status}
         latency={latency}
-        now={now}
         soundOn={soundOn}
         onSound={toggleSound}
         onLogout={worker.logout}
@@ -2546,35 +2668,32 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       />
       <Ticker configs={snapshot.configs || []} mock={snapshot.worker?.mock} />
       <div className="deck-enter deck-enter-2 mx-auto w-full max-w-[1600px] px-3 pt-4 sm:px-4 lg:px-6">
-        <Hud snapshot={snapshot} now={now} eps={eps} />
+        <Hud snapshot={snapshot} eps={eps} />
       </div>
       <div className="deck-enter deck-enter-3 mx-auto mt-4 w-full max-w-[1600px] px-3 sm:px-4 lg:px-6">
-        <EventChart request={worker.request} />
+        <MemoActivityChart request={worker.request} />
       </div>
       <div className="deck-enter deck-enter-3 mx-auto mt-4 w-full max-w-[1600px] px-3 sm:px-4 lg:px-6">
-        <TrendPanel
-          configs={snapshot.configs || []}
-          onEdit={(config) => setModal({ type: "target", config })}
-        />
+        <MemoTrendPanel configs={snapshot.configs || []} onEdit={openTargetModal} />
       </div>
-      <main className="deck-enter deck-enter-3 mx-auto mt-4 grid w-full max-w-[1600px] gap-4 px-3 pb-10 sm:px-4 lg:px-6 xl:grid-cols-[minmax(0,1fr)_380px] xl:items-start">
-        <LootLog
+      <main className="deck-enter deck-enter-3 mx-auto mt-4 grid w-full max-w-[1600px] gap-4 px-3 pb-10 sm:px-4 lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start lg:px-6 xl:grid-cols-[minmax(0,1fr)_380px]">
+        <MemoLootLog
           history={snapshot.history || []}
           historyTotal={snapshot.historyTotal}
           historyRevision={worker.historyRevision}
           onReset={resetStats}
           request={worker.request}
         />
-        <ReportPanel report={snapshot.report} notify={notify} />
-        <TargetsPanel
+        <MemoReportPanel report={snapshot.report} notify={notify} />
+        <MemoTargetsPanel
           configs={snapshot.configs || []}
           reportByItem={reportByItem}
           search={search}
           typeFilter={typeFilter}
           onSearch={setSearch}
           onTypeFilter={setTypeFilter}
-          onAdd={() => setModal({ type: "target", config: null })}
-          onEdit={(config) => setModal({ type: "target", config })}
+          onAdd={addTargetModal}
+          onEdit={openTargetModal}
           onDelete={deleteTarget}
           onToggle={toggleTarget}
           notify={notify}
@@ -2584,7 +2703,6 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           setTab={setTab}
           snapshot={snapshot}
           logs={logs}
-          now={now}
           worker={worker}
           notify={notify}
           onEditSession={() => setModal({ type: "session" })}
@@ -2599,7 +2717,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       </main>
       <div className="pixel-stripe mt-8" aria-hidden="true" />
       <footer className="border-t-2 border-line bg-night-950/70">
-        <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-1 px-3 py-4 font-mono text-[12px] uppercase tracking-[0.08em] text-faint sm:flex-row sm:items-center sm:justify-between sm:px-4 lg:px-6">
+        <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-1 px-3 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] font-mono text-[12px] uppercase tracking-[0.08em] text-faint sm:flex-row sm:items-center sm:justify-between sm:px-4 lg:px-6">
           <span>
             <span id="footer-mode" className="text-gold">{snapshot.worker?.mock ? "MOCK" : "LIVE"}</span> · WORKER v
             <span id="footer-version">{snapshot.version || "1.0.0"}</span>

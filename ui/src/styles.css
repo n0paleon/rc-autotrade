@@ -219,7 +219,6 @@
       radial-gradient(900px 520px at 50% 112%, rgb(69 224 255 / 0.10), transparent 70%),
       repeating-linear-gradient(0deg, transparent 0 3px, rgb(2 1 10 / 0.16) 3px 4px),
       linear-gradient(180deg, #0d0929 0%, #080617 38%, #0a0622 100%);
-    background-attachment: fixed;
   }
 
   .panel {
@@ -242,7 +241,6 @@
     inset: 0 0 auto;
     height: 3px;
     background: var(--accent);
-    box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 45%, transparent);
   }
 
   .panel-head {
@@ -572,7 +570,9 @@
   }
 
   .led-pulse {
-    animation: led-pulse 1.6s steps(2, end) infinite;
+    /* Kept as a hook so markup does not change; the permanent blink was one of
+       a dozen simultaneous loops competing for the compositor on mobile. */
+    opacity: 1;
   }
 
   .state-chip {
@@ -1055,6 +1055,20 @@
       2px 2px 0 #05030f;
   }
 
+  /* Shared segmented control used by the charts. The dense 24px box is a
+     pointing-device affordance; fingers get a real target below. */
+  .seg-tab {
+    @apply inline-flex h-6 min-w-6 items-center justify-center px-1.5 font-mono text-[12px] uppercase tracking-[0.08em];
+    transition:
+      color 100ms linear,
+      background-color 100ms linear,
+      transform 100ms linear;
+  }
+
+  .seg-tab:active {
+    transform: translateY(1px);
+  }
+
   @media (max-width: 359px) {
     .pixel-tab {
       padding-inline: 2px;
@@ -1077,7 +1091,6 @@
     inset: 0 0 auto;
     height: 3px;
     background: var(--accent);
-    box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 55%, transparent);
   }
 
   .stat-tile .label {
@@ -1087,7 +1100,6 @@
 
   .stat-tile .stat-icon {
     color: var(--accent);
-    filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent) 45%, transparent));
   }
 
   [data-accent="gold"] {
@@ -1151,6 +1163,43 @@
 
   .target-card[data-state="error"] {
     border-color: var(--color-danger);
+  }
+
+  /* Phones get one compact row per target: the full card (chart, range, fills)
+     only mounts when the row is expanded. */
+  .target-card-compact {
+    gap: 0.75rem;
+    padding: 0.75rem 0.75rem 0.75rem 1rem;
+  }
+
+  .target-expand {
+    display: flex;
+    width: 100%;
+    min-height: 2.75rem;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0 0.75rem;
+    border: 2px solid var(--color-line);
+    background: rgb(8 6 23 / 0.55);
+    color: var(--color-muted);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    transition:
+      border-color var(--motion-ui) linear,
+      color var(--motion-ui) linear;
+  }
+
+  .target-expand:hover {
+    border-color: var(--color-line-strong);
+    color: var(--color-ink);
+  }
+
+  .target-expand[aria-expanded="true"] {
+    border-color: color-mix(in srgb, var(--color-gold) 55%, transparent);
+    color: var(--color-gold);
   }
 
   .price-tick {
@@ -1224,7 +1273,6 @@
 
   .hero-coin {
     filter: drop-shadow(4px 4px 0 #05030f);
-    animation: coin-float 4.5s steps(6, end) infinite;
   }
 
   .brand-wordmark {
@@ -1271,36 +1319,30 @@
   }
 
   .sparkle {
-    animation: sparkle 2.4s steps(2, end) infinite;
+    opacity: 0.9;
   }
 
   /* ── motion ───────────────────────────────────────────────────── */
+  /* The wire is a strip you can push sideways with a thumb, not a marquee that
+     animates forever off-screen. */
   .ticker-track {
-    @apply overflow-hidden;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+  }
+
+  .ticker-track::-webkit-scrollbar {
+    display: none;
   }
 
   .ticker-content {
-    @apply flex w-max;
-    animation: marquee linear infinite;
-  }
-
-  .ticker-track:hover .ticker-content,
-  .ticker-track[data-paused="true"] .ticker-content {
-    animation-play-state: paused;
-  }
-
-  .ticker-pause {
-    position: relative;
-  }
-
-  .ticker-pause::before {
-    content: "";
-    position: absolute;
-    inset: -2px;
+    display: flex;
+    width: max-content;
   }
 
   .hot-edge {
-    animation: hot-edge 1.4s steps(2, end) infinite;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-gold) 55%, transparent);
   }
 
   .deck-enter {
@@ -1898,6 +1940,115 @@
     .trend-table .trend-mom,
     .trend-table .trend-conf-cell {
       display: none;
+    }
+  }
+
+  /* ── input-mode sizing ──────────────────────────────────────────────
+     Dense controls are for cursors. A finger needs a real target and a
+     form field needs 16px type, or iOS zooms the whole viewport on focus.
+     Width alone is not the signal: tablets are wide and still touch. */
+  @media (max-width: 639px), (any-pointer: coarse) {
+    .seg-tab {
+      height: 2.75rem;
+      min-width: 2.75rem;
+      padding-inline: 0.75rem;
+    }
+
+    .btn {
+      min-height: 2.75rem;
+    }
+
+    .icon-btn {
+      min-width: 2.75rem;
+      min-height: 2.75rem;
+    }
+
+    .pixel-tab {
+      min-height: 2.75rem;
+    }
+
+    .type-filter,
+    .trend-filter {
+      min-height: 2.75rem;
+    }
+
+    .trend-filter {
+      padding-inline: 0.625rem;
+      font-size: 12px;
+    }
+
+    .input,
+    .input-sm {
+      font-size: 1rem;
+    }
+
+    .input-sm {
+      min-height: 2.75rem;
+      padding-block: 0.25rem;
+    }
+  }
+
+  /* Phone density: the same panels, with less framing between the rows. */
+  @media (max-width: 639px) {
+    .panel-head {
+      padding: 0.5rem 0.75rem;
+    }
+
+    .panel-body {
+      padding: 0.75rem;
+    }
+
+    .panel-title {
+      font-size: 13px;
+      letter-spacing: 0.06em;
+    }
+
+    .panel {
+      box-shadow:
+        0 0 0 2px #05030f,
+        3px 3px 0 #05030f;
+    }
+
+    .stat-tile {
+      padding: 0.5rem 0.625rem;
+    }
+
+    .stat-tile .label {
+      font-size: 11px;
+      letter-spacing: 0.08em;
+    }
+
+    .pixel-stripe {
+      display: none;
+    }
+
+    /* Six type chips wrap into three rows on a phone; a single swipeable row
+       keeps the fleet header short and the chips at a full touch size. */
+    .type-filter-row {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      overscroll-behavior-x: contain;
+      scrollbar-width: none;
+    }
+
+    .type-filter-row::-webkit-scrollbar {
+      display: none;
+    }
+
+    .type-filter-row .type-filter {
+      flex: none;
+    }
+  }
+
+  @media (any-pointer: coarse) {
+    .tap-pad {
+      position: relative;
+    }
+
+    .tap-pad::after {
+      content: "";
+      position: absolute;
+      inset: -8px;
     }
   }
 }
