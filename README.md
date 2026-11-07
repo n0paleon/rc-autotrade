@@ -16,7 +16,7 @@ A headless Rollercoin marketplace sniper with an arcade-style control deck built
 
 - **Headless worker.** Connects to `nws.rollercoin.com` over WebSocket, listens to every market frame, matches events against your targets, and sends `purchase-item` requests over HTTPS.
 - **Access-key control plane.** The worker exposes HTTP and WebSocket endpoints protected by a bearer key. The key is generated once on first boot or pinned through `WORKER_TOKEN`.
-- **Dynamic targets.** Add, edit, delete, arm, and disarm targets from the UI without restarting. Labels and rarity colors are resolved automatically from `item-info`.
+- **Dynamic targets.** Add, edit, delete, arm, and disarm targets from the UI without restarting, then filter the fleet by arm state (active/inactive), item type, or label. Labels and rarity colors are resolved automatically from `item-info`.
 - **Charts and success rate.** Every chart is a line chart. A price card shows a fixed 1D view in 30-minute buckets; click it to open a full-size view with 1–7 day ranges, 1m–1d buckets, a price axis, crosshair readout, and a target line.
 - **Market activity chart.** Every market frame is counted into 5-minute buckets kept for a week, so the deck can chart how busy the feed was over 1, 3, or 7 days at 5m, 15m, 30m, 1h, or 2h buckets, aligned to your local clock.
 - **Session manager.** Access and refresh tokens are stored in SQLite. The access token is refreshed before expiry, and requests are retried once after a 401 response.

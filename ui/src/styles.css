@@ -642,6 +642,20 @@
     --type-color: var(--color-gold);
   }
 
+  /* Status chips reuse the type-filter shell but colour by arm state, so an
+     armed fleet reads green and a parked one stays neutral. */
+  .type-filter[data-status="all"] {
+    --type-color: var(--color-info);
+  }
+
+  .type-filter[data-status="active"] {
+    --type-color: var(--color-signal);
+  }
+
+  .type-filter[data-status="inactive"] {
+    --type-color: var(--color-faint);
+  }
+
   .type-badge[data-type="miner"],
   .type-filter[data-type="miner"] {
     --type-color: var(--color-orange);

@@ -48,6 +48,7 @@ import {
   utilizationClass
 } from "./lib/format.js";
 import { sound } from "./lib/sound.js";
+import { countTargetsByStatus, filterTargets } from "./lib/targets.js";
 import { modeOf } from "./lib/constants.js";
 import { ModeMenu } from "./components/ModeMenu.jsx";
 
@@ -846,31 +847,45 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
   );
 });
 
-function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onTypeFilter, onAdd, onEdit, onDelete, onToggle, notify, request }) {
+function TargetsPanel({ configs, reportByItem, search, typeFilter, statusFilter, onSearch, onTypeFilter, onStatusFilter, onAdd, onEdit, onDelete, onToggle, notify, request }) {
   const compact = useMediaQuery("(max-width: 1023px)");
   const batch = compact ? TARGET_BATCH_MOBILE : TARGET_BATCH_DESKTOP;
   const [limit, setLimit] = useState(batch);
-  // Searching or switching type restarts from the top of the list.
+  // Searching or switching a filter restarts from the top of the list.
   useEffect(() => {
     setLimit(batch);
-  }, [batch, search, typeFilter]);
+  }, [batch, search, typeFilter, statusFilter]);
 
-  const query = search.trim().toLowerCase();
-  const filtered = configs.filter((config) => {
-    if (typeFilter !== "all" && itemTypeOf(config) !== typeFilter) return false;
-    if (!query) return true;
-    return (
-      (config.label || "").toLowerCase().includes(query) ||
-      config.itemId.toLowerCase().includes(query)
-    );
-  });
+  const hasQuery = search.trim() !== "";
+  const filtered = filterTargets(configs, { search, typeFilter, statusFilter });
   const counts = configs.reduce((tally, config) => {
     const type = itemTypeOf(config);
     tally[type] = (tally[type] || 0) + 1;
     return tally;
   }, {});
+  const statusCounts = countTargetsByStatus(configs);
   const visible = filtered.slice(0, limit);
   const hidden = filtered.length - visible.length;
+  const statusWord =
+    statusFilter === "active" ? "active " : statusFilter === "inactive" ? "inactive " : "";
+  // Empty states name the filter that emptied the list, so "no matches" never
+  // leaves the operator guessing whether the fleet is empty or just filtered.
+  const statusOnly = !hasQuery && typeFilter === "all";
+  const emptyTitle =
+    statusOnly && statusFilter === "active"
+      ? "No active targets"
+      : statusOnly && statusFilter === "inactive"
+        ? "No inactive targets"
+        : "No matches";
+  const emptyNote = hasQuery
+    ? `Nothing matches “${search}”. Try another label or item ID.`
+    : typeFilter !== "all"
+      ? `No ${statusWord}targets of type “${itemTypeLabel(typeFilter)}” are deployed.`
+      : statusFilter === "active"
+        ? "Every target is parked — arm one with its toggle to put it back to work."
+        : statusFilter === "inactive"
+          ? "Every target is armed — flip a card's toggle to park it here."
+          : "No targets match the current filters.";
 
 
   return (
@@ -902,30 +917,69 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onT
       </div>
 
       {configs.length > 0 ? (
-        <div className="type-filter-row flex flex-nowrap items-center gap-1.5 border-b-2 border-line px-4 py-2.5 sm:flex-wrap" role="group" aria-label="Filter targets by item type">
-          <span className="label mr-1">Type</span>
-          <button
-            className="type-filter"
-            data-type="all"
-            type="button"
-            aria-pressed={typeFilter === "all"}
-            onClick={() => onTypeFilter("all")}
+        <>
+          <div
+            className="type-filter-row flex flex-nowrap items-center gap-1.5 border-b-2 border-line px-4 py-2.5 sm:flex-wrap"
+            role="group"
+            aria-label="Filter targets by status"
           >
-            all <span className="tabular-nums opacity-60">{configs.length}</span>
-          </button>
-          {ITEM_TYPE_ORDER.map((type) => (
+            <span className="label mr-1">Status</span>
             <button
-              key={type}
               className="type-filter"
-              data-type={type}
+              data-status="all"
               type="button"
-              aria-pressed={typeFilter === type}
-              onClick={() => onTypeFilter(typeFilter === type ? "all" : type)}
+              title="Show every target, armed or parked"
+              aria-pressed={statusFilter === "all"}
+              onClick={() => onStatusFilter("all")}
             >
-              {itemTypeLabel(type)} <span className="tabular-nums opacity-60">{counts[type] || 0}</span>
+              all <span className="tabular-nums opacity-60">{formatInt(statusCounts.all)}</span>
             </button>
-          ))}
-        </div>
+            <button
+              className="type-filter"
+              data-status="active"
+              type="button"
+              title="Armed targets: the worker hunts the market for them"
+              aria-pressed={statusFilter === "active"}
+              onClick={() => onStatusFilter(statusFilter === "active" ? "all" : "active")}
+            >
+              active <span className="tabular-nums opacity-60">{formatInt(statusCounts.active)}</span>
+            </button>
+            <button
+              className="type-filter"
+              data-status="inactive"
+              type="button"
+              title="Parked targets: disarmed, so the worker skips them"
+              aria-pressed={statusFilter === "inactive"}
+              onClick={() => onStatusFilter(statusFilter === "inactive" ? "all" : "inactive")}
+            >
+              inactive <span className="tabular-nums opacity-60">{formatInt(statusCounts.inactive)}</span>
+            </button>
+          </div>
+          <div className="type-filter-row flex flex-nowrap items-center gap-1.5 border-b-2 border-line px-4 py-2.5 sm:flex-wrap" role="group" aria-label="Filter targets by item type">
+            <span className="label mr-1">Type</span>
+            <button
+              className="type-filter"
+              data-type="all"
+              type="button"
+              aria-pressed={typeFilter === "all"}
+              onClick={() => onTypeFilter("all")}
+            >
+              all <span className="tabular-nums opacity-60">{configs.length}</span>
+            </button>
+            {ITEM_TYPE_ORDER.map((type) => (
+              <button
+                key={type}
+                className="type-filter"
+                data-type={type}
+                type="button"
+                aria-pressed={typeFilter === type}
+                onClick={() => onTypeFilter(typeFilter === type ? "all" : type)}
+              >
+                {itemTypeLabel(type)} <span className="tabular-nums opacity-60">{counts[type] || 0}</span>
+              </button>
+            ))}
+          </div>
+        </>
       ) : null}
 
       {configs.length === 0 ? (
@@ -947,12 +1001,8 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onT
         <div className="grid grid-cols-1 gap-4 p-4 xl:grid-cols-2">
           {filtered.length === 0 ? (
             <div className="col-span-full flex flex-col items-center gap-2 py-10 text-center">
-              <p className="font-mono text-[13px] font-semibold uppercase tracking-[0.14em] text-ink-dim">No matches</p>
-              <p className="max-w-sm text-[13px] leading-relaxed text-faint">
-                {query
-                  ? `Nothing matches “${search}”. Try another label or item ID.`
-                  : `No targets of type “${itemTypeLabel(typeFilter)}” are deployed.`}
-              </p>
+              <p className="font-mono text-[13px] font-semibold uppercase tracking-[0.14em] text-ink-dim">{emptyTitle}</p>
+              <p className="max-w-sm text-[13px] leading-relaxed text-faint">{emptyNote}</p>
             </div>
           ) : (
             visible.map((config) => (
@@ -2502,6 +2552,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
   const [tab, setTab] = useState("feed");
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [modal, setModal] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
   const [soundOn, setSoundOn] = useState(sound.enabled);
@@ -2706,8 +2757,10 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           reportByItem={reportByItem}
           search={search}
           typeFilter={typeFilter}
+          statusFilter={statusFilter}
           onSearch={setSearch}
           onTypeFilter={setTypeFilter}
+          onStatusFilter={setStatusFilter}
           onAdd={addTargetModal}
           onEdit={openTargetModal}
           onDelete={deleteTarget}
