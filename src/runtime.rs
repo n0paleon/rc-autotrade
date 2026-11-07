@@ -15,6 +15,7 @@ use serde_json::Value;
 use tokio::task::JoinHandle;
 
 use crate::api::{PurchaseRequest, PurchaseResult};
+use crate::constants::EVENT_FLUSH_INTERVAL_MS;
 use crate::dns_probe::{self, SocketMode};
 use crate::engine::{EngineEvent, OrderIntent, PurchaseOutcome};
 use crate::feed::FeedHandle;
@@ -96,6 +97,7 @@ pub struct Worker {
     feed_task: JoinHandle<()>,
     ticker: JoinHandle<()>,
     stats_task: JoinHandle<()>,
+    event_task: JoinHandle<()>,
     keepalive_task: Option<JoinHandle<()>>,
     system_tasks: Vec<JoinHandle<()>>,
 }
@@ -298,6 +300,31 @@ impl Worker {
             }
         });
 
+        // Frame counts stay in memory; this task turns them into one SQLite
+        // transaction every few seconds instead of a write per frame.
+        let event_state = state.clone();
+        let event_task = tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_millis(EVENT_FLUSH_INTERVAL_MS));
+            interval.tick().await; // the first tick is immediate
+            loop {
+                interval.tick().await;
+                let flushed = {
+                    let mut store = event_state
+                        .store
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    store.flush_event_points()
+                };
+                if let Err(error) = flushed {
+                    event_state.logger.warn(
+                        "events",
+                        format!("could not persist market activity: {error}"),
+                    );
+                }
+            }
+        });
+
         let stats_state = state.clone();
         let stats_task = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(HEALTH_TICK_MS));
@@ -315,6 +342,7 @@ impl Worker {
             feed_task,
             ticker,
             stats_task,
+            event_task,
             keepalive_task,
             system_tasks,
         }
@@ -334,6 +362,7 @@ impl Worker {
         self.feed_task.abort();
         self.ticker.abort();
         self.stats_task.abort();
+        self.event_task.abort();
     }
 }
 
@@ -344,6 +373,9 @@ fn process_frame(state: &Arc<AppState>, raw: Value, at: i64) {
             .store
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Every frame the deck counts on the "Market events" tile is also what
+        // the activity chart draws, so both numbers come from the same source.
+        store.note_market_event(at);
         let has_token = !store.state.session.access_token.is_empty();
         let mut engine = state
             .engine

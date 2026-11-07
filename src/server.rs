@@ -27,7 +27,10 @@ use tower_http::services::{ServeDir, ServeFile};
 
 use crate::api::ApiClient;
 use crate::config::Config;
-use crate::constants::{APP_NAME, APP_VERSION, LOOT_LOG_MAX_PAGE_SIZE, LOOT_LOG_PAGE_SIZE, Limits};
+use crate::constants::{
+    APP_NAME, APP_VERSION, EVENT_BUCKET_MS, EVENT_HISTORY_DAYS, EVENT_RETENTION_DAYS,
+    LOOT_LOG_MAX_PAGE_SIZE, LOOT_LOG_PAGE_SIZE, Limits,
+};
 use crate::engine::Engine;
 use crate::feed::FeedHandle;
 use crate::item_info::ItemInfoService;
@@ -728,6 +731,39 @@ async fn history(
 async fn report(_auth: Auth, State(state): State<Arc<AppState>>) -> Response {
     let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
     Json(json!({ "ok": true, "report": store.report_view() })).into_response()
+}
+
+/// Bucketed market-frame counts for the activity chart. Buckets stay at the
+/// stored 5-minute resolution; the deck sums them into 15m/30m/1h/2h windows
+/// so that boundaries line up with the viewer's local clock, not the server's.
+async fn events_view(
+    _auth: Auth,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let days = params
+        .get("days")
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(1)
+        .clamp(1, EVENT_HISTORY_DAYS);
+    let now = now_ms();
+    let since = now - days * 86_400_000;
+    let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
+    let points: Vec<Value> = store
+        .event_series(since)
+        .into_iter()
+        .map(|(bucket_at, events)| json!({ "t": bucket_at, "n": events }))
+        .collect();
+    Json(json!({
+        "ok": true,
+        "days": days,
+        "bucketMs": EVENT_BUCKET_MS,
+        "since": since,
+        "until": now,
+        "retentionDays": EVENT_RETENTION_DAYS,
+        "points": points,
+    }))
+    .into_response()
 }
 
 async fn get_session(_auth: Auth, State(state): State<Arc<AppState>>) -> Response {
@@ -1514,6 +1550,7 @@ pub fn router(state: Arc<AppState>, dist_dir: std::path::PathBuf) -> Router {
         .route("/api/control", post(control))
         .route("/api/history", get(history).delete(delete_history))
         .route("/api/report", get(report))
+        .route("/api/events", get(events_view))
         .route(
             "/api/session",
             get(get_session).post(post_session).delete(delete_session),

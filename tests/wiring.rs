@@ -273,6 +273,20 @@ async fn feed_to_fill_round_trip() {
     };
     assert_eq!(snapshot["gateway"]["status"], "online");
     assert!(snapshot["gateway"]["eventCount"].as_i64().unwrap() >= 2);
+
+    // The activity chart reads the same frames the HUD counts, bucketed.
+    let counted: i64 = state
+        .store
+        .lock()
+        .unwrap()
+        .event_series(now_ms() - 3_600_000)
+        .iter()
+        .map(|(_, events)| events)
+        .sum();
+    assert!(
+        counted >= 2,
+        "every market frame must land in the activity buckets, got {counted}"
+    );
     assert!(snapshot["pending"].as_array().unwrap().is_empty());
     assert_eq!(snapshot["keepalive"]["enabled"], true);
     assert_eq!(snapshot["keepalive"]["running"], true);

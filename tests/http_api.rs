@@ -149,6 +149,40 @@ async fn health_is_public_and_state_requires_the_key() {
 }
 
 #[tokio::test]
+async fn event_history_requires_the_key_and_clamps_the_window() {
+    let dir = temp_dir();
+    let upstream_calls = Arc::new(Mutex::new(0));
+    let upstream = spawn_upstream(upstream_calls).await;
+    let base = spawn_worker(dir.clone(), upstream).await;
+    let client = reqwest::Client::new();
+
+    let unauthorized = client
+        .get(format!("{base}/api/events?days=1"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), 401);
+
+    let body: Value = client
+        .get(format!("{base}/api/events?days=99"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["days"], 7, "the window is capped at a week");
+    assert_eq!(body["bucketMs"], 300_000);
+    assert_eq!(body["retentionDays"], 8);
+    assert!(body["points"].as_array().unwrap().is_empty());
+    assert!(body["since"].as_i64().unwrap() < body["until"].as_i64().unwrap());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn creating_a_target_enriches_its_label_from_item_info() {
     let dir = temp_dir();
     let upstream_calls = Arc::new(Mutex::new(0));

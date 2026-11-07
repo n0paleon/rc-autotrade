@@ -123,6 +123,13 @@ CREATE TABLE IF NOT EXISTS price_points (
   fill_approx INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (item_id, bucket_at)
 ) WITHOUT ROWID;
+
+-- Market-frame activity, one row per 5-minute bucket. Additive: older builds
+-- that know schema v7 simply ignore the table, so `user_version` stays put.
+CREATE TABLE IF NOT EXISTS event_points (
+  bucket_at INTEGER PRIMARY KEY,
+  events    INTEGER NOT NULL DEFAULT 0
+) WITHOUT ROWID;
 "#;
 
 fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, rusqlite::Error> {
@@ -308,6 +315,7 @@ mod tests {
             "report_products",
             "market_snapshot",
             "price_points",
+            "event_points",
         ] {
             assert!(
                 tables.iter().any(|name| name == expected),

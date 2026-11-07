@@ -10,7 +10,7 @@
 //! * legacy `state.json` / `loot-log.json` import is not implemented; the Rust
 //!   worker targets the SQLite schema v7 that the JS worker already writes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -21,8 +21,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::constants::{
-    LOOT_LOG_MAX_PAGE_SIZE, LOOT_LOG_PAGE_SIZE, MAX_HISTORY, MAX_REPORT_PRODUCTS,
-    PRICE_RETENTION_DAYS,
+    EVENT_BUCKET_MS, EVENT_RETENTION_DAYS, LOOT_LOG_MAX_PAGE_SIZE, LOOT_LOG_PAGE_SIZE, MAX_HISTORY,
+    MAX_REPORT_PRODUCTS, PRICE_RETENTION_DAYS,
 };
 use crate::db;
 use crate::logger::Logger;
@@ -171,6 +171,18 @@ pub struct Store {
     pub data_dir: PathBuf,
     logger: Arc<Logger>,
     metrics: Arc<crate::db_metrics::DbMetrics>,
+    /// Market frames counted per 5-minute bucket. The window covers
+    /// [`EVENT_RETENTION_DAYS`], so the chart can serve a week without a query
+    /// per render; SQLite only receives the batches the flusher writes.
+    event_points: BTreeMap<i64, i64>,
+    /// Buckets changed since the last flush (absolute counts, not deltas).
+    event_dirty: BTreeSet<i64>,
+    event_pruned_at: i64,
+}
+
+/// Start of the 5-minute bucket that owns `at`.
+pub fn event_bucket_at(at: i64) -> i64 {
+    at.div_euclid(EVENT_BUCKET_MS) * EVENT_BUCKET_MS
 }
 
 impl Store {
@@ -184,9 +196,13 @@ impl Store {
             data_dir,
             logger,
             metrics,
+            event_points: BTreeMap::new(),
+            event_dirty: BTreeSet::new(),
+            event_pruned_at: now_ms(),
         };
         store.ensure_rows()?;
         store.hydrate()?;
+        store.hydrate_events();
         Ok(store)
     }
 
@@ -1449,6 +1465,114 @@ impl Store {
             .map_err(|e| format!("could not prune price history: {e}"))
     }
 
+    // ── market-event activity ───────────────────────────────────────────────
+
+    /// Counts one market frame into its 5-minute bucket. Stays in memory: the
+    /// flusher writes the batch, so the frame path never waits on SQLite.
+    pub fn note_market_event(&mut self, at: i64) {
+        let bucket = event_bucket_at(at);
+        *self.event_points.entry(bucket).or_insert(0) += 1;
+        self.event_dirty.insert(bucket);
+    }
+
+    /// Buckets at or after `since`, oldest first, including the live one.
+    pub fn event_series(&self, since: i64) -> Vec<(i64, i64)> {
+        self.event_points
+            .range(since..)
+            .map(|(bucket, count)| (*bucket, *count))
+            .collect()
+    }
+
+    /// Writes every dirty bucket in one transaction, then drops expiry.
+    pub fn flush_event_points(&mut self) -> Result<u64, String> {
+        let pending: Vec<(i64, i64)> = self
+            .event_dirty
+            .iter()
+            .map(|bucket| (*bucket, self.event_points.get(bucket).copied().unwrap_or(0)))
+            .collect();
+
+        if !pending.is_empty() {
+            let tx = self
+                .db
+                .unchecked_transaction()
+                .map_err(|e| format!("could not start event flush: {e}"))?;
+            {
+                let mut statement = tx
+                    .prepare_cached(
+                        "INSERT INTO event_points (bucket_at, events) VALUES (?1, ?2)
+                         ON CONFLICT(bucket_at) DO UPDATE SET events = excluded.events",
+                    )
+                    .map_err(|e| format!("could not cache event point statement: {e}"))?;
+                for (bucket, count) in &pending {
+                    statement
+                        .execute(params![bucket, count])
+                        .map_err(|e| format!("could not record event point: {e}"))?;
+                }
+            }
+            tx.commit()
+                .map_err(|e| format!("could not commit event points: {e}"))?;
+            self.event_dirty.clear();
+        }
+
+        self.prune_event_points()?;
+        Ok(pending.len() as u64)
+    }
+
+    fn hydrate_events(&mut self) {
+        let since = now_ms() - EVENT_RETENTION_DAYS * 86_400_000;
+        let mut statement = match self.db.prepare(
+            "SELECT bucket_at, events FROM event_points WHERE bucket_at >= ?1 ORDER BY bucket_at",
+        ) {
+            Ok(statement) => statement,
+            Err(error) => {
+                self.logger
+                    .warn("store", format!("could not read event history: {error}"));
+                return;
+            }
+        };
+        let rows = statement.query_map(params![since], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        });
+        let rows = match rows {
+            Ok(rows) => rows,
+            Err(error) => {
+                self.logger
+                    .warn("store", format!("could not read event history: {error}"));
+                return;
+            }
+        };
+        for (bucket, count) in rows.flatten() {
+            self.event_points.insert(bucket, count);
+        }
+    }
+
+    fn prune_event_points(&mut self) -> Result<(), String> {
+        let now = now_ms();
+        let cutoff = now - EVENT_RETENTION_DAYS * 86_400_000;
+        let expired = self
+            .event_points
+            .keys()
+            .next()
+            .map(|bucket| *bucket < cutoff)
+            .unwrap_or(false);
+        // A week of 5-minute buckets is ~2 300 rows; hourly is plenty. An
+        // expiry that appears between sweeps (a clock jump, restored data)
+        // still forces the sweep immediately.
+        if !expired && now - self.event_pruned_at < 3_600_000 {
+            return Ok(());
+        }
+        self.event_pruned_at = now;
+        self.event_points = self.event_points.split_off(&cutoff);
+        self.event_dirty.retain(|bucket| *bucket >= cutoff);
+        self.db
+            .execute(
+                "DELETE FROM event_points WHERE bucket_at < ?1",
+                params![cutoff],
+            )
+            .map(|_| ())
+            .map_err(|e| format!("could not prune event history: {e}"))
+    }
+
     // ── session ─────────────────────────────────────────────────────────────
 
     pub fn apply_session_patch(&mut self, patch: SessionPatch) -> Result<(), String> {
@@ -1557,6 +1681,7 @@ impl Store {
 
     pub fn close(&mut self) {
         let _ = self.flush();
+        let _ = self.flush_event_points();
         db::checkpoint_and_close(&self.db);
     }
 
@@ -1807,6 +1932,60 @@ mod tests {
         assert_eq!(points[0].bucket_at, 1_700_000_000_000);
         assert_eq!(points[0].fill_price, Some(0.0905));
         assert_eq!(points[1].fill_price, None);
+    }
+
+    #[test]
+    fn counts_market_events_into_five_minute_buckets_across_a_reopen() {
+        let dir = temp_dir("events");
+        let logger = Arc::new(Logger::new("error"));
+        let now = now_ms();
+        let current = event_bucket_at(now);
+        let previous = current - EVENT_BUCKET_MS;
+
+        {
+            let mut store = Store::open(dir.clone(), logger.clone()).expect("store");
+            store.note_market_event(previous + 1_000);
+            store.note_market_event(previous + 4 * 60_000);
+            store.note_market_event(current + 10);
+            // Older than the retention window: the flush must drop it instead
+            // of letting the chart query a stale row.
+            store.note_market_event(now - 9 * 86_400_000);
+
+            assert_eq!(
+                store.event_series(previous),
+                vec![(previous, 2), (current, 1)]
+            );
+            assert_eq!(store.flush_event_points().unwrap(), 3);
+            assert_eq!(
+                store.event_series(previous),
+                vec![(previous, 2), (current, 1)]
+            );
+            let stored: i64 = store
+                .db
+                .query_row("SELECT COUNT(*) FROM event_points", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(stored, 2);
+        }
+
+        // The flusher's rows come back on boot, so the chart survives restarts.
+        let store = Store::open(dir, logger).expect("reopen");
+        assert_eq!(
+            store.event_series(previous),
+            vec![(previous, 2), (current, 1)]
+        );
+    }
+
+    #[test]
+    fn event_buckets_align_to_the_five_minute_grid() {
+        let at = 1_700_000_007_999;
+        let bucket = event_bucket_at(at);
+        assert_eq!(bucket % EVENT_BUCKET_MS, 0);
+        assert!(bucket <= at && at < bucket + EVENT_BUCKET_MS);
+        assert_eq!(event_bucket_at(bucket), bucket);
+        assert_eq!(
+            event_bucket_at(bucket + EVENT_BUCKET_MS),
+            bucket + EVENT_BUCKET_MS
+        );
     }
 
     #[test]
