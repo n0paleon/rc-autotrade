@@ -97,11 +97,12 @@ Rollercoin session — two of either will duplicate orders.
 | `PATCH /api/configs/:id` | ✅ | merge semantics match `{...existing, ...body}`; enrichment follows async |
 | `DELETE /api/configs/:id` | ✅ | 404 when unknown |
 | `PATCH /api/settings` | ✅ | validated ranges, broadcasts `settings` |
-| `POST /api/control` | ✅ | pause/resume/toggle and `reconnect` (via the gateway handle) |
+| `POST /api/control` | ✅ | `off`/`shadow`/`live` (legacy `pause`/`resume`/`toggle` aliases) and `reconnect` |
 | `GET /api/history` | ✅ | cursor + offset + `q`/`status` filters |
 | `DELETE /api/history` | ✅ | resets stats, engine counters and latency samples |
 | `GET /api/report` | ✅ | same derived columns |
 | `GET /api/events` | ➕ | Rust-only: market-frame counts per 5-minute bucket for `?days=1..7`; the deck sums them into the chart timeframe in local time |
+| `GET /api/price-history` | ➕ | Rust-only: raw 1-minute closes for one `itemId` over `?days=1..7`; the deck buckets them in local time and merges the live 24h window |
 | `GET /api/session` | ✅ | same preview/expires fields |
 | `POST /api/session` | ✅ | validated, `changed` flag |
 | `DELETE /api/session` | ✅ | clears all three credentials |
@@ -120,7 +121,8 @@ Bun worker.
 ## 5. Deliberate differences (permanent)
 
 1. **No legacy JSON import.** `state.json` / `loot-log.json` were never ported;
-   the backend targets the SQLite v7 schema directly.
+   the backend targets the SQLite v8 schema directly. v7 files are migrated in
+   place: `settings.mode` is added and backfilled from `paused` / `dry_run`.
 2. **`save()` flushes immediately.** The Bun worker debounces 120 ms. A flush
    measures ~40 µs here, so synchronous writes stay until the frame path has a
    measured reason to defer them.
@@ -268,7 +270,7 @@ Bun worker.
 - React deck opened in a real browser against the Rust worker: login with the
   access key, target list rendered, `PAUSED` state from the DB, no console
   errors. Screenshot: `.qa/rust-ui.png` (local, gitignored).
-- Restart persistence: target row, `paused`, and `delayPerOrder` survive a
+- Restart persistence: target row, `mode`, and `delayPerOrder` survive a
   process restart.
 - `src/lib.rs` exposes the modules so `examples/` and future integration tests
   drive the exact code the binary ships.
@@ -394,6 +396,7 @@ the Rust version has to fix the algorithm, not just change the language.
   `bun run key:reset` (Rust `reset_token` binary), `bun run diagnose:ws`,
   `bun run bench:frame`, `bun run bench:trend`.
 - **Default data directory** is `./data`; the old side-by-side `./data-rs` was
-  removed. Existing SQLite v7 files keep working.
+  removed. Existing SQLite v7 files keep working: they are upgraded to v8 in
+  place on first open, with `mode` backfilled from the old flags.
 - **PM2** runs `target/release/rollercoin-worker` directly
   (`interpreter: "none"`); no Bun/Node runtime is involved in production.

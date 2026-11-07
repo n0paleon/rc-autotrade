@@ -633,14 +633,11 @@ pub fn parse_backup(raw: &Value, now: i64) -> ParseOutcome {
             if let Some(value) = patch.max_orders_per_minute {
                 settings.max_orders_per_minute = value;
             }
-            if let Some(value) = patch.dry_run {
-                settings.dry_run = value;
+            if let Some(value) = patch.mode {
+                settings.mode = value;
             }
             if let Some(value) = patch.auto_refresh {
                 settings.auto_refresh = value;
-            }
-            if let Some(value) = patch.paused {
-                settings.paused = value;
             }
         }
         Err(_) => {
@@ -931,15 +928,17 @@ pub fn restore_backup(
             .map_err(|error| format!("could not clear {table}: {error}"))?;
     }
 
+    let (dry_run, paused) = settings.legacy_flags();
     tx.execute(
         "UPDATE settings SET delay_per_order = ?1, max_orders_per_minute = ?2,
-                dry_run = ?3, auto_refresh = ?4, paused = ?5 WHERE id = 1",
+                dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6 WHERE id = 1",
         params![
             settings.delay_per_order,
             settings.max_orders_per_minute,
-            settings.dry_run as i64,
+            dry_run as i64,
             settings.auto_refresh as i64,
-            settings.paused as i64
+            paused as i64,
+            settings.mode.as_str()
         ],
     )
     .map_err(|error| format!("could not restore settings: {error}"))?;

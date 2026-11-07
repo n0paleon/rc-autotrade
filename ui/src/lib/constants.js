@@ -11,10 +11,43 @@
 export const DEFAULT_SETTINGS = Object.freeze({
   delayPerOrder: 200,
   maxOrdersPerMinute: 60,
-  dryRun: false,
-  autoRefresh: true,
-  paused: false
+  mode: "live",
+  autoRefresh: true
 });
+
+/**
+ * The three trading modes. `off` stops deciding (and spends no cooldown or
+ * rate-limit budget), `shadow` decides and logs but never submits, `live`
+ * submits. This replaces the old independent `paused` + `dryRun` pair.
+ */
+export const MODES = Object.freeze([
+  {
+    id: "off",
+    label: "Off",
+    short: "OFF",
+    hint: "Stop deciding. The market feed stays live and no budget is spent."
+  },
+  {
+    id: "shadow",
+    label: "Shadow",
+    short: "SHADOW",
+    hint: "Log every signal it would trade, but never send an order."
+  },
+  {
+    id: "live",
+    label: "Live",
+    short: "LIVE",
+    hint: "Send real orders. Needs a linked Rollercoin session."
+  }
+]);
+
+/** Normalises a stored/legacy settings object into one of the three modes. */
+export function modeOf(settings = {}) {
+  if (MODES.some((mode) => mode.id === settings.mode)) return settings.mode;
+  if (settings.paused) return "off";
+  if (settings.dryRun) return "shadow";
+  return "live";
+}
 
 /** How many loot-log rows one `/api/history` page returns. */
 export const LOOT_LOG_PAGE_SIZE = 50;

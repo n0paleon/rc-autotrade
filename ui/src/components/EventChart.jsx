@@ -1,8 +1,8 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  Bar,
-  BarChart,
-  Cell,
+  Line,
+  LineChart,
+  ReferenceDot,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -111,7 +111,6 @@ export default function EventChart({ request }) {
   const [points, setPoints] = useState([]);
   const [status, setStatus] = useState("loading");
   const [error, setError] = useState(null);
-  const gradientId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
 
   useEffect(() => {
     let alive = true;
@@ -203,7 +202,7 @@ export default function EventChart({ request }) {
             <span className="text-faint">{peak ? peakLabel : ""}</span>
           </span>
           <span>
-            Avg/bar <strong className="tabular-nums text-ink-dim">{average.toFixed(1)}</strong>
+            Avg/bucket <strong className="tabular-nums text-ink-dim">{average.toFixed(1)}</strong>
           </span>
           {status === "stale" ? (
             <span className="ml-auto text-warn" title={error || "Retrying"}>
@@ -211,7 +210,7 @@ export default function EventChart({ request }) {
             </span>
           ) : (
             <span className="ml-auto text-faint" aria-hidden="true">
-              {days}D · {frame.minutes}M BARS
+              {days}D · {frame.minutes}M BUCKETS
             </span>
           )}
         </div>
@@ -219,7 +218,7 @@ export default function EventChart({ request }) {
         <div
           className="relative mt-2 h-[140px] sm:h-[168px]"
           role="img"
-          aria-label={`Market activity over ${days} day${days === 1 ? "" : "s"} in ${frame.minutes} minute bars: ${formatInt(total)} events${
+          aria-label={`Market activity over ${days} day${days === 1 ? "" : "s"} in ${frame.minutes} minute buckets: ${formatInt(total)} events${
             peak ? `, busiest ${peakLabel} with ${formatInt(peak.n)}` : ""
           }`}
         >
@@ -231,13 +230,7 @@ export default function EventChart({ request }) {
           <ResponsiveContainer width="100%" height="100%">
             {/* Right margin keeps the `d/M HH:00` label on the last tick from
                 being clipped at the plot edge. */}
-            <BarChart data={data} margin={{ top: 8, right: 38, left: 0, bottom: 0 }} barCategoryGap={0}>
-              <defs>
-                <linearGradient id={`activity-${gradientId}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#ff6bcb" stopOpacity={0.95} />
-                  <stop offset="100%" stopColor="#ff6bcb" stopOpacity={0.35} />
-                </linearGradient>
-              </defs>
+            <LineChart data={data} margin={{ top: 8, right: 38, left: 0, bottom: 0 }}>
               <XAxis
                 dataKey="t"
                 type="number"
@@ -258,22 +251,30 @@ export default function EventChart({ request }) {
               <YAxis hide domain={[0, yMax]} />
               <Tooltip
                 content={<EventTooltip bucketMs={frame.ms} />}
-                cursor={{ fill: "rgba(255, 107, 203, 0.08)" }}
+                cursor={{ stroke: "#ff6bcb", strokeOpacity: 0.35, strokeDasharray: "3 4" }}
                 wrapperStyle={{ outline: "none" }}
               />
-              <Bar dataKey="n" isAnimationActive={false} maxBarSize={data.length > 240 ? 4 : 18}>
-                {data.map((point) => (
-                  <Cell
-                    key={point.t}
-                    fill={
-                      point.t === busiest && point.n > 0
-                        ? "#ffd23f"
-                        : `url(#activity-${gradientId})`
-                    }
-                  />
-                ))}
-              </Bar>
-            </BarChart>
+              <Line
+                type="linear"
+                dataKey="n"
+                stroke="#ff6bcb"
+                strokeWidth={1.7}
+                dot={false}
+                isAnimationActive={false}
+                activeDot={{ r: 3, fill: "#ffd23f", stroke: "#080617", strokeWidth: 2 }}
+              />
+              {busiest != null && peak?.n > 0 ? (
+                <ReferenceDot
+                  x={busiest}
+                  y={peak.n}
+                  r={3.5}
+                  fill="#ffd23f"
+                  stroke="#080617"
+                  strokeWidth={2}
+                  ifOverflow="extendDomain"
+                />
+              ) : null}
+            </LineChart>
           </ResponsiveContainer>
         </div>
       </div>

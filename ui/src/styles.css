@@ -642,6 +642,20 @@
     --type-color: var(--color-gold);
   }
 
+  /* Status chips reuse the type-filter shell but colour by arm state, so an
+     armed fleet reads green and a parked one stays neutral. */
+  .type-filter[data-status="all"] {
+    --type-color: var(--color-info);
+  }
+
+  .type-filter[data-status="active"] {
+    --type-color: var(--color-signal);
+  }
+
+  .type-filter[data-status="inactive"] {
+    --type-color: var(--color-faint);
+  }
+
   .type-badge[data-type="miner"],
   .type-filter[data-type="miner"] {
     --type-color: var(--color-orange);
@@ -967,6 +981,106 @@
 
   .chart-tip strong {
     @apply text-gold;
+  }
+
+  /* Inline price chart: the plot itself is the handle for the full-size view. */
+  .chart-expand {
+    position: relative;
+    display: block;
+    width: 100%;
+    margin-top: 0.375rem;
+    text-align: left;
+    cursor: zoom-in;
+  }
+
+  .chart-expand:focus-visible {
+    outline: 2px solid var(--color-gold);
+    outline-offset: 2px;
+  }
+
+  .chart-expand-badge {
+    position: absolute;
+    top: 0;
+    right: 0;
+    z-index: 20;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.1rem 0.25rem;
+    border: 1px solid color-mix(in srgb, var(--color-gold) 45%, transparent);
+    background: rgb(5 3 15 / 0.85);
+    color: var(--color-gold);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 120ms linear;
+  }
+
+  .chart-expand-label {
+    display: none;
+  }
+
+  .chart-expand:hover .chart-expand-badge,
+  .chart-expand:focus-visible .chart-expand-badge {
+    opacity: 1;
+  }
+
+  .chart-expand:hover .chart-expand-label,
+  .chart-expand:focus-visible .chart-expand-label {
+    display: inline;
+  }
+
+  /* Touch devices have no hover state: keep a permanent, compact corner icon
+     instead of covering the newest bars with a text badge. */
+  @media (hover: none) {
+    .chart-expand-badge {
+      opacity: 0.65;
+    }
+  }
+
+  /* Detail chart: a quiet trading-terminal surface, deliberately outside the
+     arcade palette so the data itself reads first. */
+  .pro-surface {
+    background: #080c12;
+    color: #c6d1e0;
+  }
+
+  .pro-tip {
+    min-width: 170px;
+    border: 1px solid #223040;
+    background: #0d141d;
+    padding: 0.5rem 0.625rem;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.55;
+    color: #8fa0b8;
+    box-shadow: 0 12px 28px rgb(0 0 0 / 0.5);
+  }
+
+  .pro-tip-range {
+    margin-bottom: 0.35rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 1px solid #1b2735;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #6f8199;
+  }
+
+  .pro-tip-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1.25rem;
+  }
+
+  .pro-tip-row strong {
+    color: #e8eef7;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
   }
 
   .code-block {

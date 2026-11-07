@@ -27,7 +27,7 @@ use crate::constants::{
 use crate::db;
 use crate::logger::Logger;
 use crate::model::{
-    MarketSnapshot, OrderEntry, PricePoint, Product, ProductView, ReportTotals, ReportView,
+    MarketSnapshot, Mode, OrderEntry, PricePoint, Product, ProductView, ReportTotals, ReportView,
     Session, Settings, Stats, Target,
 };
 use crate::rules::round_price;
@@ -214,17 +214,19 @@ impl Store {
     fn ensure_rows(&self) -> Result<(), String> {
         let now = now_ms();
         let defaults = Settings::default();
+        let (dry_run, paused) = defaults.legacy_flags();
         self.db
             .execute(
                 "INSERT OR IGNORE INTO settings
-                 (id, delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused)
-                 VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+                 (id, delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused, mode)
+                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     defaults.delay_per_order,
                     defaults.max_orders_per_minute,
-                    defaults.dry_run as i64,
+                    dry_run as i64,
                     defaults.auto_refresh as i64,
-                    defaults.paused as i64
+                    paused as i64,
+                    defaults.mode.as_str()
                 ],
             )
             .map_err(|e| format!("could not seed settings: {e}"))?;
@@ -269,16 +271,21 @@ impl Store {
         let settings_row = self
             .db
             .query_row(
-                "SELECT delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused
+                "SELECT delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused, mode
                  FROM settings WHERE id = 1",
                 [],
                 |row| {
+                    let dry_run: i64 = row.get(2)?;
+                    let paused: i64 = row.get(4)?;
+                    let mode: String = row.get(5)?;
                     Ok(Settings {
                         delay_per_order: row.get(0)?,
                         max_orders_per_minute: row.get(1)?,
-                        dry_run: row.get::<_, i64>(2)? != 0,
-                        auto_refresh: row.get::<_, i64>(3)? != 0,
-                        paused: row.get::<_, i64>(4)? != 0,
+                        // An unknown string (a newer build wrote it) falls
+                        // back to the mirrored flags rather than guessing.
+                        mode: Mode::parse(&mode)
+                            .unwrap_or_else(|| Mode::from_legacy(dry_run != 0, paused != 0)),
+                        auto_refresh: row.get(3)?,
                     })
                 },
             )
@@ -516,14 +523,11 @@ impl Store {
         if let Some(value) = patch.max_orders_per_minute {
             settings.max_orders_per_minute = value;
         }
-        if let Some(value) = patch.dry_run {
-            settings.dry_run = value;
+        if let Some(value) = patch.mode {
+            settings.mode = value;
         }
         if let Some(value) = patch.auto_refresh {
             settings.auto_refresh = value;
-        }
-        if let Some(value) = patch.paused {
-            settings.paused = value;
         }
         self.state.settings = settings;
         self.write_settings()
@@ -715,15 +719,17 @@ impl Store {
 
     fn write_settings(&self) -> rusqlite::Result<()> {
         let settings = self.state.settings;
+        let (dry_run, paused) = settings.legacy_flags();
         self.db.execute(
             "UPDATE settings SET delay_per_order = ?1, max_orders_per_minute = ?2,
-                    dry_run = ?3, auto_refresh = ?4, paused = ?5 WHERE id = 1",
+                    dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6 WHERE id = 1",
             params![
                 settings.delay_per_order,
                 settings.max_orders_per_minute,
-                settings.dry_run as i64,
+                dry_run as i64,
                 settings.auto_refresh as i64,
-                settings.paused as i64
+                paused as i64,
+                settings.mode.as_str()
             ],
         )?;
         Ok(())
@@ -799,15 +805,17 @@ impl Store {
             .db
             .unchecked_transaction()
             .map_err(|e| format!("could not start transaction: {e}"))?;
+        let (dry_run, paused) = settings.legacy_flags();
         tx.execute(
             "UPDATE settings SET delay_per_order = ?1, max_orders_per_minute = ?2,
-                    dry_run = ?3, auto_refresh = ?4, paused = ?5 WHERE id = 1",
+                    dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6 WHERE id = 1",
             params![
                 settings.delay_per_order,
                 settings.max_orders_per_minute,
-                settings.dry_run as i64,
+                dry_run as i64,
                 settings.auto_refresh as i64,
-                settings.paused as i64
+                paused as i64,
+                settings.mode.as_str()
             ],
         )
         .map_err(|e| format!("could not write settings: {e}"))?;
@@ -1417,6 +1425,28 @@ impl Store {
         }
     }
 
+    /// Raw 1-minute closes for one item, oldest first. Unlike
+    /// `load_price_history` this is not capped by the live chart window, so the
+    /// 3d/7d periods can reach back into the retained week.
+    pub fn price_series(&self, item_id: &str, since: i64) -> Vec<(i64, f64)> {
+        let mut statement = match self.db.prepare(
+            "SELECT bucket_at, price
+             FROM price_points
+             WHERE item_id = ?1 AND bucket_at >= ?2
+             ORDER BY bucket_at ASC",
+        ) {
+            Ok(statement) => statement,
+            Err(_) => return Vec::new(),
+        };
+        let rows = statement.query_map(params![item_id, since], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
+        });
+        match rows {
+            Ok(rows) => rows.filter_map(Result::ok).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     pub fn record_price_point(
         &self,
         item_id: &str,
@@ -1805,7 +1835,7 @@ mod tests {
             let mut store = Store::open(dir.clone(), logger.clone()).unwrap();
             store.upsert_config(target("6319f7baa8ce530569ed16b9"), None);
             let patch = validation::SettingsPatch {
-                paused: Some(true),
+                mode: Some(Mode::Off),
                 ..Default::default()
             };
             store.patch_settings(patch).unwrap();
@@ -1814,7 +1844,33 @@ mod tests {
         let store = Store::open(dir.clone(), logger).unwrap();
         assert_eq!(store.state.configs.len(), 1);
         assert_eq!(store.state.configs[0].item_id, "6319f7baa8ce530569ed16b9");
-        assert!(store.state.settings.paused);
+        assert_eq!(store.state.settings.mode, Mode::Off);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The legacy columns are mirrors, not state: whatever mode is written must
+    /// leave a pair of flags that agrees with it on disk.
+    #[test]
+    fn mode_and_the_legacy_mirror_columns_never_disagree() {
+        let dir = temp_dir("mirror");
+        let logger = Arc::new(Logger::new("error"));
+        let mut store = Store::open(dir.clone(), logger.clone()).unwrap();
+        for (mode, dry_run, paused) in [(Mode::Off, 1, 1), (Mode::Shadow, 1, 0), (Mode::Live, 0, 0)]
+        {
+            store
+                .patch_settings(validation::SettingsPatch {
+                    mode: Some(mode),
+                    ..Default::default()
+                })
+                .unwrap();
+            let row: (String, i64, i64) = store
+                .db
+                .query_row("SELECT mode, dry_run, paused FROM settings", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
+                .unwrap();
+            assert_eq!(row, (mode.as_str().to_string(), dry_run, paused));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1932,6 +1988,18 @@ mod tests {
         assert_eq!(points[0].bucket_at, 1_700_000_000_000);
         assert_eq!(points[0].fill_price, Some(0.0905));
         assert_eq!(points[1].fill_price, None);
+
+        // The long-range series skips the live window cap and reads the whole
+        // retained range for the chart's 3d/7d periods.
+        assert_eq!(
+            store.price_series(item_id, 1_700_000_000_000),
+            vec![(1_700_000_000_000, 0.09), (1_700_000_060_000, 0.095)]
+        );
+        assert_eq!(
+            store.price_series(item_id, 1_700_000_030_000),
+            vec![(1_700_000_060_000, 0.095)]
+        );
+        assert!(store.price_series("other-item", 0).is_empty());
     }
 
     #[test]

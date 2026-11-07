@@ -16,12 +16,12 @@ A headless Rollercoin marketplace sniper with an arcade-style control deck built
 
 - **Headless worker.** Connects to `nws.rollercoin.com` over WebSocket, listens to every market frame, matches events against your targets, and sends `purchase-item` requests over HTTPS.
 - **Access-key control plane.** The worker exposes HTTP and WebSocket endpoints protected by a bearer key. The key is generated once on first boot or pinned through `WORKER_TOKEN`.
-- **Dynamic targets.** Add, edit, delete, arm, and disarm targets from the UI without restarting. Labels and rarity colors are resolved automatically from `item-info`.
-- **Charts and success rate.** Price cards use Recharts with 1m, 5m, 15m, and 1h timeframes, a target line, tooltips, and 24 hours of history.
-- **Market activity chart.** Every market frame is counted into 5-minute buckets kept for a week, so the deck can chart how busy the feed was over 1, 3, or 7 days at 5m, 15m, 30m, 1h, or 2h bars, aligned to your local clock.
+- **Dynamic targets.** Add, edit, delete, arm, and disarm targets from the UI without restarting, then filter the fleet by arm state (active/inactive), item type, or label. Labels and rarity colors are resolved automatically from `item-info`.
+- **Charts and success rate.** Every chart is a line chart. A price card shows a fixed 1D view in 30-minute buckets; click it to open a full-size view with 1–7 day ranges, 1m–1d buckets, a price axis, crosshair readout, and a target line.
+- **Market activity chart.** Every market frame is counted into 5-minute buckets kept for a week, so the deck can chart how busy the feed was over 1, 3, or 7 days at 5m, 15m, 30m, 1h, or 2h buckets, aligned to your local clock.
 - **Session manager.** Access and refresh tokens are stored in SQLite. The access token is refreshed before expiry, and requests are retried once after a 401 response.
 - **Token bridge.** A Tampermonkey userscript or console snippet keeps Rollercoin tokens in sync every 30 seconds.
-- **Safety rails.** Includes a global cooldown between orders, an orders-per-minute cap, backoff after rejected purchases, dry-run mode, strict validation, and a PAUSE/START control in the header.
+- **Safety rails.** Includes a global cooldown between orders, an orders-per-minute cap, backoff after rejected purchases, three explicit trading modes (off, shadow, live), strict validation, and a STOP/START control in the header.
 - **Persistent loot log.** Every fill and failure is stored in SQLite, with server-side search and cursor-based paging.
 - **Profit report.** Shows per-product totals for fills, quantity, spend, average buy price, profit, margin, and success rate, with CSV export.
 - **Backup and migration.** Export a portable JSON file or a database copy, then restore it on another worker.
@@ -158,7 +158,7 @@ Example target:
 
 `plan_order()` applies these checks in order and stops at the first match:
 
-1. Global PAUSE is active: skip `paused`.
+1. Trading mode is `off`: skip `paused`.
 2. Target is inactive: skip `inactive`.
 3. Price is not finite or is at most 0: skip `invalid-price`.
 4. Stock is not finite or is below 1: skip `no-stock`.
@@ -258,7 +258,7 @@ Optional. Defaults to `true`. It controls whether the engine may buy below `desi
 Optional. Defaults to `true`. It arms or disarms the target.
 
 - `false`: `plan_order()` returns `inactive` before price and stock are evaluated. The market frame still updates charts and the runtime view, but no order is planned.
-- Global PAUSE is separate. When PAUSE is active, it wins first and the reason is `paused`, even if the target is active.
+- Trading mode is separate from `active`. When the mode is `off`, it wins first and the plan is skipped, even if the target is active.
 - Arming or disarming never deletes data. Deleting a target removes it from the list, but its product history and profit report remain.
 
 #### Derived value: `maxSpendPerFill`
@@ -283,9 +283,25 @@ After `plan_order()` returns a `buy` plan, `src/engine.rs` still applies runtime
 - `blocked_until` blocks a target after a rejected purchase. Backoff starts at 5 seconds, then 10, 20, and 40 seconds.
 - `delayPerOrder` applies a global cooldown between orders.
 - `maxOrdersPerMinute` caps the number of orders per minute.
-- A Rollercoin token must be available, unless dry-run is enabled.
+- A Rollercoin token must be available in `live` mode. `shadow` needs no session.
 
 These gates never change the quantity. `plan_order()` remains the only component that decides it.
+
+### Trading modes
+
+A single `mode` setting replaces the old independent `paused` and `dryRun` flags. The two booleans could express four states, but paused-with-dry-run behaved exactly like paused alone, so only three states carried information.
+
+| `mode` | Plans | Token | Cooldown + rate slot | Sends | Keepalive probe |
+| --- | --- | --- | --- | --- | --- |
+| `off` | no | not needed | **not spent** | no | stopped |
+| `shadow` | yes | not needed | **spent** | no (broadcasts `dry`) | running |
+| `live` | yes | required | spent | yes | running |
+
+- `off` short-circuits inside `plan_order()` before price and stock are read, so a stopped worker costs nothing and its first live order after resuming is not delayed by burnt cooldown.
+- `shadow` deliberately spends cooldown and the per-minute budget. That is what makes it an honest rehearsal: it reproduces the pacing of live trading instead of reporting an optimistic throughput.
+- While `off`, the scan log and the `hot` flag still report the decision the engine *would* have made (`price-above-target`, `stock-below-minimum`, and so on). They never fake the reason as `paused`.
+- Arming `live` from `off` is refused: the transition has to pass through `shadow` first. `POST /api/control` accepts `off`, `shadow`, and `live`; the header button stops live trading and resumes into `shadow`.
+- `dryRun` and `paused` are still accepted as input aliases and are still echoed as read-only mirrors, so an older deck, script, or backup keeps working. `mode` always wins when both are present.
 
 ### Worked example
 
@@ -306,7 +322,7 @@ With `allowPartialOrder = false`, the stock 40 row would be skipped with `stock-
 
 | Reason | Meaning |
 | --- | --- |
-| `paused` | Global PAUSE is active |
+| `paused` | Trading mode is `off` |
 | `inactive` | Target is disarmed |
 | `invalid-price` | Market frame price is invalid or less than or equal to 0 |
 | `no-stock` | Order book is empty or stock is below 1 |

@@ -12,8 +12,15 @@ use rusqlite::Connection;
 
 use crate::logger::Logger;
 
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 pub const DB_FILENAME: &str = "rollercoin.db";
+
+/// The single trading switch. `dry_run` and `paused` stay in the table as
+/// read-only mirrors so a pre-v8 build (or the JS worker during cutover) keeps
+/// seeing a coherent pair of flags; see `Mode::legacy_flags`.
+pub const MODE_OFF: &str = "off";
+pub const MODE_SHADOW: &str = "shadow";
+pub const MODE_LIVE: &str = "live";
 
 pub const SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (
@@ -39,9 +46,11 @@ CREATE TABLE IF NOT EXISTS settings (
   max_orders_per_minute INTEGER NOT NULL,
   dry_run               INTEGER NOT NULL DEFAULT 0,
   auto_refresh          INTEGER NOT NULL DEFAULT 1,
-  paused                INTEGER NOT NULL DEFAULT 0
+  paused                INTEGER NOT NULL DEFAULT 0,
+  -- Added in schema v8: the only field that decides behaviour. The two columns
+  -- above are kept in sync as mirrors for pre-v8 readers.
+  mode                  TEXT NOT NULL DEFAULT 'live'
 );
-
 CREATE TABLE IF NOT EXISTS targets (
   item_id              TEXT PRIMARY KEY,
   label                TEXT NOT NULL DEFAULT '',
@@ -149,13 +158,14 @@ fn add_column_if_missing(
     table: &str,
     column: &str,
     definition: &str,
-) -> Result<(), rusqlite::Error> {
-    if !column_exists(conn, table, column)? {
-        conn.execute_batch(&format!(
-            "ALTER TABLE {table} ADD COLUMN {column} {definition}"
-        ))?;
+) -> Result<bool, rusqlite::Error> {
+    if column_exists(conn, table, column)? {
+        return Ok(false);
     }
-    Ok(())
+    conn.execute_batch(&format!(
+        "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+    ))?;
+    Ok(true)
 }
 
 /// Forward-only upgrades for databases created by older JavaScript builds.
@@ -177,6 +187,31 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
             conn.execute_batch(&format!("ALTER TABLE targets DROP COLUMN {column}"))?;
         }
     }
+
+    // Schema v8 unifies `paused` + `dry_run` into `settings.mode`. When the
+    // upgrade has to do the mapping, the two legacy columns are still the
+    // source of truth, so translate them once and rewrite the mirrors from the
+    // resulting mode. Otherwise the old flags would contradict `mode`.
+    if add_column_if_missing(
+        conn,
+        "settings",
+        "mode",
+        &format!("TEXT NOT NULL DEFAULT '{MODE_LIVE}'"),
+    )? {
+        conn.execute_batch(&format!(
+            "UPDATE settings SET mode = CASE
+                 WHEN paused <> 0 THEN '{MODE_OFF}'
+                 WHEN dry_run <> 0 THEN '{MODE_SHADOW}'
+                 ELSE '{MODE_LIVE}'
+             END WHERE id = 1"
+        ))?;
+    }
+    conn.execute_batch(&format!(
+        "UPDATE settings SET
+             dry_run = CASE mode WHEN '{MODE_LIVE}' THEN 0 ELSE 1 END,
+             paused  = CASE mode WHEN '{MODE_OFF}' THEN 1 ELSE 0 END
+         WHERE id = 1"
+    ))?;
     Ok(())
 }
 
@@ -328,6 +363,13 @@ mod tests {
             .unwrap();
         assert_eq!(journal.to_ascii_lowercase(), "wal");
 
+        // `db::open` only builds the schema; the settings row is seeded later by
+        // `Store::ensure_rows`. Assert the v8 column exists here instead.
+        assert!(
+            column_exists(&conn, "settings", "mode").unwrap(),
+            "schema v8 must add settings.mode"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -345,5 +387,62 @@ mod tests {
         let error = open(&dir, &logger, None).unwrap_err();
         assert!(error.contains("newer than this build"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A v7 database only has the two booleans. The upgrade has to pick the one
+    /// mode they described and then rewrite the mirrors so they agree.
+    #[test]
+    fn migrates_a_v7_database_and_backfills_mode() {
+        for (dry_run, paused, expected) in [
+            (0, 0, MODE_LIVE),
+            (1, 0, MODE_SHADOW),
+            (0, 1, MODE_OFF),
+            (1, 1, MODE_OFF), // the dead cell collapses to off
+        ] {
+            let dir = temp_dir(&format!("v7-{dry_run}-{paused}"));
+            fs::create_dir_all(&dir).unwrap();
+            let file = dir.join(DB_FILENAME);
+            {
+                let conn = Connection::open(&file).unwrap();
+                conn.execute_batch(
+                    "CREATE TABLE settings (
+                         id INTEGER PRIMARY KEY CHECK (id = 1),
+                         delay_per_order INTEGER NOT NULL,
+                         max_orders_per_minute INTEGER NOT NULL,
+                         dry_run INTEGER NOT NULL DEFAULT 0,
+                         auto_refresh INTEGER NOT NULL DEFAULT 1,
+                         paused INTEGER NOT NULL DEFAULT 0
+                     );",
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO settings
+                     (id, delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused)
+                     VALUES (1, 200, 60, ?1, 1, ?2)",
+                    [dry_run, paused],
+                )
+                .unwrap();
+                conn.pragma_update(None, "user_version", 7).unwrap();
+            }
+
+            let logger = Logger::new("error");
+            let conn = open(&dir, &logger, None).expect("open");
+            let (mode, dry, paused_after): (String, i64, i64) = conn
+                .query_row(
+                    "SELECT mode, dry_run, paused FROM settings WHERE id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(mode, expected, "dry_run={dry_run} paused={paused}");
+            assert_eq!(dry, i64::from(expected != MODE_LIVE));
+            assert_eq!(paused_after, i64::from(expected == MODE_OFF));
+            let version: i64 = conn
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, SCHEMA_VERSION);
+            drop(conn);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

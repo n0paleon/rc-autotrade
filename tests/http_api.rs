@@ -183,6 +183,48 @@ async fn event_history_requires_the_key_and_clamps_the_window() {
 }
 
 #[tokio::test]
+async fn price_history_requires_an_item_and_clamps_the_window() {
+    let dir = temp_dir();
+    let upstream_calls = Arc::new(Mutex::new(0));
+    let upstream = spawn_upstream(upstream_calls).await;
+    let base = spawn_worker(dir.clone(), upstream).await;
+    let client = reqwest::Client::new();
+
+    let unauthorized = client
+        .get(format!("{base}/api/price-history?itemId={ITEM_ID}&days=1"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), 401);
+
+    let missing = client
+        .get(format!("{base}/api/price-history?days=1"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 400);
+
+    let body: Value = client
+        .get(format!("{base}/api/price-history?itemId={ITEM_ID}&days=99"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["itemId"], ITEM_ID);
+    assert_eq!(body["days"], 7, "the window is capped at a week");
+    assert_eq!(body["bucketMs"], 60_000);
+    assert_eq!(body["retentionDays"], 14);
+    assert!(body["points"].as_array().unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn creating_a_target_enriches_its_label_from_item_info() {
     let dir = temp_dir();
     let upstream_calls = Arc::new(Mutex::new(0));
@@ -247,6 +289,105 @@ async fn invalid_targets_return_field_errors() {
     assert_eq!(body["ok"], false);
     assert!(body["fields"]["itemId"].as_str().is_some());
     assert!(body["fields"]["targetPrice"].as_str().is_some());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn control_walks_off_shadow_live_and_never_jumps() {
+    let dir = temp_dir();
+    let upstream_calls = Arc::new(Mutex::new(0));
+    let upstream = spawn_upstream(upstream_calls).await;
+    let base = spawn_worker(dir.clone(), upstream).await;
+    let client = reqwest::Client::new();
+
+    let control = |action: &'static str| {
+        let client = client.clone();
+        let url = format!("{base}/api/control");
+        async move {
+            client
+                .post(url)
+                .bearer_auth(TOKEN)
+                .json(&json!({ "action": action }))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    // Default is live, so the first step is to stop.
+    assert_eq!(control("off").await.status(), 200);
+
+    // The guardrail: off cannot arm live in one hop.
+    let refused = control("live").await;
+    assert_eq!(refused.status(), 422);
+    let body: Value = refused.json().await.unwrap();
+    assert!(body["fields"]["mode"].as_str().is_some());
+
+    // The documented path works.
+    let shadow = control("shadow").await;
+    assert_eq!(shadow.status(), 200);
+    let body: Value = shadow.json().await.unwrap();
+    assert_eq!(body["settings"]["mode"], "shadow");
+    // The legacy mirror keeps an older reader on the safe side.
+    assert_eq!(body["settings"]["dryRun"], true);
+    assert_eq!(body["settings"]["paused"], false);
+
+    let live = control("live").await;
+    assert_eq!(live.status(), 200);
+    let body: Value = live.json().await.unwrap();
+    assert_eq!(body["settings"]["mode"], "live");
+    assert_eq!(body["settings"]["dryRun"], false);
+    assert_eq!(body["settings"]["paused"], false);
+
+    // Turning live off is always allowed, in any state.
+    assert_eq!(control("off").await.status(), 200);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn settings_patch_accepts_mode_and_the_legacy_aliases() {
+    let dir = temp_dir();
+    let upstream_calls = Arc::new(Mutex::new(0));
+    let upstream = spawn_upstream(upstream_calls).await;
+    let base = spawn_worker(dir.clone(), upstream).await;
+    let client = reqwest::Client::new();
+
+    // The legacy alias still means something: paused wins and maps to off.
+    let body: Value = client
+        .patch(format!("{base}/api/settings"))
+        .bearer_auth(TOKEN)
+        .json(&json!({ "paused": true, "dryRun": false }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["settings"]["mode"], "off");
+
+    // An explicit mode is authoritative over the aliases.
+    let body: Value = client
+        .patch(format!("{base}/api/settings"))
+        .bearer_auth(TOKEN)
+        .json(&json!({ "mode": "shadow", "paused": false, "dryRun": false }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["settings"]["mode"], "shadow");
+
+    let invalid = client
+        .patch(format!("{base}/api/settings"))
+        .bearer_auth(TOKEN)
+        .json(&json!({ "mode": "armed" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), 422);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

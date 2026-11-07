@@ -82,14 +82,20 @@ impl Plan {
 }
 
 /// Pure decision function that mirrors (and hardens) the original trade flow.
+///
+/// `plan_blocked` is the "stop deciding" gate (mode `off`). It short-circuits
+/// before price and stock are read, which is what makes `off` free: no cooldown
+/// or rate slot is spent. Callers that still want an honest log line can run the
+/// same inputs a second time with `plan_blocked = false`; the function is pure,
+/// so that costs nothing but a few nanoseconds.
 pub fn plan_order(
     input: PlanInput,
     unit_price: f64,
     available: f64,
-    paused: bool,
+    plan_blocked: bool,
     target_price_override: Option<f64>,
 ) -> Plan {
-    if paused {
+    if plan_blocked {
         return Plan::skip("paused");
     }
     if !input.active {
