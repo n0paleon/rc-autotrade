@@ -32,6 +32,10 @@ pub const PRICE_HISTORY_LIMIT: usize = 1440;
 /// Raw 1-minute price points are kept this long before the prune job drops them.
 pub const PRICE_RETENTION_DAYS: i64 = 14;
 
+/// Widest window `/api/price-history` will serve. The chart's 7-day period
+/// needs a week of 1-minute closes; retention keeps a second week for slack.
+pub const PRICE_HISTORY_DAYS: i64 = 7;
+
 /// At most one `market_snapshot` write per item per window.
 pub const MARKET_SNAPSHOT_THROTTLE_MS: i64 = 2_000;
 

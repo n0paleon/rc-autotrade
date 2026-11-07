@@ -1425,6 +1425,28 @@ impl Store {
         }
     }
 
+    /// Raw 1-minute closes for one item, oldest first. Unlike
+    /// `load_price_history` this is not capped by the live chart window, so the
+    /// 3d/7d periods can reach back into the retained week.
+    pub fn price_series(&self, item_id: &str, since: i64) -> Vec<(i64, f64)> {
+        let mut statement = match self.db.prepare(
+            "SELECT bucket_at, price
+             FROM price_points
+             WHERE item_id = ?1 AND bucket_at >= ?2
+             ORDER BY bucket_at ASC",
+        ) {
+            Ok(statement) => statement,
+            Err(_) => return Vec::new(),
+        };
+        let rows = statement.query_map(params![item_id, since], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
+        });
+        match rows {
+            Ok(rows) => rows.filter_map(Result::ok).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     pub fn record_price_point(
         &self,
         item_id: &str,
@@ -1966,6 +1988,18 @@ mod tests {
         assert_eq!(points[0].bucket_at, 1_700_000_000_000);
         assert_eq!(points[0].fill_price, Some(0.0905));
         assert_eq!(points[1].fill_price, None);
+
+        // The long-range series skips the live window cap and reads the whole
+        // retained range for the chart's 3d/7d periods.
+        assert_eq!(
+            store.price_series(item_id, 1_700_000_000_000),
+            vec![(1_700_000_000_000, 0.09), (1_700_000_060_000, 0.095)]
+        );
+        assert_eq!(
+            store.price_series(item_id, 1_700_000_030_000),
+            vec![(1_700_000_060_000, 0.095)]
+        );
+        assert!(store.price_series("other-item", 0).is_empty());
     }
 
     #[test]

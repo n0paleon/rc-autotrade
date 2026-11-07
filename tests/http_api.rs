@@ -183,6 +183,48 @@ async fn event_history_requires_the_key_and_clamps_the_window() {
 }
 
 #[tokio::test]
+async fn price_history_requires_an_item_and_clamps_the_window() {
+    let dir = temp_dir();
+    let upstream_calls = Arc::new(Mutex::new(0));
+    let upstream = spawn_upstream(upstream_calls).await;
+    let base = spawn_worker(dir.clone(), upstream).await;
+    let client = reqwest::Client::new();
+
+    let unauthorized = client
+        .get(format!("{base}/api/price-history?itemId={ITEM_ID}&days=1"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), 401);
+
+    let missing = client
+        .get(format!("{base}/api/price-history?days=1"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 400);
+
+    let body: Value = client
+        .get(format!("{base}/api/price-history?itemId={ITEM_ID}&days=99"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["itemId"], ITEM_ID);
+    assert_eq!(body["days"], 7, "the window is capped at a week");
+    assert_eq!(body["bucketMs"], 60_000);
+    assert_eq!(body["retentionDays"], 14);
+    assert!(body["points"].as_array().unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn creating_a_target_enriches_its_label_from_item_info() {
     let dir = temp_dir();
     let upstream_calls = Arc::new(Mutex::new(0));

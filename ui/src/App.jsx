@@ -91,10 +91,10 @@ const MemoActivityChart = memo(function ActivityChart({ request }) {
   );
 });
 
-function TargetPriceChart({ history, targetPrice }) {
+function TargetPriceChart({ history, targetPrice, itemId, request }) {
   return (
     <Suspense fallback={<ChartSkeleton />}>
-      <PriceChart history={history} targetPrice={targetPrice} />
+      <PriceChart history={history} targetPrice={targetPrice} itemId={itemId} request={request} />
     </Suspense>
   );
 }
@@ -530,7 +530,7 @@ function Hud({ snapshot, eps }) {
   );
 }
 
-const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete, onToggle, notify, compact = false }) {
+const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete, onToggle, notify, request, compact = false }) {
   const canvasRef = useRef(null);
   const [toggling, setToggling] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -773,7 +773,12 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
         )}
       </div>
 
-      <TargetPriceChart history={runtime.history || []} targetPrice={targetPrice} />
+      <TargetPriceChart
+        history={runtime.history || []}
+        targetPrice={targetPrice}
+        itemId={config.itemId}
+        request={request}
+      />
 
       <div
         className="space-y-1.5"
@@ -834,7 +839,7 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
   );
 });
 
-function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onTypeFilter, onAdd, onEdit, onDelete, onToggle, notify }) {
+function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onTypeFilter, onAdd, onEdit, onDelete, onToggle, notify, request }) {
   const compact = useMediaQuery("(max-width: 1023px)");
   const batch = compact ? TARGET_BATCH_MOBILE : TARGET_BATCH_DESKTOP;
   const [limit, setLimit] = useState(batch);
@@ -952,6 +957,7 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, onSearch, onT
                 onDelete={onDelete}
                 onToggle={onToggle}
                 notify={notify}
+                request={request}
                 compact={compact}
               />
             ))
@@ -2700,6 +2706,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           onDelete={deleteTarget}
           onToggle={toggleTarget}
           notify={notify}
+          request={worker.request}
         />
         <SidePanel
           tab={tab}

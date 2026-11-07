@@ -29,7 +29,7 @@ use crate::api::ApiClient;
 use crate::config::Config;
 use crate::constants::{
     APP_NAME, APP_VERSION, EVENT_BUCKET_MS, EVENT_HISTORY_DAYS, EVENT_RETENTION_DAYS,
-    LOOT_LOG_MAX_PAGE_SIZE, LOOT_LOG_PAGE_SIZE, Limits,
+    LOOT_LOG_MAX_PAGE_SIZE, LOOT_LOG_PAGE_SIZE, Limits, PRICE_HISTORY_DAYS, PRICE_RETENTION_DAYS,
 };
 use crate::engine::Engine;
 use crate::feed::FeedHandle;
@@ -803,6 +803,52 @@ async fn events_view(
         "since": since,
         "until": now,
         "retentionDays": EVENT_RETENTION_DAYS,
+        "points": points,
+    }))
+    .into_response()
+}
+
+/// Raw 1-minute closes for one target, used by the price chart's 3d/7d
+/// periods. The deck buckets them client-side so every boundary follows the
+/// viewer's local clock, and merges the live 24h window on top.
+async fn price_history_view(
+    _auth: Auth,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let item_id = params
+        .get("itemId")
+        .or_else(|| params.get("item_id"))
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty());
+    let Some(item_id) = item_id else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "ok": false, "error": "itemId is required." })),
+        )
+            .into_response();
+    };
+    let days = params
+        .get("days")
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(1)
+        .clamp(1, PRICE_HISTORY_DAYS);
+    let now = now_ms();
+    let since = now - days * 86_400_000;
+    let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
+    let points: Vec<Value> = store
+        .price_series(item_id, since)
+        .into_iter()
+        .map(|(bucket_at, price)| json!({ "t": bucket_at, "p": price }))
+        .collect();
+    Json(json!({
+        "ok": true,
+        "itemId": item_id,
+        "days": days,
+        "bucketMs": 60_000,
+        "since": since,
+        "until": now,
+        "retentionDays": PRICE_RETENTION_DAYS,
         "points": points,
     }))
     .into_response()
@@ -1593,6 +1639,7 @@ pub fn router(state: Arc<AppState>, dist_dir: std::path::PathBuf) -> Router {
         .route("/api/history", get(history).delete(delete_history))
         .route("/api/report", get(report))
         .route("/api/events", get(events_view))
+        .route("/api/price-history", get(price_history_view))
         .route(
             "/api/session",
             get(get_session).post(post_session).delete(delete_session),
