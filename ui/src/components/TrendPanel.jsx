@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   fixedPrice,
   formatInt,
@@ -9,6 +9,9 @@ import {
   shortId
 } from "../lib/format.js";
 import { Icon } from "./ModalShell.jsx";
+
+/** Rows rendered at once; the fleet can be large and the table is scrollable. */
+const TREND_BATCH = 12;
 
 /**
  * Presentation-only vocabulary for the shared trend model. Keeping the labels
@@ -342,6 +345,11 @@ function TrendRow({ row, onEdit }) {
  */
 export default function TrendPanel({ configs, onEdit }) {
   const [mode, setMode] = useState("above");
+  const [limit, setLimit] = useState(TREND_BATCH);
+
+  useEffect(() => {
+    setLimit(TREND_BATCH);
+  }, [mode]);
 
   const { rows, below, above, waiting, stale } = useMemo(() => {
     const usable = [];
@@ -388,6 +396,7 @@ export default function TrendPanel({ configs, onEdit }) {
   if (!Array.isArray(configs) || configs.length === 0) return null;
 
   const current = mode === "above" ? above : mode === "below" ? below : rows;
+  const visible = current.slice(0, limit);
   const reliable = rows.filter((row) => row.trend.reliable).length;
 
   return (
@@ -443,7 +452,7 @@ export default function TrendPanel({ configs, onEdit }) {
       </div>
 
       {current.length === 0 ? (
-        <div className="px-4 py-8 text-center">
+        <div className="px-4 py-5 text-center sm:py-8">
           <p className="font-mono text-[13px] font-semibold uppercase tracking-[0.14em] text-ink-dim">
             {mode === "above"
               ? "No target at or above trend"
@@ -483,13 +492,29 @@ export default function TrendPanel({ configs, onEdit }) {
               </tr>
             </thead>
             <tbody>
-              {current.map((row) => (
+              {visible.map((row) => (
                 <TrendRow key={row.config.itemId} row={row} onEdit={onEdit} />
               ))}
             </tbody>
           </table>
         </div>
       )}
+
+      {current.length > visible.length ? (
+        <div className="flex items-center justify-between gap-2 border-t-2 border-line px-4 py-2">
+          <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+            Showing {visible.length} of {current.length}
+          </span>
+          <button
+            className="btn btn-ghost btn-sm"
+            type="button"
+            onClick={() => setLimit((value) => value + TREND_BATCH)}
+          >
+            Show {Math.min(current.length - visible.length, TREND_BATCH)} more
+            <Icon name="i-arrow-down" className="h-3 w-3" />
+          </button>
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2">
         {Object.entries(SIGNAL_META)

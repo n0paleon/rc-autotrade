@@ -217,7 +217,7 @@ export default function EventChart({ request }) {
         </div>
 
         <div
-          className="relative mt-2 h-[168px]"
+          className="relative mt-2 h-[140px] sm:h-[168px]"
           role="img"
           aria-label={`Market activity over ${days} day${days === 1 ? "" : "s"} in ${frame.minutes} minute bars: ${formatInt(total)} events${
             peak ? `, busiest ${peakLabel} with ${formatInt(peak.n)}` : ""
