@@ -61,6 +61,15 @@ pub const EVENT_FLUSH_INTERVAL_MS: u64 = 10_000;
 /// How many upstream events we keep as a rolling sample for the feed.
 pub const EVENT_SAMPLE_SIZE: usize = 60;
 
+/// Control-socket telemetry cadence. Every `TELEMETRY_INTERVAL_SECS` the
+/// socket pushes `gateway` (which carries `eventCount`), `system` and `latency`
+/// together. Pushing `gateway` per frame re-rendered the HUD for no benefit.
+///
+/// The deck mirrors this in `ui/src/lib/constants.js` (`TELEMETRY_PUSH_MS`):
+/// the `/s` readout decays after ~1.3× this window, so changing one without the
+/// other makes the rate flicker between pushes.
+pub const TELEMETRY_INTERVAL_SECS: u64 = 3;
+
 /// Runtime defaults, used when the database has no settings row yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DefaultSettings {

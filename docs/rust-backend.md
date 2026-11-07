@@ -246,10 +246,11 @@ Bun worker.
 - Control socket via a Bun client: `hello` → `snapshot` → `pong` with a valid
   key; close code **4001** with a bad key.
 - Realtime parity: the control socket owns the telemetry ticker. `gateway`,
-  `system` and `latency` are pushed together once every 5 s (the Bun
-  `statsTimer` cadence); pushing `gateway` per frame re-rendered the HUD
-  continuously, so it was deliberately coalesced. A manual session change bumps
-  `gateway.reconnects`, so the feed re-handshakes with the new token.
+  `system` and `latency` are pushed together once every 3 s
+  (`TELEMETRY_INTERVAL_SECS`); pushing `gateway` per frame re-rendered the HUD
+  continuously, so it was deliberately coalesced, and `MissedTickBehavior::Delay`
+  stops a stalled socket from firing a catch-up burst. A manual session change
+  bumps `gateway.reconnects`, so the feed re-handshakes with the new token.
 - Failed no-item orders keep the attempted `qty`/`unitPrice`/`targetPrice` and
   the full dispatch→result `latencyMs` in the loot row, matching the Bun
   `failureMeta = pendingMeta` path (covered by an engine test).

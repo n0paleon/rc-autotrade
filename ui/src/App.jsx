@@ -49,7 +49,7 @@ import {
 } from "./lib/format.js";
 import { sound } from "./lib/sound.js";
 import { countTargetsByStatus, filterTargets } from "./lib/targets.js";
-import { modeOf } from "./lib/constants.js";
+import { EVENT_RATE_STALE_MS, modeOf, TELEMETRY_PUSH_MS } from "./lib/constants.js";
 import { ModeMenu } from "./components/ModeMenu.jsx";
 
 /** Header chip text per trading mode. */
@@ -123,7 +123,9 @@ function useEventRate(count) {
   }, [count]);
   useEffect(() => {
     const timer = setInterval(() => {
-      if (Date.now() - reference.current.at > 6500) {
+      // The counter arrives in steps (one push per telemetry tick), so only
+      // decay once the next step is clearly overdue.
+      if (Date.now() - reference.current.at > EVENT_RATE_STALE_MS) {
         setRate((current) => (current > 0.05 ? current * 0.82 : 0));
       }
     }, 1000);
@@ -1977,9 +1979,9 @@ function ConfigPanel({ snapshot, worker, notify }) {
   const [probing, setProbing] = useState(false);
   const { fetchLatency } = worker;
 
-  // Safety net: the worker pushes latency every 5s, but poll quietly too so
-  // the panel stays fresh even if the push stream is missed (e.g. an older
-  // worker binary that has not been restarted since this update).
+  // Safety net: the worker pushes latency on every telemetry tick, but poll
+  // quietly too so the panel stays fresh even if the push stream is missed
+  // (e.g. an older worker binary that has not been restarted since this update).
   useEffect(() => {
     if (typeof fetchLatency !== "function") return undefined;
     const timer = setInterval(() => {
@@ -2014,9 +2016,9 @@ function ConfigPanel({ snapshot, worker, notify }) {
         <h2 className="panel-title"><Icon name="i-wifi" className="h-4 w-4 text-info" /> Upstream latency</h2>
         <span
           className="tag hidden shrink-0 gap-1.5 text-info @[19rem]:inline-flex"
-          title="The worker pushes latency every 5 seconds; this panel polls it as a fallback"
+          title={`The worker pushes latency every ${TELEMETRY_PUSH_MS / 1000} seconds; this panel polls it as a fallback`}
         >
-          <span className="led led-pulse" aria-hidden="true" /> Auto · 5s
+          <span className="led led-pulse" aria-hidden="true" /> Auto · {TELEMETRY_PUSH_MS / 1000}s
         </span>
       </div>
       <div className="panel-body">
@@ -2136,10 +2138,11 @@ function SystemPanel({ snapshot, worker }) {
   const dbWarn = Number(db?.thresholds?.p95WarnMs) || 25;
   const dbCritical = Number(db?.thresholds?.p95CriticalMs) || 100;
 
-  // Safety net: the worker pushes `system` alongside gateway/latency every 5s.
-  // Quietly poll as well so the panel survives a missed push after a reconnect.
-  // Depend on the stable callback, not the whole worker object: the deck
-  // re-renders every second and would otherwise restart this timer forever.
+  // Safety net: the worker pushes `system` alongside gateway/latency on every
+  // telemetry tick. Quietly poll as well so the panel survives a missed push
+  // after a reconnect. Depend on the stable callback, not the whole worker
+  // object: the deck re-renders every second and would otherwise restart this
+  // timer forever.
   const fetchSystem = worker?.fetchSystem;
   useEffect(() => {
     if (typeof fetchSystem !== "function") return undefined;
@@ -2309,9 +2312,9 @@ function SystemPanel({ snapshot, worker }) {
         </div>
 
         <p className="text-[13px] leading-relaxed text-faint">
-          Sampled every {formatInt(Math.round((system.intervalMs || 2000) / 1000)) || 1}s, pushed every
-          5s. CPU is the worker process as a percentage of one core; system RAM uses MemAvailable on
-          Linux. Warnings trigger at 80% heap, 88% RAM, 100ms event-loop p95, a DB p95 above{" "}
+          Sampled every {formatInt(Math.round((system.intervalMs || 2000) / 1000)) || 1}s, pushed every{" "}
+          {TELEMETRY_PUSH_MS / 1000}s. CPU is the worker process as a percentage of one core; system
+          RAM uses MemAvailable on Linux. Warnings trigger at 80% heap, 88% RAM, 100ms event-loop p95, a DB p95 above{" "}
           {formatInt(dbWarn)}ms, or a WAL above{" "}
           {formatBytes(db?.thresholds?.walWarnBytes || 64 * 1024 * 1024)}. Query timings include only
           the SQL text, never bound values.
