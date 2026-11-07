@@ -9,13 +9,16 @@
 //! and returns the events to send afterwards.
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 
 use crate::api::{PurchaseRequest, PurchaseResult};
-use crate::constants::EVENT_FLUSH_INTERVAL_MS;
+use crate::constants::{
+    EVENT_FLUSH_INTERVAL_MS, PRICE_SAMPLE_FEED_IDLE_MS, PRICE_SAMPLE_INTERVAL_MS,
+};
 use crate::dns_probe::{self, SocketMode};
 use crate::engine::{EngineEvent, OrderIntent, PurchaseOutcome};
 use crate::feed::FeedHandle;
@@ -96,6 +99,7 @@ pub struct Worker {
     pub keepalive: Arc<KeepaliveService>,
     feed_task: JoinHandle<()>,
     ticker: JoinHandle<()>,
+    sampler: JoinHandle<()>,
     stats_task: JoinHandle<()>,
     event_task: JoinHandle<()>,
     keepalive_task: Option<JoinHandle<()>>,
@@ -300,6 +304,20 @@ impl Worker {
             }
         });
 
+        // The market feed is change-driven, so an item that does not move sends
+        // nothing. A per-minute pass writes the last live close anyway; it goes
+        // quiet whenever the feed itself stops, keeping real outages as gaps.
+        let sample_state = state.clone();
+        let sampler = tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_millis(PRICE_SAMPLE_INTERVAL_MS));
+            interval.tick().await; // the first tick is immediate
+            loop {
+                interval.tick().await;
+                sample_prices(&sample_state);
+            }
+        });
+
         // Frame counts stay in memory; this task turns them into one SQLite
         // transaction every few seconds instead of a write per frame.
         let event_state = state.clone();
@@ -341,6 +359,7 @@ impl Worker {
             keepalive,
             feed_task,
             ticker,
+            sampler,
             stats_task,
             event_task,
             keepalive_task,
@@ -361,6 +380,7 @@ impl Worker {
         tokio::time::sleep(Duration::from_millis(150)).await;
         self.feed_task.abort();
         self.ticker.abort();
+        self.sampler.abort();
         self.stats_task.abort();
         self.event_task.abort();
     }
@@ -383,7 +403,51 @@ fn process_frame(state: &Arc<AppState>, raw: Value, at: i64) {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         engine.handle_frame(&mut store, &raw, at, has_token)
     };
+    state.last_frame_at.store(at, Ordering::Relaxed);
     dispatch(state, events);
+}
+
+/// One sampler tick: write a close for every target the feed has gone quiet on.
+///
+/// The feed counts as alive only when the socket is online *and* some frame
+/// arrived recently. A silent socket is disconnected traffic, not a flat
+/// market, and must keep showing as a gap in the price chart.
+fn sample_prices(state: &Arc<AppState>) {
+    let now = now_ms();
+    let feed_online = state
+        .gateway
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .map(|feed| feed.status() == "online")
+        .unwrap_or(false);
+    let last_frame = state.last_frame_at.load(Ordering::Relaxed);
+    let feed_alive = feed_online && last_frame > 0 && now - last_frame <= PRICE_SAMPLE_FEED_IDLE_MS;
+
+    let samples = {
+        let mut store = state
+            .store
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut engine = state
+            .engine
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        engine.sample_prices(&mut store, now, feed_alive)
+    };
+
+    for sample in samples {
+        state.broadcast(
+            "price",
+            json!({
+                "itemId": sample.item_id,
+                "price": sample.price,
+                "bucket": sample.bucket,
+                "at": now,
+                "sampled": true,
+            }),
+        );
+    }
 }
 
 fn dispatch(state: &Arc<AppState>, events: Vec<EngineEvent>) {

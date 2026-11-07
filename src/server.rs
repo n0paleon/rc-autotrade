@@ -7,7 +7,7 @@
 //! explicit "not ported yet" message until their modules land.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -58,6 +58,10 @@ pub struct AppState {
     pub config: Config,
     pub started_at: i64,
     pub port: AtomicU16,
+    /// Receive time of the newest upstream frame, in ms. The price sampler uses
+    /// it to tell a quiet item (frames still arriving for others) apart from a
+    /// feed that is actually down.
+    pub last_frame_at: AtomicI64,
     pub hub: broadcast::Sender<Value>,
     /// Bumped when the worker access key is rotated so open control sockets
     /// can be closed with code 4003 (the deck reconnects with the new key).
@@ -94,6 +98,7 @@ impl AppState {
             logger: logger.clone(),
             started_at: now_ms(),
             port: AtomicU16::new(config.port),
+            last_frame_at: AtomicI64::new(0),
             config,
             hub,
             auth_epoch,
