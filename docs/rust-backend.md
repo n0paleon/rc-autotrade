@@ -101,6 +101,7 @@ Rollercoin session — two of either will duplicate orders.
 | `GET /api/history` | ✅ | cursor + offset + `q`/`status` filters |
 | `DELETE /api/history` | ✅ | resets stats, engine counters and latency samples |
 | `GET /api/report` | ✅ | same derived columns |
+| `GET /api/events` | ➕ | Rust-only: market-frame counts per 5-minute bucket for `?days=1..7`; the deck sums them into the chart timeframe in local time |
 | `GET /api/session` | ✅ | same preview/expires fields |
 | `POST /api/session` | ✅ | validated, `changed` flag |
 | `DELETE /api/session` | ✅ | clears all three credentials |

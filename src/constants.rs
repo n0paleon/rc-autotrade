@@ -36,6 +36,22 @@ pub const MARKET_SNAPSHOT_THROTTLE_MS: i64 = 2_000;
 /// Current-minute price point is rewritten at most this often.
 pub const PRICE_POINT_WRITE_INTERVAL_MS: i64 = 15_000;
 
+/// Market frames are counted in 5-minute buckets. Every chart timeframe
+/// (5m, 15m, 30m, 1h, 2h) divides this evenly, so the coarser zoom levels are
+/// sums of the same stored rows instead of separate series.
+pub const EVENT_BUCKET_MS: i64 = 5 * 60_000;
+
+/// Event history kept in SQLite (and hydrated into memory on boot). One week of
+/// chart plus a day of slack so the oldest visible bucket is never truncated.
+pub const EVENT_RETENTION_DAYS: i64 = 8;
+
+/// Widest window `/api/events` will serve.
+pub const EVENT_HISTORY_DAYS: i64 = 7;
+
+/// Dirty event buckets are written to SQLite in one transaction this often.
+/// Counting stays in memory, so a busy feed never pays a write per frame.
+pub const EVENT_FLUSH_INTERVAL_MS: u64 = 10_000;
+
 /// How many upstream events we keep as a rolling sample for the feed.
 pub const EVENT_SAMPLE_SIZE: usize = 60;
 
