@@ -30,6 +30,7 @@ use crate::config::Config;
 use crate::constants::{
     APP_NAME, APP_VERSION, EVENT_BUCKET_MS, EVENT_HISTORY_DAYS, EVENT_RETENTION_DAYS,
     LOOT_LOG_MAX_PAGE_SIZE, LOOT_LOG_PAGE_SIZE, Limits, PRICE_HISTORY_DAYS, PRICE_RETENTION_DAYS,
+    TELEMETRY_INTERVAL_SECS,
 };
 use crate::engine::Engine;
 use crate::feed::FeedHandle;
@@ -1467,10 +1468,15 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, authorized: bool
     let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
     heartbeat.tick().await; // the first tick is immediate
     // Live counters belong to the socket, not to a global clock. All three
-    // panels are pushed once every five seconds: pushing `gateway` on every
-    // frame re-rendered the HUD continuously for no benefit, and the Bun worker
-    // used the same 5 s `statsTimer` cadence.
-    let mut telemetry_tick = tokio::time::interval(Duration::from_secs(5));
+    // panels are pushed together on `TELEMETRY_INTERVAL_SECS`: pushing
+    // `gateway` on every frame re-rendered the HUD continuously for no benefit.
+    // At 3 s the `eventCount` readout moves faster than the upstream frame
+    // cadence while the heavy `system` payload still goes out at a sane rate.
+    let mut telemetry_tick = tokio::time::interval(Duration::from_secs(TELEMETRY_INTERVAL_SECS));
+    // `Burst` (the default) would fire every skipped tick back to back after a
+    // pause, flooding the socket with three frames in a row. `Delay` keeps the
+    // spacing intact and simply drops the missed slots.
+    telemetry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     telemetry_tick.tick().await; // the first tick is immediate
     let mut alive = true;
 

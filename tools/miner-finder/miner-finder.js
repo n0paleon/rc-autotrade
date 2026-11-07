@@ -1,19 +1,78 @@
-async function main() {
-  const CurrentPower = 11148000;
-  const CurrentBonus = 17.49;
-  const limit = 192; // batas halaman
+(async () => {
+// ================== KONFIGURASI ==================
+const CONFIG = {
+  CurrentPower: "20.745 Eh/s", // contoh: "10Gh/s", "10Ph/s", "15Eh/s" => raw power
+  CurrentBonus: 238.87,         // dalam persen
+  limit: 192                   // batas halaman
+};
 
-  console.log("Scraping halaman...");
+// ================== SATUAN POWER ==================
+// Basis internal: GH/s
+const POWER_UNITS = [
+  { unit: "Zh/s", factor: 1e12 },
+  { unit: "Eh/s", factor: 1e9 },
+  { unit: "Ph/s", factor: 1e6 },
+  { unit: "Th/s", factor: 1e3 },
+  { unit: "Gh/s", factor: 1 }
+];
 
-  const allMiners = await scrapeAllPages(CurrentPower, CurrentBonus, limit);
+// "15Eh/s" / "10 Ph/s" / "5 th/s" -> angka dalam GH/s
+function parsePowerToGH(text) {
+  const match = String(text)
+    .replace(/,/g, '')
+    .trim()
+    .match(/^([\d.]+)\s*([a-zA-Z]+)\s*\/?\s*s?$/);
 
-  // Urutkan berdasarkan rasio terbaik
-  allMiners.sort((a, b) => b.Ratio - a.Ratio);
+  if (!match) throw new Error(`Format power tidak valid: "${text}" (contoh: 10Gh/s, 10Ph/s, 15Eh/s)`);
 
-  console.log("Selesai. Total miner:", allMiners.length);
-  console.table(allMiners);
+  const value = parseFloat(match[1]);
+  const unitKey = match[2].toLowerCase(); // gh, th, ph, eh, zh
+  const found = POWER_UNITS.find(u => u.unit.toLowerCase().startsWith(unitKey));
+  if (!found) throw new Error(`Satuan tidak dikenal: "${match[2]}" (gunakan Gh/s, Th/s, Ph/s, Eh/s, Zh/s)`);
+
+  return value * found.factor;
 }
 
+// angka GH/s -> "11.148 Ph/s" (otomatis pilih satuan terbesar yang pas)
+function formatPowerFromGH(gh, decimals = 3) {
+  const abs = Math.abs(gh);
+  const picked = POWER_UNITS.find(u => abs >= u.factor) || POWER_UNITS[POWER_UNITS.length - 1];
+  return `${(gh / picked.factor).toFixed(decimals)} ${picked.unit}`;
+}
+
+// ================== MAIN ==================
+async function main() {
+  const CurrentPower = parsePowerToGH(CONFIG.CurrentPower); // internal tetap GH/s
+  const CurrentBonus = CONFIG.CurrentBonus;
+
+  console.log(`Power saat ini: ${formatPowerFromGH(CurrentPower)} | Bonus: ${CurrentBonus}%`);
+  console.log("Scraping halaman...");
+
+  const allMiners = await scrapeAllPages(CurrentPower, CurrentBonus, CONFIG.limit);
+
+  // Urutkan berdasarkan rasio terbaik (nilai mentah)
+  allMiners.sort((a, b) => b.ratio - a.ratio);
+
+  console.log("Selesai. Total miner:", allMiners.length);
+
+  // Format output tabel dengan satuan
+  const table = allMiners.map(m => ({
+    'Name': m.name,
+    'Price': m.price,
+    'Power': formatPowerFromGH(m.power),
+    'Bonus[%]': m.bonus,
+    'Ratio': m.ratio.toFixed(2),
+    'Cur.Pow X Add.Bonus': formatPowerFromGH(m.ctm),
+    'Mine.Pow X Tot.Bonus': formatPowerFromGH(m.mtb),
+    'Addition Power': formatPowerFromGH(m.totalpower),
+    'TotalPower': formatPowerFromGH(m.totalpower + CurrentPower),
+    'Total Bonus %': (m.totalbonus * 100).toFixed(3)
+  }));
+
+  console.table(table);
+}
+
+// ================== PAGINATION ==================
 function findNextPageButton() {
   const activeBtn = document.querySelector('.marketplace-pagination-btn[disabled]');
   if (!activeBtn) return null;
@@ -56,6 +115,7 @@ async function scrapeAllPages(CurrentPower, CurrentBonus, maxPages = 5) {
   return allMiners;
 }
 
+// ================== PARSING HALAMAN ==================
 function getMinersFromCurrentPage(CurrentPower, CurrentBonus, seenSet) {
   const miners = [];
   const minerTitles = document.getElementsByClassName('item-title');
@@ -72,7 +132,7 @@ function getMinersFromCurrentPage(CurrentPower, CurrentBonus, seenSet) {
 
       if (!name || !powerText || !bonusText || !priceText) continue;
 
-      const power = convertPowerToGigaHash(powerText);
+      const power = parsePowerToGH(powerText); // GH/s
       const bonus = parseFloat(bonusText);
       const price = parseFloat(priceText.replace(/\s/g, '').replace('RLT', ''));
 
@@ -85,18 +145,8 @@ function getMinersFromCurrentPage(CurrentPower, CurrentBonus, seenSet) {
       const totalpower = power + ctm + mtb;
       const ratio = (totalpower / 1000) / price;
 
-      miners.push({
-        'Name': name,
-        'Price': price,
-        'Power': power,
-        'Bonus[%]': bonus,
-        'Ratio': ratio.toFixed(2),
-        'Cur.Pow X Add.Bonus': ctm.toFixed(0),
-        'Mine.Pow X Tot.Bonus': mtb.toFixed(0),
-        'Addition Power': totalpower.toFixed(0),
-        'TotalPower [GH/S]': (totalpower + CurrentPower).toFixed(2),
-        'Total Bonus %': (totalbonus * 100).toFixed(3)
-      });
+      // Simpan nilai mentah (GH/s), format satuan dilakukan saat menampilkan tabel
+      miners.push({ name, price, power, bonus, ratio, ctm, mtb, totalpower, totalbonus });
     } catch (err) {
       console.warn(`❌ Error parsing item ke-${i + 1}:`, err);
     }
@@ -105,13 +155,7 @@ function getMinersFromCurrentPage(CurrentPower, CurrentBonus, seenSet) {
   return miners;
 }
 
-function convertPowerToGigaHash(powerText) {
-  let power = parseFloat(powerText);
-  if (powerText.includes(" Ph/s")) power *= 1_000_000;
-  else if (powerText.includes(" Th/s")) power *= 1_000;
-  return power;
-}
-
+// ================== TUNGGU UPDATE KONTEN ==================
 function waitForContentUpdate(timeout = 7000) {
   return new Promise((resolve) => {
     let lastTitles = Array.from(document.querySelectorAll('.item-title')).map(el => el.textContent.trim());
@@ -145,5 +189,5 @@ function arraysEqual(a, b) {
   return true;
 }
 
-
-main();
+  await main();
+})();
