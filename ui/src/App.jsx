@@ -48,6 +48,12 @@ import {
   utilizationClass
 } from "./lib/format.js";
 import { sound } from "./lib/sound.js";
+import { modeOf } from "./lib/constants.js";
+import { ModeMenu } from "./components/ModeMenu.jsx";
+
+/** Header chip text per trading mode. */
+const MODE_CHIP = { off: "PAUSED", shadow: "SHADOW", live: "ARMED" };
+const MODE_CHIP_CLASS = { off: "chip-paused", shadow: "chip-dry", live: "chip-armed" };
 
 // Recharts is the single largest dependency and every target card mounts a
 // price chart. Loading the chart bundle on demand keeps the first paint (and
@@ -171,7 +177,7 @@ function BootScreen({ onLogin, busy, error }) {
 
   const perks = [
     { icon: "i-shield", tone: "border-signal/50 bg-signal/10 text-signal", text: "Nothing leaves this browser — local worker only" },
-    { icon: "i-wifi", tone: "border-info/50 bg-info/10 text-info", text: "Live market feed, even when buying is paused" },
+    { icon: "i-wifi", tone: "border-info/50 bg-info/10 text-info", text: "Live market feed, even when trading is off" },
     { icon: "i-bolt", tone: "border-gold/50 bg-gold/10 text-gold", text: "Price ceilings and burst protection per target" }
   ];
 
@@ -297,7 +303,7 @@ function BootScreen({ onLogin, busy, error }) {
   );
 }
 
-function Header({ snapshot, status, latency, soundOn, onSound, onLogout, onTogglePause, pausing }) {
+function Header({ snapshot, status, latency, soundOn, onSound, onLogout, onSetMode, modeBusy }) {
   const now = useNow(1000);
   const gateway = snapshot.gateway?.status;
   let connLabel = "LINK LOST";
@@ -325,15 +331,9 @@ function Header({ snapshot, status, latency, soundOn, onSound, onLogout, onToggl
   }
 
   const settings = snapshot.settings || {};
-  let trading = "ARMED";
-  let tradingClass = "chip chip-armed";
-  if (settings.paused) {
-    trading = "PAUSED";
-    tradingClass = "chip chip-paused";
-  } else if (settings.dryRun) {
-    trading = "DRY RUN";
-    tradingClass = "chip chip-dry";
-  }
+  const mode = modeOf(settings);
+  const trading = MODE_CHIP[mode];
+  const tradingClass = `chip ${MODE_CHIP_CLASS[mode]}`;
 
   return (
     <header className="deck-enter sticky top-0 z-40 border-b-2 border-line bg-night-950 pt-[env(safe-area-inset-top)]">
@@ -354,19 +354,7 @@ function Header({ snapshot, status, latency, soundOn, onSound, onLogout, onToggl
           </div>
         </div>
         <div className="ml-auto flex items-center gap-1 sm:gap-1.5">
-          <button
-            className={`btn btn-sm max-sm:w-10 max-sm:px-0 ${settings.paused ? "btn-primary" : ""}`}
-            type="button"
-            onClick={onTogglePause}
-            disabled={pausing}
-            data-busy={pausing ? "true" : undefined}
-            aria-busy={pausing}
-            aria-label={settings.paused ? "Start buying" : "Pause buying"}
-            title={settings.paused ? "Resume all buying" : "Pause all buying; the market feed stays live"}
-          >
-            <Icon name={settings.paused ? "i-play" : "i-pause"} className="h-3 w-3" />
-            <span className="hidden sm:inline">{pausing ? "…" : settings.paused ? "Start" : "Pause"}</span>
-          </button>
+          <ModeMenu mode={mode} busy={modeBusy} onChange={onSetMode} />
           <span id="trading-state" className={`${tradingClass} hidden sm:inline-flex`}>
             <span className="led led-pulse" />{trading}
           </span>
@@ -2270,17 +2258,29 @@ function SystemPanel({ snapshot, worker }) {
   );
 }
 
-function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, onBackup, baseUrl }) {
+function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, onBackup, baseUrl, onSetMode }) {
   const settings = snapshot.settings || {};
+  const mode = modeOf(settings);
   const [delay, setDelay] = useState(String(settings.delayPerOrder ?? 200));
   const [maxOrders, setMaxOrders] = useState(String(settings.maxOrdersPerMinute ?? 60));
   const [saving, setSaving] = useState(false);
+  const [modesBusy, setModesBusy] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
 
   useEffect(() => {
     setDelay(String(settings.delayPerOrder ?? 200));
     setMaxOrders(String(settings.maxOrdersPerMinute ?? 60));
   }, [settings.delayPerOrder, settings.maxOrdersPerMinute]);
+
+  const changeMode = async (next) => {
+    if (next === mode) return;
+    setModesBusy(true);
+    try {
+      await onSetMode(next);
+    } finally {
+      setModesBusy(false);
+    }
+  };
 
   const saveNumbers = async (event) => {
     event.preventDefault();
@@ -2295,14 +2295,6 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
       notify("error", "CONFIG FAILED", error.message);
     } finally {
       setSaving(false);
-    }
-  };
-
-  const toggle = async (patch, label) => {
-    try {
-      await worker.saveSettings(patch);
-    } catch (error) {
-      notify("error", "CONFIG FAILED", error.message);
     }
   };
 
@@ -2342,16 +2334,10 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
           </button>
         </form>
 
-        <label className="toggle-row">
-          <span>Dry run<small>Log signals but never send orders</small></span>
-          <input type="checkbox" className="sr-only" checked={Boolean(settings.dryRun)} onChange={(event) => toggle({ dryRun: event.target.checked })} />
-          <span className="switch" aria-hidden="true" />
-        </label>
-        <label className="toggle-row">
-          <span>Paused<small>Keep listening, stop all buying</small></span>
-          <input type="checkbox" className="sr-only" checked={Boolean(settings.paused)} onChange={(event) => toggle({ paused: event.target.checked })} />
-          <span className="switch" aria-hidden="true" />
-        </label>
+        <div className="space-y-1.5">
+          <span className="label">Trading mode</span>
+          <ModeMenu mode={mode} busy={modesBusy} onChange={changeMode} variant="panel" />
+        </div>
 
         <div className="space-y-1.5 border-2 border-line bg-night-950/60 p-3">
           <div className="flex items-center justify-between gap-3">
@@ -2398,7 +2384,7 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
   );
 }
 
-function SidePanel({ tab, setTab, snapshot, logs, worker, notify, onEditSession, onBridge, onClearSession, onRotate, onReset, onReconnect, onBackup, baseUrl }) {
+function SidePanel({ tab, setTab, snapshot, logs, worker, notify, onEditSession, onBridge, onClearSession, onRotate, onReset, onReconnect, onBackup, baseUrl, onSetMode }) {
   const tabs = [
     { id: "feed", label: "FEED" },
     { id: "link", label: "LINK" },
@@ -2444,6 +2430,7 @@ function SidePanel({ tab, setTab, snapshot, logs, worker, notify, onEditSession,
             onReconnect={onReconnect}
             onBackup={onBackup}
             baseUrl={baseUrl}
+            onSetMode={onSetMode}
           />
         ) : null}
         {tab === "latency" ? (
@@ -2505,7 +2492,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
   const [modal, setModal] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
   const [soundOn, setSoundOn] = useState(sound.enabled);
-  const [pausing, setPausing] = useState(false);
+  const [modeBusy, setModeBusy] = useState(false);
   // Handlers stay referentially stable so memoised cards are not invalidated by
   // a new snapshot. The ref always points at the newest worker instance.
   const workerRef = useRef(worker);
@@ -2541,22 +2528,38 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
     }
   }, [notify]);
 
-  const togglePause = async () => {
-    setPausing(true);
-    try {
-      const result = await worker.control("toggle");
-      const paused = Boolean(result?.settings?.paused);
-      notify(
-        paused ? "warn" : "success",
-        paused ? "BOT PAUSED" : "BOT STARTED",
-        paused ? "All buying is paused; the market feed stays live." : "The sniper is armed and hunting again."
-      );
-    } catch (error) {
-      notify("error", "CONTROL FAILED", error.message);
-    } finally {
-      setPausing(false);
+  const setMode = useCallback(async (next) => {
+    const current = modeOf(snapshot.settings);
+    if (next === current) return;
+    // Arming live is the only transition that can spend money, so it asks
+    // first. Every other move (off, shadow) is immediate and safe.
+    if (next === "live") {
+      const confirmed = await askConfirm({
+        title: "ARM LIVE TRADING",
+        message:
+          "Real orders will be sent to Rollercoin using your linked session. Every signal below its target price will spend RLT. Start in shadow if you have not watched the signals yet.",
+        confirmLabel: "GO LIVE",
+        danger: true
+      });
+      if (!confirmed) return;
     }
-  };
+    setModeBusy(true);
+    try {
+      const result = await worker.control(next);
+      const applied = modeOf(result?.settings);
+      if (applied === "live") {
+        notify("success", "LIVE TRADING ARMED", "The sniper is armed and hunting.");
+      } else if (applied === "shadow") {
+        notify("info", "SHADOW MODE", "Signals are logged; no orders will be sent.");
+      } else {
+        notify("warn", "TRADING OFF", "All buying is stopped; the market feed stays live.");
+      }
+    } catch (error) {
+      notify("error", "MODE CHANGE FAILED", error.message);
+    } finally {
+      setModeBusy(false);
+    }
+  }, [askConfirm, notify, snapshot.settings, worker]);
 
   const clearSession = async () => {
     const confirmed = await askConfirm({
@@ -2663,8 +2666,8 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
         soundOn={soundOn}
         onSound={toggleSound}
         onLogout={worker.logout}
-        onTogglePause={togglePause}
-        pausing={pausing}
+        onSetMode={setMode}
+        modeBusy={modeBusy}
       />
       <Ticker configs={snapshot.configs || []} mock={snapshot.worker?.mock} />
       <div className="deck-enter deck-enter-2 mx-auto w-full max-w-[1600px] px-3 pt-4 sm:px-4 lg:px-6">
@@ -2713,6 +2716,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           onReconnect={reconnect}
           onBackup={() => setModal({ type: "backup" })}
           baseUrl={baseUrl}
+          onSetMode={setMode}
         />
       </main>
       <div className="pixel-stripe mt-8" aria-hidden="true" />

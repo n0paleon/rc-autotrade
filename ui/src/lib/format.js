@@ -117,7 +117,6 @@ export function runtimeHot(config) {
       runtime.lastStock >= config.minAcceptableQty
   );
 }
-
 export function cardState(config) {
   if (!config.active) return "off";
   const runtime = config.runtime || {};
@@ -156,7 +155,7 @@ export function lastText(config) {
       return `REJECTED · ${relTime(last.at)}`;
     }
     if (last.status === "dry" && age < 60_000) {
-      return `DRY RUN ×${formatInt(last.qty)} · ${relTime(last.at)}`;
+      return `SHADOW ×${formatInt(last.qty)} · ${relTime(last.at)}`;
     }
     if ((last.status === "submitted" || last.status === "accepted") && age < 60_000) {
       return `${last.status.toUpperCase()} ×${formatInt(last.qty || 0)} · ${relTime(last.at)}`;

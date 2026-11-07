@@ -497,7 +497,7 @@ export function useWorker({ notify }) {
           } else if (data.phase === "dry") {
             notifyRef.current?.(
               "info",
-              "DRY RUN SIGNAL",
+              "SHADOW SIGNAL",
               `${data.label || "ITEM"} ×${formatInt(data.qty)} @ ${fixedPrice(data.unitPrice)} RLT`
             );
           }
@@ -1083,13 +1083,6 @@ export function useWorker({ notify }) {
 
   const control = useCallback(
     async (action) => {
-      if (action === "toggle") {
-        const patch = { paused: !Boolean(snapshot?.settings?.paused) };
-        return updateSettingsOptimistically(patch, "/api/control", {
-          method: "POST",
-          body: { action }
-        });
-      }
       if (action === "reconnect") {
         const version = nextMutationVersion(gatewayMutationVersions, "reconnect");
         const previousGateway = snapshot?.gateway || null;
@@ -1114,7 +1107,7 @@ export function useWorker({ notify }) {
       }
       return result;
     },
-    [request, snapshot, updateSettingsOptimistically]
+    [request, snapshot]
   );
 
   const refreshLatency = useCallback(async () => {
