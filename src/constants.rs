@@ -42,6 +42,15 @@ pub const MARKET_SNAPSHOT_THROTTLE_MS: i64 = 2_000;
 /// Current-minute price point is rewritten at most this often.
 pub const PRICE_POINT_WRITE_INTERVAL_MS: i64 = 15_000;
 
+/// The sampler writes one close per minute from each target's last live frame,
+/// so an item that simply did not move reads as flat instead of missing.
+pub const PRICE_SAMPLE_INTERVAL_MS: u64 = 60_000;
+
+/// A feed that has not delivered a single frame for this long is treated as
+/// down, not as a quiet market. The sampler stays silent so a real outage keeps
+/// showing as a hole in the chart.
+pub const PRICE_SAMPLE_FEED_IDLE_MS: i64 = 120_000;
+
 /// Market frames are counted in 5-minute buckets. Every chart timeframe
 /// (5m, 15m, 30m, 1h, 2h) divides this evenly, so the coarser zoom levels are
 /// sums of the same stored rows instead of separate series.

@@ -94,6 +94,9 @@ struct Runtime {
     last_price: Option<f64>,
     last_stock: Option<i64>,
     last_seen_at: Option<i64>,
+    /// Newest live frame seen in this process. Hydrated rows never set it, so
+    /// the sampler cannot paper over the downtime that preceded a restart.
+    live_seen_at: Option<i64>,
     seen_at: Option<i64>,
     stale: bool,
     item_type: Option<String>,
@@ -130,6 +133,7 @@ impl Runtime {
             last_price: None,
             last_stock: None,
             last_seen_at: None,
+            live_seen_at: None,
             seen_at: None,
             stale: false,
             item_type: None,
@@ -180,6 +184,15 @@ fn label_for(config: Option<&Target>, item_id: &str) -> String {
     }
 }
 
+/// One sampled close, handed back to the wiring so the deck can append it to
+/// the live history without waiting for the item's next real frame.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PriceSample {
+    pub item_id: String,
+    pub bucket: i64,
+    pub price: f64,
+}
+
 pub struct Engine {
     clock: Clock,
     logger: Arc<Logger>,
@@ -189,6 +202,7 @@ pub struct Engine {
     order_stamps: Vec<i64>,
     last_order_at: i64,
     last_no_token_warn_at: i64,
+    sample_error_at: i64,
 }
 
 impl Engine {
@@ -202,6 +216,7 @@ impl Engine {
             order_stamps: Vec::new(),
             last_order_at: 0,
             last_no_token_warn_at: 0,
+            sample_error_at: 0,
         }
     }
 
@@ -303,6 +318,7 @@ impl Engine {
             runtime.last_price = Some(best.unit_price);
             runtime.last_stock = Some(best.quantity);
             runtime.last_seen_at = Some(now);
+            runtime.live_seen_at = Some(now);
             runtime.seen_at = Some(now);
             runtime.stale = false;
             runtime.item_type = Some(item_type.clone());
@@ -1441,6 +1457,79 @@ impl Engine {
             .collect()
     }
 
+    /// Writes one close per target per minute, even when that item's own frames
+    /// are quiet.
+    ///
+    /// The feed is change-driven: an item whose book does not move sends no
+    /// frame, which used to read as "no data" on the chart. Once a target has
+    /// been seen live in this process, its last price is sampled every minute so
+    /// the line stays flat instead of breaking.
+    ///
+    /// `feed_alive` is false when the upstream itself is down. Nothing is
+    /// written then, because a real outage must stay a visible gap rather than
+    /// a fabricated flat line.
+    pub fn sample_prices(
+        &mut self,
+        store: &mut Store,
+        at: i64,
+        feed_alive: bool,
+    ) -> Vec<PriceSample> {
+        if !feed_alive {
+            return Vec::new();
+        }
+        let bucket = at.div_euclid(60_000) * 60_000;
+        let item_ids: Vec<String> = store
+            .state
+            .configs
+            .iter()
+            .map(|config| config.item_id.clone())
+            .collect();
+        let mut samples = Vec::new();
+        for item_id in item_ids {
+            let Some(runtime) = self.runtime.get_mut(&item_id.to_ascii_lowercase()) else {
+                continue;
+            };
+            // Never seen by a live frame since boot: sampling would bridge the
+            // downtime this process just came out of.
+            if runtime.live_seen_at.is_none() {
+                continue;
+            }
+            let Some(price) = runtime.last_price else {
+                continue;
+            };
+            // A frame already owns this minute; the sampler must not overwrite
+            // a fresher close with the previous one.
+            if matches!(runtime.history.last(), Some(point) if point.t >= bucket) {
+                continue;
+            }
+            runtime.history.push(Point {
+                t: bucket,
+                p: price,
+            });
+            if runtime.history.len() > PRICE_HISTORY_LIMIT {
+                let excess = runtime.history.len() - PRICE_HISTORY_LIMIT;
+                runtime.history.drain(0..excess);
+            }
+            samples.push(PriceSample {
+                item_id,
+                bucket,
+                price,
+            });
+        }
+        let rows: Vec<(&str, i64, f64)> = samples
+            .iter()
+            .map(|sample| (sample.item_id.as_str(), sample.bucket, sample.price))
+            .collect();
+        if let Err(error) = store.record_price_samples(&rows)
+            && at - self.sample_error_at > 60_000
+        {
+            self.sample_error_at = at;
+            self.logger
+                .warn("engine", format!("could not record price samples: {error}"));
+        }
+        samples
+    }
+
     pub fn runtime_snapshot(&self, store: &Store) -> Value {
         let mut out = serde_json::Map::new();
         for (item_id, runtime) in &self.runtime {
@@ -2001,5 +2090,45 @@ mod tests {
         let runtime = &snapshot["6319f7baa8ce530569ed16b9"];
         assert!((runtime["lastPrice"].as_f64().unwrap() - 0.09).abs() < 1e-12);
         assert_eq!(runtime["stale"], true);
+    }
+
+    #[test]
+    fn samples_quiet_minutes_from_the_last_live_close() {
+        let mut h = harness();
+        let bucket = 1_000_000_i64.div_euclid(60_000) * 60_000;
+
+        // A target the feed has never seen live must not be sampled: that would
+        // bridge the downtime this process just came out of.
+        assert!(
+            h.engine
+                .sample_prices(&mut h.store, bucket + 60_000, true)
+                .is_empty()
+        );
+
+        h.engine
+            .handle_frame(&mut h.store, &market_frame(90_000, 4), 1_000_001, true);
+
+        // The frame already owns its own minute, so there is nothing to add.
+        assert!(
+            h.engine
+                .sample_prices(&mut h.store, bucket + 15_000, true)
+                .is_empty()
+        );
+
+        // The next minute is quiet: the last live close is carried forward.
+        let samples = h.engine.sample_prices(&mut h.store, bucket + 60_000, true);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].bucket, bucket + 60_000);
+        assert!((samples[0].price - 0.09).abs() < 1e-12);
+        let stored = h.store.price_series("6319f7baa8ce530569ed16b9", 0);
+        assert_eq!(stored.len(), 2, "frame close + sampled close");
+
+        // A feed that is not alive writes nothing at all.
+        assert!(
+            h.engine
+                .sample_prices(&mut h.store, bucket + 120_000, false)
+                .is_empty()
+        );
+        assert_eq!(h.store.price_series("6319f7baa8ce530569ed16b9", 0).len(), 2);
     }
 }

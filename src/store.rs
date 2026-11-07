@@ -1484,6 +1484,37 @@ impl Store {
             .map_err(|e| format!("could not record price point: {e}"))
     }
 
+    /// Writes a batch of sampled closes in one transaction. A sample never
+    /// carries a fill, so re-sampling a bucket that already holds a fill keeps
+    /// the fill columns intact.
+    pub fn record_price_samples(&self, samples: &[(&str, i64, f64)]) -> Result<(), String> {
+        if samples.is_empty() {
+            return Ok(());
+        }
+        let tx = self
+            .db
+            .unchecked_transaction()
+            .map_err(|e| format!("could not start transaction: {e}"))?;
+        {
+            let mut statement = tx
+                .prepare_cached(
+                    "INSERT INTO price_points
+                     (item_id, bucket_at, price, fill_price, fill_qty, fill_approx)
+                     VALUES (?1, ?2, ?3, NULL, NULL, 0)
+                     ON CONFLICT(item_id, bucket_at) DO UPDATE SET
+                       price = excluded.price",
+                )
+                .map_err(|e| format!("could not cache price sample statement: {e}"))?;
+            for (item_id, bucket_at, price) in samples {
+                statement
+                    .execute(params![item_id, bucket_at, price])
+                    .map_err(|e| format!("could not record price sample: {e}"))?;
+            }
+        }
+        tx.commit()
+            .map_err(|e| format!("could not commit price samples: {e}"))
+    }
+
     pub fn prune_price_history(&self) -> Result<u64, String> {
         let cutoff = now_ms() - PRICE_RETENTION_DAYS * 86_400_000;
         self.db

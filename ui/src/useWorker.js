@@ -425,6 +425,21 @@ export function useWorker({ notify }) {
           }));
           break;
         }
+        case "price": {
+          // A sampled close: the worker saw no frame for this item this minute,
+          // so the price did not move. The chart stays flat without pretending
+          // the item was just seen (`lastSeenAt` is deliberately untouched).
+          const bucket =
+            Number(data.bucket) || Math.floor((data.at || Date.now()) / 60_000) * 60_000;
+          const price = Number(data.price);
+          if (!Number.isFinite(price)) break;
+          updateConfig(data.itemId, (runtime) => ({
+            ...runtime,
+            itemId: data.itemId,
+            history: mergeHistory(runtime.history, price, bucket)
+          }));
+          break;
+        }
         case "order": {
           nextMutationVersion(statsMutationVersions, "reset");
           const works = (runtime) => {
