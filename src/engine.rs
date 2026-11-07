@@ -382,14 +382,30 @@ impl Engine {
         );
 
         let settings = store.state.settings;
+        let blocked = !settings.mode.plans();
         let plan = plan_order(
             config.plan_input(),
             best.unit_price,
             best.quantity as f64,
-            settings.paused,
+            blocked,
             Some(config.target_price),
         );
         let hot = plan.action == Action::Buy;
+        // While off, report the plan the engine *would* have made. The gate
+        // above still short-circuits before any budget is spent, but the log
+        // line and the `hot` flag stay honest instead of blaming "paused" for
+        // a frame that was really too expensive.
+        let observed = if blocked {
+            plan_order(
+                config.plan_input(),
+                best.unit_price,
+                best.quantity as f64,
+                false,
+                Some(config.target_price),
+            )
+        } else {
+            plan
+        };
 
         events.push(EngineEvent::Broadcast {
             kind: "market",
@@ -408,22 +424,23 @@ impl Engine {
                 "currency": event.currency.clone().unwrap_or_else(|| "RLT".into()),
                 "itemType": item_type,
                 "bucket": bucket,
-                "hot": hot,
+                "hot": observed.action == Action::Buy,
+                "mode": settings.mode,
                 "at": now,
             }),
         });
 
-        if hot {
+        if observed.action == Action::Buy {
             self.runtime_for(&config.item_id, desired_qty)
                 .last_in_range_at = now;
         }
 
-        self.log_scan(&config, best.unit_price, best.quantity, &plan, now);
+        self.log_scan(&config, best.unit_price, best.quantity, &observed, now);
 
         if !hot {
             return events;
         }
-        if settings.paused || self.runtime_for(&config.item_id, desired_qty).inflight {
+        if blocked || self.runtime_for(&config.item_id, desired_qty).inflight {
             return events;
         }
         if self.runtime_for(&config.item_id, desired_qty).blocked_until > now {
@@ -461,7 +478,7 @@ impl Engine {
             }
             return events;
         }
-        if !settings.dry_run && !has_token {
+        if settings.mode.submits() && !has_token {
             if now - self.last_no_token_warn_at > 30_000 {
                 self.logger.warn(
                     "engine",
@@ -506,14 +523,14 @@ impl Engine {
             raw_price_event: raw.clone(),
         };
 
-        if settings.dry_run {
+        if !settings.mode.submits() {
             self.runtime_for(&config.item_id, desired_qty).last_result = Some(json!({
                 "status": "dry", "at": now, "qty": qty, "price": best.unit_price
             }));
             self.logger.info(
                 "order",
                 format!(
-                    "DRY RUN — would buy {} ×{} @ {:.6} RLT",
+                    "SHADOW — would buy {} ×{} @ {:.6} RLT",
                     label, qty, best.unit_price
                 ),
             );
@@ -532,6 +549,7 @@ impl Engine {
                     "at": intent.at,
                     "timings": intent.timings,
                     "reason": "dry-run",
+                    "mode": settings.mode,
                     "doubled": intent.doubled,
                 }),
             });
@@ -1075,6 +1093,8 @@ impl Engine {
                 config.target_price
             )
         } else if price <= config.target_price {
+            // `plan.reason` is the real reason: callers pass the observed plan
+            // (evaluated even while off), never the gated one.
             format!(
                 "{label} {price:.6} RLT ×{stock} — IN RANGE, waiting ({})",
                 plan.reason.unwrap_or("unknown")
@@ -1096,6 +1116,13 @@ impl Engine {
         }
         self.order_stamps.push(now);
         true
+    }
+
+    /// How many rate-limit slots the current minute has already spent. Used by
+    /// tests to prove that `off` costs nothing while `shadow` does.
+    #[cfg(test)]
+    fn order_stamps_len(&self) -> usize {
+        self.order_stamps.len()
     }
 
     fn buffer_unmatched(
@@ -1479,7 +1506,8 @@ pub fn wall_clock() -> Clock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Target;
+    use crate::constants::LOG_BUFFER_SIZE;
+    use crate::model::{Mode, Target};
     use crate::validation;
     use serde_json::json;
     use std::sync::Arc;
@@ -1491,6 +1519,7 @@ mod tests {
         store: Store,
         now: Arc<AtomicI64>,
         dir: std::path::PathBuf,
+        logger: Arc<Logger>,
     }
 
     impl Drop for Harness {
@@ -1505,7 +1534,8 @@ mod tests {
             .unwrap()
             .as_nanos();
         let dir = std::env::temp_dir().join(format!("rc-rust-engine-{nanos}"));
-        let logger = Arc::new(Logger::new("error"));
+        // `info` so `log_scan` lines land in the ring buffer the test reads.
+        let logger = Arc::new(Logger::new("info"));
         let mut store = Store::open(dir.clone(), logger.clone()).expect("store");
         let target = Target {
             item_id: "6319f7baa8ce530569ed16b9".into(),
@@ -1531,13 +1561,29 @@ mod tests {
 
         let now = Arc::new(AtomicI64::new(1_000_000));
         let clock_now = now.clone();
-        let engine = Engine::new(Arc::new(move || clock_now.load(Ordering::SeqCst)), logger);
+        let engine = Engine::new(
+            Arc::new(move || clock_now.load(Ordering::SeqCst)),
+            logger.clone(),
+        );
         Harness {
             engine,
             store,
             now,
             dir,
+            logger,
         }
+    }
+
+    /// The most recent scan lines, joined, so a test can assert on the reason.
+    fn scan_summary(harness: &Harness) -> String {
+        harness
+            .logger
+            .recent(LOG_BUFFER_SIZE)
+            .iter()
+            .filter(|entry| entry["scope"] == "scan")
+            .filter_map(|entry| entry["message"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn market_frame(price_raw: i64, quantity: i64) -> Value {
@@ -1601,11 +1647,11 @@ mod tests {
     }
 
     #[test]
-    fn paused_settings_block_submission_but_keep_the_market_tick() {
+    fn off_mode_blocks_submission_but_keeps_the_market_tick() {
         let mut h = harness();
         h.store
             .patch_settings(validation::SettingsPatch {
-                paused: Some(true),
+                mode: Some(Mode::Off),
                 ..Default::default()
             })
             .unwrap();
@@ -1618,14 +1664,61 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, EngineEvent::Broadcast { kind: "market", .. }))
         );
+        // No budget is spent while off: a later live order is not delayed.
+        assert_eq!(h.engine.order_stamps_len(), 0);
+    }
+
+    /// While off the log and the `hot` flag must still describe the real plan,
+    /// not a blanket "paused". A frame that is genuinely too thin has to say so.
+    #[test]
+    fn off_mode_still_reports_the_real_reason() {
+        let mut h = harness();
+        let mut target = h.store.state.configs[0].clone();
+        target.min_acceptable_qty = 5;
+        h.store.upsert_config(target, None);
+        h.store
+            .patch_settings(validation::SettingsPatch {
+                mode: Some(Mode::Off),
+                ..Default::default()
+            })
+            .unwrap();
+
+        // Price is inside the ceiling, but 2 units is below the minimum of 5.
+        // The honest reason is `stock-below-minimum`, never `paused`.
+        let _ = h
+            .engine
+            .handle_frame(&mut h.store, &market_frame(90_000, 2), 1_000_001, true);
+        let summary = scan_summary(&h);
+        assert!(
+            summary.contains("stock-below-minimum"),
+            "unexpected scan log: {summary:?}"
+        );
+        assert!(
+            !summary.contains("paused"),
+            "off must not fake the reason: {summary:?}"
+        );
+
+        // A hot frame still advertises hotness even though nothing is submitted.
+        let mut target = h.store.state.configs[0].clone();
+        target.min_acceptable_qty = 1;
+        h.store.upsert_config(target, None);
+        let events =
+            h.engine
+                .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_002, true);
+        assert!(submissions(&events).is_empty());
+        assert!(events.iter().any(|event| matches!(
+            event,
+            EngineEvent::Broadcast { kind: "market", data } if data["hot"] == true
+        )));
+        assert_eq!(h.engine.order_stamps_len(), 0, "off spends no budget");
     }
 
     #[test]
-    fn dry_run_broadcasts_the_plan_without_submitting() {
+    fn shadow_mode_broadcasts_the_plan_without_submitting() {
         let mut h = harness();
         h.store
             .patch_settings(validation::SettingsPatch {
-                dry_run: Some(true),
+                mode: Some(Mode::Shadow),
                 ..Default::default()
             })
             .unwrap();
@@ -1637,6 +1730,41 @@ mod tests {
             event,
             EngineEvent::Broadcast { kind: "order", data } if data["phase"] == "dry"
         )));
+        // Shadow spends the budget on purpose so it measures live throughput.
+        assert_eq!(h.engine.order_stamps_len(), 1);
+    }
+
+    #[test]
+    fn shadow_mode_needs_no_session_but_live_mode_does() {
+        let mut h = harness();
+        h.store
+            .patch_settings(validation::SettingsPatch {
+                mode: Some(Mode::Shadow),
+                ..Default::default()
+            })
+            .unwrap();
+        let shadow =
+            h.engine
+                .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_001, false);
+        assert!(shadow.iter().any(|event| matches!(
+            event,
+            EngineEvent::Broadcast { kind: "order", data } if data["phase"] == "dry"
+        )));
+
+        h.store
+            .patch_settings(validation::SettingsPatch {
+                mode: Some(Mode::Live),
+                ..Default::default()
+            })
+            .unwrap();
+        h.now.store(1_000_500, Ordering::SeqCst);
+        let live = h
+            .engine
+            .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_500, false);
+        assert!(
+            submissions(&live).is_empty(),
+            "live must not submit without a linked session"
+        );
     }
 
     #[test]

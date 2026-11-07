@@ -38,9 +38,10 @@ use crate::keepalive::KeepaliveService;
 use crate::latency::LatencyTracker;
 use crate::logger::Logger;
 use crate::mock::MockHandle;
+use crate::model::{Mode, Settings};
 use crate::store::{HistoryQuery, Store, now_ms};
 use crate::system::SystemMonitor;
-use crate::validation;
+use crate::validation::{self, FieldErrors};
 
 pub struct AppState {
     pub store: Mutex<Store>,
@@ -595,7 +596,14 @@ async fn patch_settings(
     };
 
     let mut store = state.store.lock().unwrap_or_else(|e| e.into_inner());
-    let resumed = patch.paused == Some(false);
+    let resumed = patch.resumes();
+    if let Err(fields) = check_arm_guard(&store.state.settings, &patch) {
+        return fields_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Cannot arm live yet.",
+            fields,
+        );
+    }
     if let Err(message) = store.patch_settings(patch) {
         state.logger.error("store", message);
         return error_body(
@@ -617,6 +625,26 @@ async fn patch_settings(
     Json(json!({ "ok": true, "settings": settings })).into_response()
 }
 
+/// Arms the worker out of `off` without ever arming live in one hop.
+///
+/// Going straight from off to live would put real money one click away from a
+/// stopped worker, so that transition is refused: the caller has to pass
+/// through shadow and confirm. Turning live *off* is always allowed.
+fn check_arm_guard(
+    current: &Settings,
+    patch: &validation::SettingsPatch,
+) -> Result<(), FieldErrors> {
+    if patch.mode == Some(Mode::Live) && current.mode == Mode::Off {
+        let mut fields = FieldErrors::new();
+        fields.insert(
+            "mode".into(),
+            "Switch to shadow first and confirm the dry-run signals, then arm live.".into(),
+        );
+        return Err(fields);
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 struct ControlBody {
     action: String,
@@ -628,17 +656,31 @@ async fn control(
     Json(body): Json<ControlBody>,
 ) -> Response {
     match body.action.as_str() {
-        "pause" | "resume" | "toggle" => {
+        "off" | "shadow" | "live" | "toggle" | "pause" | "resume" => {
             let mut store = state.store.lock().unwrap_or_else(|e| e.into_inner());
-            let paused = match body.action.as_str() {
-                "toggle" => !store.state.settings.paused,
-                "pause" => true,
-                _ => false,
+            let current = store.state.settings.mode;
+            let next = match body.action.as_str() {
+                "off" | "pause" => Mode::Off,
+                "shadow" => Mode::Shadow,
+                "live" | "resume" => Mode::Live,
+                // The header button is a panic switch in both directions: it
+                // stops live trading, and it resumes into shadow — never
+                // straight into live. Arming live is a deliberate act on the
+                // runtime panel.
+                _ if current == Mode::Live => Mode::Off,
+                _ => Mode::Shadow,
             };
             let patch = validation::SettingsPatch {
-                paused: Some(paused),
+                mode: Some(next),
                 ..Default::default()
             };
+            if let Err(fields) = check_arm_guard(&store.state.settings, &patch) {
+                return fields_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "Cannot arm live yet.",
+                    fields,
+                );
+            }
             if let Err(message) = store.patch_settings(patch) {
                 return error_body(StatusCode::INTERNAL_SERVER_ERROR, &message);
             }
@@ -646,17 +688,17 @@ async fn control(
             drop(store);
             state.logger.info(
                 "control",
-                if paused {
-                    "trading paused"
-                } else {
-                    "trading resumed"
+                match next {
+                    Mode::Off => "trading off",
+                    Mode::Shadow => "trading in shadow mode (no orders will be sent)",
+                    Mode::Live => "trading live",
                 },
             );
             state.broadcast(
                 "settings",
                 serde_json::to_value(settings).unwrap_or(Value::Null),
             );
-            if !paused {
+            if next.probes() {
                 state.wake_keepalive("trading resumed");
             }
             Json(json!({ "ok": true, "settings": settings })).into_response()
@@ -680,7 +722,7 @@ async fn control(
         }
         _ => error_body(
             StatusCode::BAD_REQUEST,
-            "action must be pause, resume, toggle or reconnect.",
+            "action must be off, shadow, live, toggle or reconnect.",
         ),
     }
 }

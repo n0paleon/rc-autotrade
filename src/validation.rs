@@ -10,7 +10,7 @@ use base64::Engine as _;
 use serde_json::Value;
 
 use crate::constants::Limits;
-use crate::model::Target;
+use crate::model::{Mode, Target};
 use crate::rules::round_price;
 
 pub type FieldErrors = BTreeMap<String, String>;
@@ -381,9 +381,15 @@ pub fn validate_targets(
 pub struct SettingsPatch {
     pub delay_per_order: Option<i64>,
     pub max_orders_per_minute: Option<i64>,
-    pub dry_run: Option<bool>,
+    pub mode: Option<Mode>,
     pub auto_refresh: Option<bool>,
-    pub paused: Option<bool>,
+}
+
+impl SettingsPatch {
+    /// True when the patch moves the worker out of `Off`.
+    pub fn resumes(&self) -> bool {
+        matches!(self.mode, Some(Mode::Shadow | Mode::Live))
+    }
 }
 
 pub fn validate_settings(input: &Value) -> Result<SettingsPatch, FieldErrors> {
@@ -436,16 +442,56 @@ pub fn validate_settings(input: &Value) -> Result<SettingsPatch, FieldErrors> {
         }
     }
 
+    // `mode` is the real switch. `dryRun` / `paused` remain accepted so an old
+    // deck, an old backup, or a script keeps working; they are folded into one
+    // mode instead of being stored as two independent flags.
+    let mut legacy_dry_run: Option<bool> = None;
+    let mut legacy_paused: Option<bool> = None;
+    if let Some(raw) = source.get("mode") {
+        match raw.as_str().filter(|value| !value.is_empty()) {
+            Some(value) => match Mode::parse(value) {
+                Some(mode) => patch.mode = Some(mode),
+                None => merge_error(
+                    &mut errors,
+                    "mode",
+                    "mode must be one of off, shadow or live.".to_string(),
+                ),
+            },
+            None => merge_error(
+                &mut errors,
+                "mode",
+                "mode must be one of off, shadow or live.".to_string(),
+            ),
+        }
+    }
     for (key, target) in [
-        ("dryRun", &mut patch.dry_run),
-        ("autoRefresh", &mut patch.auto_refresh),
-        ("paused", &mut patch.paused),
+        ("dryRun", &mut legacy_dry_run),
+        ("paused", &mut legacy_paused),
     ] {
         if let Some(raw) = source.get(key) {
             match raw.as_bool() {
                 Some(value) => *target = Some(value),
                 None => merge_error(&mut errors, key, format!("{key} must be true or false.")),
             }
+        }
+    }
+    if patch.mode.is_none() {
+        patch.mode = match (legacy_paused, legacy_dry_run) {
+            (Some(true), _) => Some(Mode::Off),
+            (_, Some(true)) => Some(Mode::Shadow),
+            (Some(false), Some(false)) => Some(Mode::Live),
+            _ => None,
+        };
+    }
+
+    if let Some(raw) = source.get("autoRefresh") {
+        match raw.as_bool() {
+            Some(value) => patch.auto_refresh = Some(value),
+            None => merge_error(
+                &mut errors,
+                "autoRefresh",
+                "autoRefresh must be true or false.".to_string(),
+            ),
         }
     }
 
@@ -617,10 +663,51 @@ mod tests {
 
     #[test]
     fn validates_settings_ranges() {
-        let patch = validate_settings(&json!({ "delayPerOrder": 500, "paused": true })).unwrap();
+        let patch = validate_settings(&json!({ "delayPerOrder": 500, "mode": "shadow" })).unwrap();
         assert_eq!(patch.delay_per_order, Some(500));
-        assert_eq!(patch.paused, Some(true));
+        assert_eq!(patch.mode, Some(Mode::Shadow));
         assert!(validate_settings(&json!({ "delayPerOrder": 10 })).is_err());
+    }
+
+    #[test]
+    fn rejects_an_unknown_mode() {
+        let errors = validate_settings(&json!({ "mode": "armed" })).unwrap_err();
+        assert!(errors["mode"].contains("off, shadow or live"));
+        assert!(validate_settings(&json!({ "mode": true })).is_err());
+    }
+
+    #[test]
+    fn folds_the_legacy_flags_into_one_mode() {
+        let cases = [
+            (json!({ "paused": true }), Mode::Off),
+            (json!({ "paused": true, "dryRun": false }), Mode::Off),
+            (json!({ "dryRun": true, "paused": false }), Mode::Shadow),
+            (json!({ "dryRun": false, "paused": false }), Mode::Live),
+        ];
+        for (body, expected) in cases {
+            assert_eq!(
+                validate_settings(&body).unwrap().mode,
+                Some(expected),
+                "{body}"
+            );
+        }
+        // One flag alone is not enough to claim the worker is armed for live.
+        assert_eq!(
+            validate_settings(&json!({ "dryRun": false })).unwrap().mode,
+            None
+        );
+        assert_eq!(
+            validate_settings(&json!({ "paused": false })).unwrap().mode,
+            None
+        );
+    }
+
+    #[test]
+    fn an_explicit_mode_wins_over_the_legacy_flags() {
+        let patch =
+            validate_settings(&json!({ "mode": "shadow", "paused": true, "dryRun": false }))
+                .unwrap();
+        assert_eq!(patch.mode, Some(Mode::Shadow));
     }
 
     #[test]

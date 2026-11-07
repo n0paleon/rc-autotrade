@@ -18,7 +18,7 @@ use serde_json::json;
 
 use rollercoin_worker::engine::Engine;
 use rollercoin_worker::logger::Logger;
-use rollercoin_worker::model::{Settings, Target};
+use rollercoin_worker::model::{Mode, Settings, Target};
 use rollercoin_worker::store::Store;
 
 struct Stats {
@@ -90,9 +90,8 @@ fn main() {
     store.state.settings = Settings {
         delay_per_order: 0,
         max_orders_per_minute: 600,
-        dry_run: true,
+        mode: Mode::Shadow,
         auto_refresh: false,
-        paused: false,
     };
 
     let now = Arc::new(AtomicI64::new(1_777_982_400_000));

@@ -6,6 +6,8 @@
 pub const APP_NAME: &str = "TURU.RC";
 pub const APP_VERSION: &str = "1.0.0";
 
+use crate::model::Mode;
+
 /// Rollercoin reports marketplace prices in micro-RLT (1 RLT = 1_000_000).
 pub const PRICE_SCALE: f64 = 1_000_000.0;
 
@@ -60,17 +62,15 @@ pub const EVENT_SAMPLE_SIZE: usize = 60;
 pub struct DefaultSettings {
     pub delay_per_order: i64,
     pub max_orders_per_minute: i64,
-    pub dry_run: bool,
+    pub mode: Mode,
     pub auto_refresh: bool,
-    pub paused: bool,
 }
 
 pub const DEFAULT_SETTINGS: DefaultSettings = DefaultSettings {
     delay_per_order: 200,
     max_orders_per_minute: 60,
-    dry_run: false,
+    mode: Mode::Live,
     auto_refresh: true,
-    paused: false,
 };
 
 pub struct Limits;
@@ -98,13 +98,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_match_the_javascript_worker() {
+    fn defaults_are_safe_and_match_the_javascript_worker() {
         assert_eq!(DEFAULT_SETTINGS.delay_per_order, 200);
         assert_eq!(DEFAULT_SETTINGS.max_orders_per_minute, 60);
-        assert!(!DEFAULT_SETTINGS.dry_run);
+        assert_eq!(DEFAULT_SETTINGS.mode, Mode::Live);
         assert!(DEFAULT_SETTINGS.auto_refresh);
-        assert!(!DEFAULT_SETTINGS.paused);
         assert_eq!(PRICE_SCALE, 1_000_000.0);
         assert_eq!(MAX_HISTORY, 200);
+    }
+
+    #[test]
+    fn mode_capabilities_are_explicit() {
+        assert!(!Mode::Off.plans() && !Mode::Off.submits() && !Mode::Off.probes());
+        assert!(Mode::Shadow.plans() && !Mode::Shadow.submits() && Mode::Shadow.probes());
+        assert!(Mode::Live.plans() && Mode::Live.submits() && Mode::Live.probes());
+    }
+
+    /// The one property that matters for money: only live can submit, and an
+    /// off row never mirrors into a pair that reads as "armed, not dry".
+    #[test]
+    fn legacy_flags_never_describe_off_as_live_trading() {
+        for mode in [Mode::Off, Mode::Shadow, Mode::Live] {
+            let (dry_run, paused) = mode.legacy_flags();
+            assert_eq!(
+                Mode::from_legacy(dry_run, paused),
+                mode,
+                "legacy mirror must round-trip {mode:?}"
+            );
+        }
+        let (dry_run, paused) = Mode::Off.legacy_flags();
+        assert!(
+            dry_run && paused,
+            "off must stay visibly stopped to old readers"
+        );
     }
 }

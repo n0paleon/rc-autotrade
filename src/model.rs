@@ -54,14 +54,92 @@ impl Target {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+/// What the worker is allowed to do with a passing signal.
+///
+/// This replaces the old pair of independent booleans (`paused` + `dryRun`),
+/// which could express four states even though one of them — paused with
+/// dry-run on — behaved exactly like paused alone.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    /// Stop deciding: no plan is made, no cooldown or rate slot is spent, the
+    /// warm HTTP probe stops, and the market feed keeps streaming.
+    Off,
+    /// Decide and log exactly as live would, but never submit; dry-run orders
+    /// still consume cooldown and the per-minute cap so the budget is honest.
+    Shadow,
+    /// Decide and submit to Rollercoin. Requires a linked session.
+    #[default]
+    Live,
+}
+
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Off => "off",
+            Mode::Shadow => "shadow",
+            Mode::Live => "live",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "off" => Some(Mode::Off),
+            "shadow" => Some(Mode::Shadow),
+            "live" => Some(Mode::Live),
+            _ => None,
+        }
+    }
+
+    /// Off makes `plan_order` short-circuit; shadow and live plan normally.
+    pub fn plans(self) -> bool {
+        !matches!(self, Mode::Off)
+    }
+
+    /// Only live mode talks to the purchase endpoint.
+    pub fn submits(self) -> bool {
+        matches!(self, Mode::Live)
+    }
+
+    /// Keeps the upstream edge warm. Off stops probing on purpose, shadow keeps
+    /// probing so a dry-run session still exercises the same network path.
+    pub fn probes(self) -> bool {
+        !matches!(self, Mode::Off)
+    }
+
+    /// Legacy mirror for the `settings` row. Off deliberately writes
+    /// `dry_run = 1` so an older reader that unpauses lands in dry-run, never
+    /// straight into live trading.
+    pub fn legacy_flags(self) -> (bool, bool) {
+        match self {
+            Mode::Off => (true, true),
+            Mode::Shadow => (true, false),
+            Mode::Live => (false, false),
+        }
+    }
+
+    /// Best-effort recovery for rows written before schema v8, or for an
+    /// unrecognised `mode` string.
+    pub fn from_legacy(dry_run: bool, paused: bool) -> Self {
+        if paused {
+            Mode::Off
+        } else if dry_run {
+            Mode::Shadow
+        } else {
+            Mode::Live
+        }
+    }
+}
+
+/// Runtime settings. `mode` is the only trading switch; the old `dryRun` and
+/// `paused` keys are still accepted on input, echoed on output, and mirrored
+/// into the two legacy columns so a pre-v8 reader still sees sane flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
     pub delay_per_order: i64,
     pub max_orders_per_minute: i64,
-    pub dry_run: bool,
+    pub mode: Mode,
     pub auto_refresh: bool,
-    pub paused: bool,
 }
 
 impl Default for Settings {
@@ -70,10 +148,76 @@ impl Default for Settings {
         Self {
             delay_per_order: defaults.delay_per_order,
             max_orders_per_minute: defaults.max_orders_per_minute,
-            dry_run: defaults.dry_run,
+            mode: Mode::default(),
             auto_refresh: defaults.auto_refresh,
-            paused: defaults.paused,
         }
+    }
+}
+
+impl Settings {
+    /// Legacy columns written alongside `mode`, so a pre-v8 reader still sees a
+    /// sane pair of flags.
+    pub fn legacy_flags(&self) -> (bool, bool) {
+        self.mode.legacy_flags()
+    }
+}
+
+impl Serialize for Settings {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        let (dry_run, paused) = self.legacy_flags();
+        let mut map = serializer.serialize_map(Some(6))?;
+        map.serialize_entry("delayPerOrder", &self.delay_per_order)?;
+        map.serialize_entry("maxOrdersPerMinute", &self.max_orders_per_minute)?;
+        map.serialize_entry("mode", &self.mode)?;
+        map.serialize_entry("autoRefresh", &self.auto_refresh)?;
+        // Read-only mirrors: they keep an older deck or backup reader working
+        // and are ignored whenever `mode` is present.
+        map.serialize_entry("dryRun", &dry_run)?;
+        map.serialize_entry("paused", &paused)?;
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Settings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Wire {
+            delay_per_order: i64,
+            max_orders_per_minute: i64,
+            #[serde(default)]
+            mode: Option<Mode>,
+            #[serde(default)]
+            dry_run: Option<bool>,
+            #[serde(default)]
+            paused: Option<bool>,
+            #[serde(default = "default_true")]
+            auto_refresh: bool,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        // `mode` always wins. The legacy pair is only read when it is absent,
+        // and it never infers Live from half a pair: an old document that did
+        // not say "dry run is off" must not quietly arm real trading.
+        let mode = match (wire.paused, wire.dry_run) {
+            (Some(true), _) => Mode::Off,
+            (_, Some(true)) => Mode::Shadow,
+            (Some(false), Some(false)) => Mode::Live,
+            (Some(false), None) | (None, Some(false)) | (None, None) => Mode::Shadow,
+        };
+        Ok(Settings {
+            delay_per_order: wire.delay_per_order,
+            max_orders_per_minute: wire.max_orders_per_minute,
+            mode: wire.mode.unwrap_or(mode),
+            auto_refresh: wire.auto_refresh,
+        })
     }
 }
 
@@ -236,8 +380,51 @@ mod tests {
         let json = serde_json::to_value(Settings::default()).unwrap();
         assert_eq!(json["delayPerOrder"], 200);
         assert_eq!(json["maxOrdersPerMinute"], 60);
-        assert_eq!(json["dryRun"], false);
+        assert_eq!(json["mode"], "live");
         assert_eq!(json["autoRefresh"], true);
+        // Legacy mirrors, read-only for the deck but present for old readers.
+        assert_eq!(json["dryRun"], false);
+        assert_eq!(json["paused"], false);
+    }
+
+    #[test]
+    fn a_legacy_settings_document_maps_to_one_mode() {
+        // A document that says nothing about trading must not be read as
+        // "armed for live": the safe reading of silence is shadow.
+        let settings: Settings = serde_json::from_value(
+            serde_json::json!({ "delayPerOrder": 200, "maxOrdersPerMinute": 60 }),
+        )
+        .unwrap();
+        assert_eq!(settings.mode, Mode::Shadow, "silence is not live");
+        assert!(settings.auto_refresh);
+
+        let paused: Settings = serde_json::from_value(serde_json::json!({
+            "delayPerOrder": 200, "maxOrdersPerMinute": 60, "paused": true, "dryRun": true
+        }))
+        .unwrap();
+        assert_eq!(paused.mode, Mode::Off, "the dead cell collapses to off");
+
+        let dry: Settings = serde_json::from_value(serde_json::json!({
+            "delayPerOrder": 200, "maxOrdersPerMinute": 60, "dryRun": true, "paused": false
+        }))
+        .unwrap();
+        assert_eq!(dry.mode, Mode::Shadow);
+
+        let live: Settings = serde_json::from_value(serde_json::json!({
+            "delayPerOrder": 200, "maxOrdersPerMinute": 60, "dryRun": false, "paused": false
+        }))
+        .unwrap();
+        assert_eq!(live.mode, Mode::Live, "live needs both flags to say so");
+    }
+
+    #[test]
+    fn an_explicit_mode_beats_the_legacy_flags() {
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "delayPerOrder": 200, "maxOrdersPerMinute": 60,
+            "mode": "shadow", "dryRun": false, "paused": false
+        }))
+        .unwrap();
+        assert_eq!(settings.mode, Mode::Shadow);
     }
 
     #[test]

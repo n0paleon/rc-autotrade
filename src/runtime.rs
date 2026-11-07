@@ -239,7 +239,7 @@ impl Worker {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             !store.state.session.access_token.is_empty()
-                && !store.state.settings.paused
+                && store.state.settings.mode.probes()
                 && store.state.configs.iter().any(|target| target.active)
         });
         let keepalive = KeepaliveService::new(KeepaliveConfig {
