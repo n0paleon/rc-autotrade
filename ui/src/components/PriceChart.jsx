@@ -163,6 +163,8 @@ function ProTooltip({ active, payload, previousClose, bucketMs, targetPrice }) {
       : null;
   const low = Number.isFinite(point?.l) ? point.l : null;
   const high = Number.isFinite(point?.h) ? point.h : null;
+  const rawLow = Number.isFinite(point?.rl) ? point.rl : null;
+  const rawHigh = Number.isFinite(point?.rh) ? point.rh : null;
   const bandPct =
     low != null && high != null && low > 0 ? ((high - low) / low) * 100 : null;
 
@@ -178,11 +180,11 @@ function ProTooltip({ active, payload, previousClose, bucketMs, targetPrice }) {
       {low != null && high != null ? (
         <>
           <div className="pro-tip-row">
-            <span>Low</span>
+            <span>Held low</span>
             <strong>{fixedPrice(low)} RLT</strong>
           </div>
           <div className="pro-tip-row">
-            <span>High</span>
+            <span>Held high</span>
             <strong>{fixedPrice(high)} RLT</strong>
           </div>
           {bandPct != null ? (
@@ -191,6 +193,18 @@ function ProTooltip({ active, payload, previousClose, bucketMs, targetPrice }) {
               <b className="text-[#8fa0b8]">{bandPct.toFixed(2)}%</b>
             </div>
           ) : null}
+        </>
+      ) : null}
+      {rawLow != null && rawHigh != null ? (
+        <>
+          <div className="pro-tip-row">
+            <span>Raw low</span>
+            <strong>{fixedPrice(rawLow)} RLT</strong>
+          </div>
+          <div className="pro-tip-row">
+            <span>Raw high</span>
+            <strong>{fixedPrice(rawHigh)} RLT</strong>
+          </div>
         </>
       ) : null}
       <div className="pro-tip-row">
@@ -269,15 +283,33 @@ function PriceDetailModal({
     () => (data.length > 1 ? timeTicks(data[0].t, data[data.length - 1].t) : undefined),
     [data]
   );
-  const values = data.flatMap((point) => {
-    const out = [point.p];
-    if (Number.isFinite(point.l)) out.push(point.l);
-    if (Number.isFinite(point.h)) out.push(point.h);
-    return out;
-  });
+  const [bandMode, setBandMode] = useState("held");
   const hasBand = data.some(
     (point) => Number.isFinite(point.l) && Number.isFinite(point.h)
   );
+  const hasRawBand = data.some(
+    (point) => Number.isFinite(point.rl) && Number.isFinite(point.rh)
+  );
+  const showRaw = bandMode === "raw" && hasRawBand;
+  const bandLowKey = showRaw ? "rl" : "l";
+  const bandHighKey = showRaw ? "rh" : "h";
+  const bandDataKey = (point) => {
+    const bandLow = point?.[bandLowKey];
+    const bandHigh = point?.[bandHighKey];
+    return Number.isFinite(bandLow) && Number.isFinite(bandHigh)
+      ? [bandLow, bandHigh]
+      : null;
+  };
+  const showBand = showRaw ? hasRawBand : hasBand;
+  // The Y domain follows the band that is actually drawn, so a raw bait print
+  // cannot flatten the held line when the viewer is in Held mode.
+  const values = data.flatMap((point) => {
+    const out = [point.p];
+    for (const edge of showRaw ? [point.rl, point.rh] : [point.l, point.h]) {
+      if (Number.isFinite(edge)) out.push(edge);
+    }
+    return out;
+  });
   const { domain, showTarget } = targetDomain(values, targetPrice);
   const xDomain =
     data.length > 1
@@ -371,6 +403,17 @@ function PriceDetailModal({
             value={bucket}
             onChange={onBucket}
           />
+          {hasRawBand ? (
+            <ProTabs
+              label="Band"
+              options={[
+                { key: "held", label: "Held" },
+                { key: "raw", label: "Raw" }
+              ]}
+              value={bandMode}
+              onChange={setBandMode}
+            />
+          ) : null}
         </div>
 
         <div className="px-1 pb-2 sm:px-2">
@@ -441,17 +484,15 @@ function PriceDetailModal({
                     strokeWidth={1}
                   />
                 ) : null}
-                {hasBand ? (
+                {showBand ? (
                   <Area
                     type="linear"
-                    dataKey={(point) =>
-                      Number.isFinite(point?.l) && Number.isFinite(point?.h)
-                        ? [point.l, point.h]
-                        : null
-                    }
-                    stroke="none"
+                    dataKey={bandDataKey}
+                    stroke={showRaw ? color : "none"}
+                    strokeOpacity={showRaw ? 0.4 : 0}
+                    strokeDasharray={showRaw ? "2 3" : undefined}
                     fill={color}
-                    fillOpacity={0.16}
+                    fillOpacity={showRaw ? 0.08 : 0.16}
                     isAnimationActive={false}
                     connectNulls={false}
                     activeDot={false}
@@ -487,14 +528,14 @@ function PriceDetailModal({
           <span>
             {formatInt(data.length)} closes · {frame.label} buckets · local time
           </span>
-          {hasBand ? (
+          {hasBand || hasRawBand ? (
             <span className="flex items-center gap-1.5">
               <i
                 className="h-2.5 w-4 rounded-[1px]"
-                style={{ backgroundColor: color, opacity: 0.22 }}
+                style={{ backgroundColor: color, opacity: showRaw ? 0.12 : 0.22 }}
                 aria-hidden="true"
               />
-              Low–high band
+              {showRaw ? "Raw low–high · every print" : "Low–high band · held prices"}
             </span>
           ) : null}
           {Number.isFinite(targetPrice) ? (

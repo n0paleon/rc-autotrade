@@ -988,6 +988,8 @@ async fn price_history_view(
                 "p": point.price,
                 "l": point.low,
                 "h": point.high,
+                "rl": point.raw_low,
+                "rh": point.raw_high,
             })
         })
         .collect();

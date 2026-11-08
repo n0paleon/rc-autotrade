@@ -34,14 +34,24 @@ function finite(value) {
   return Number.isFinite(Number(value)) && value !== null && value !== "";
 }
 
-/** Low edge of a point's band, falling back to its close. */
+/** Low edge of a point's held band, falling back to its close. */
 export function priceLow(point, fallback) {
   return point?.l != null && finite(point.l) ? Number(point.l) : fallback;
 }
 
-/** High edge of a point's band, falling back to its close. */
+/** High edge of a point's held band, falling back to its close. */
 export function priceHigh(point, fallback) {
   return point?.h != null && finite(point.h) ? Number(point.h) : fallback;
+}
+
+/** Low edge of the raw band: every print, including guard-rejected ones. */
+export function priceRawLow(point, fallback) {
+  return point?.rl != null && finite(point.rl) ? Number(point.rl) : fallback;
+}
+
+/** High edge of the raw band: every print, including guard-rejected ones. */
+export function priceRawHigh(point, fallback) {
+  return point?.rh != null && finite(point.rh) ? Number(point.rh) : fallback;
 }
 
 /** Local-clock offset for an instant, in milliseconds east of UTC. */
@@ -76,14 +86,19 @@ export function bucketPrice(
     const key = align(at);
     const low = Math.min(priceLow(point, price), price);
     const high = Math.max(priceHigh(point, price), price);
+    // The raw band can only be wider than the held one.
+    const rawLow = Math.min(priceRawLow(point, low), low);
+    const rawHigh = Math.max(priceRawHigh(point, high), high);
     const current = buckets.get(key);
     if (!current) {
-      buckets.set(key, { t: key, p: price, l: low, h: high });
+      buckets.set(key, { t: key, p: price, l: low, h: high, rl: rawLow, rh: rawHigh });
       newest.set(key, at);
       continue;
     }
     current.l = Math.min(current.l, low);
     current.h = Math.max(current.h, high);
+    current.rl = Math.min(current.rl, rawLow);
+    current.rh = Math.max(current.rh, rawHigh);
     if (at >= newest.get(key)) {
       current.p = price;
       newest.set(key, at);
@@ -109,13 +124,17 @@ export function breakPriceGaps(series, bucketMs) {
     const price = Number(point?.p);
     if (!Number.isFinite(at) || !Number.isFinite(price)) continue;
     if (previous !== null && at - previous > size * 1.5) {
-      out.push({ t: previous + size, p: null, l: null, h: null });
+      out.push({ t: previous + size, p: null, l: null, h: null, rl: null, rh: null });
     }
+    const low = priceLow(point, price);
+    const high = priceHigh(point, price);
     out.push({
       t: at,
       p: price,
-      l: priceLow(point, price),
-      h: priceHigh(point, price)
+      l: low,
+      h: high,
+      rl: Math.min(priceRawLow(point, low), low),
+      rh: Math.max(priceRawHigh(point, high), high)
     });
     previous = at;
   }
@@ -134,11 +153,15 @@ export function mergePriceSeries(stored, live) {
     const at = Number(point?.t);
     const price = Number(point?.p);
     if (!Number.isFinite(at) || !Number.isFinite(price)) continue;
+    const low = priceLow(point, price);
+    const high = priceHigh(point, price);
     merged.set(at, {
       t: at,
       p: price,
-      l: priceLow(point, price),
-      h: priceHigh(point, price)
+      l: low,
+      h: high,
+      rl: Math.min(priceRawLow(point, low), low),
+      rh: Math.max(priceRawHigh(point, high), high)
     });
   }
   for (const point of Array.isArray(live) ? live : []) {
@@ -146,15 +169,23 @@ export function mergePriceSeries(stored, live) {
     const price = Number(point?.p);
     if (!Number.isFinite(at) || !Number.isFinite(price)) continue;
     const previous = merged.get(at);
-    const low = priceLow(
-      point,
-      previous ? Math.min(previous.l, price) : price
+    const low = Math.min(
+      priceLow(point, previous ? Math.min(previous.l, price) : price),
+      price
     );
-    const high = priceHigh(
-      point,
-      previous ? Math.max(previous.h, price) : price
+    const high = Math.max(
+      priceHigh(point, previous ? Math.max(previous.h, price) : price),
+      price
     );
-    merged.set(at, { t: at, p: price, l: Math.min(low, price), h: Math.max(high, price) });
+    const rawLow = Math.min(
+      priceRawLow(point, previous ? Math.min(previous.rl, low) : low),
+      low
+    );
+    const rawHigh = Math.max(
+      priceRawHigh(point, previous ? Math.max(previous.rh, high) : high),
+      high
+    );
+    merged.set(at, { t: at, p: price, l: low, h: high, rl: rawLow, rh: rawHigh });
   }
   return [...merged.values()].sort((a, b) => a.t - b.t);
 }

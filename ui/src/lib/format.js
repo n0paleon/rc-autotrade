@@ -212,7 +212,7 @@ export function drawPixelAvatar(canvas, seed, preferredColor) {
   ctx.fillRect(1, 1, 2, 1);
 }
 
-export function mergeHistory(history, point, bucket, low, high) {
+export function mergeHistory(history, point, bucket, low, high, rawLow, rawHigh) {
   const next = Array.isArray(history) ? [...history] : [];
   const last = next[next.length - 1];
   const edge = (value, fallback) =>
@@ -220,13 +220,31 @@ export function mergeHistory(history, point, bucket, low, high) {
   const inBucket = last != null && last.t === bucket;
   const previousLow = inBucket && Number.isFinite(last.l) ? last.l : point;
   const previousHigh = inBucket && Number.isFinite(last.h) ? last.h : point;
+  const lowEdge = edge(low, point);
+  const highEdge = edge(high, point);
+  const previousRawLow = inBucket
+    ? Number.isFinite(last.rl)
+      ? last.rl
+      : Number.isFinite(last.l)
+        ? last.l
+        : lowEdge
+    : lowEdge;
+  const previousRawHigh = inBucket
+    ? Number.isFinite(last.rh)
+      ? last.rh
+      : Number.isFinite(last.h)
+        ? last.h
+        : highEdge
+    : highEdge;
   const entry = {
     t: bucket,
     p: point,
-    // A running minute's band only grows; every tick widens it, and a
-    // close-only tick can never narrow it.
-    l: Math.min(previousLow, edge(low, point), point),
-    h: Math.max(previousHigh, edge(high, point), point)
+    // A running minute's bands only grow; every tick widens them, and a
+    // close-only tick can never narrow them.
+    l: Math.min(previousLow, lowEdge, point),
+    h: Math.max(previousHigh, highEdge, point),
+    rl: Math.min(previousRawLow, edge(rawLow, lowEdge), lowEdge, point),
+    rh: Math.max(previousRawHigh, edge(rawHigh, highEdge), highEdge, point)
   };
   if (!last || last.t < bucket) {
     next.push(entry);

@@ -23,7 +23,7 @@ use crate::constants::{
 use crate::depth::{Fill, estimate_fill_price_sorted};
 use crate::events::{Kind, UpstreamEvent, normalize_upstream_event};
 use crate::logger::Logger;
-use crate::model::{MarketSnapshot, Mode, OrderEntry, Target};
+use crate::model::{MarketSnapshot, Mode, OrderEntry, PriceBand, Target};
 use crate::rules::{Action, Plan, plan_order, round_price};
 use crate::store::{Store, now_ms};
 use crate::timings::Timings;
@@ -70,6 +70,9 @@ pub struct MarketTick {
     /// Lowest and highest price that held during this minute.
     pub low: f64,
     pub high: f64,
+    /// Lowest and highest print seen this minute, dwell guard included.
+    pub raw_low: f64,
+    pub raw_high: f64,
     pub stock: i64,
     pub target_price: f64,
     pub desired_qty: i64,
@@ -169,10 +172,14 @@ struct MinuteAgg {
     /// Micro-RLT price -> milliseconds that price held.
     weights: BTreeMap<i64, i64>,
     /// Lowest and highest price that actually held this minute. Transient
-    /// prints rejected by the dwell guard are excluded on purpose: the band is
-    /// meant to show intra-minute volatility, not bait.
+    /// prints rejected by the dwell guard are excluded on purpose.
     low: f64,
     high: f64,
+    /// Lowest and highest print seen this minute, before the dwell guard. This
+    /// is the raw band: it does include one-frame bait, so the chart can show
+    /// it only when the viewer asks for it.
+    raw_low: f64,
+    raw_high: f64,
 }
 
 impl MinuteAgg {
@@ -185,6 +192,8 @@ impl MinuteAgg {
             weights: BTreeMap::new(),
             low: price,
             high: price,
+            raw_low: price,
+            raw_high: price,
         }
     }
 
@@ -192,6 +201,10 @@ impl MinuteAgg {
     fn observe(&mut self, at: i64, price: f64) -> f64 {
         let at = at.clamp(self.bucket, self.bucket + PRICE_BUCKET_MS);
         self.accrue(at);
+        // The raw band sees every print, including a candidate that may never
+        // pass the dwell guard.
+        self.raw_low = self.raw_low.min(price);
+        self.raw_high = self.raw_high.max(price);
         if price_key(price) != price_key(self.settled) {
             match self.candidate {
                 Some((candidate, since)) if price_key(candidate) == price_key(price) => {
@@ -373,6 +386,8 @@ pub struct PriceSample {
     pub price: f64,
     pub low: f64,
     pub high: f64,
+    pub raw_low: f64,
+    pub raw_high: f64,
 }
 
 pub struct Engine {
@@ -508,7 +523,18 @@ impl Engine {
         let fill = estimate_fill_price_sorted(&listings, rest, desired_qty);
 
         let mut events = Vec::new();
-        let (trend_json, allowed_min, allowed_max, allowed_at, close, low, high, finalized) = {
+        let (
+            trend_json,
+            allowed_min,
+            allowed_max,
+            allowed_at,
+            close,
+            low,
+            high,
+            raw_low,
+            raw_high,
+            finalized,
+        ) = {
             let runtime = self.runtime_for(&config.item_id, desired_qty);
             runtime.last_price = Some(best.unit_price);
             runtime.last_stock = Some(best.quantity);
@@ -530,34 +556,44 @@ impl Engine {
             // The stored close is the duration-weighted median of this minute,
             // not the last frame. Rolling into a new minute finalises the one
             // that just ended so its final write is exact.
-            let (close, low, high, finalized) = match runtime.minute.take() {
+            let (close, low, high, raw_low, raw_high, finalized) = match runtime.minute.take() {
                 Some(mut agg) if agg.bucket == bucket => {
                     let close = agg.observe(now, best.unit_price);
                     let (low, high) = (agg.low, agg.high);
+                    let (raw_low, raw_high) = (agg.raw_low, agg.raw_high);
                     runtime.minute = Some(agg);
-                    (close, low, high, None)
+                    (close, low, high, raw_low, raw_high, None)
                 }
                 Some(mut agg) if agg.bucket < bucket => {
                     let old_bucket = agg.bucket;
                     let old_close = agg.close();
-                    let finalized = (old_bucket, old_close, agg.low, agg.high);
+                    let finalized = (
+                        old_bucket,
+                        old_close,
+                        agg.low,
+                        agg.high,
+                        agg.raw_low,
+                        agg.raw_high,
+                    );
                     // The settled level held from the bucket boundary until
                     // this frame, so the new minute starts there.
                     let mut next = MinuteAgg::start(bucket, agg.settled, bucket);
                     let close = next.observe(now, best.unit_price);
                     let (low, high) = (next.low, next.high);
+                    let (raw_low, raw_high) = (next.raw_low, next.raw_high);
                     runtime.minute = Some(next);
-                    (close, low, high, Some(finalized))
+                    (close, low, high, raw_low, raw_high, Some(finalized))
                 }
                 _ => {
                     let mut agg = MinuteAgg::start(bucket, best.unit_price, now);
                     let close = agg.observe(now, best.unit_price);
                     let (low, high) = (agg.low, agg.high);
+                    let (raw_low, raw_high) = (agg.raw_low, agg.raw_high);
                     runtime.minute = Some(agg);
-                    (close, low, high, None)
+                    (close, low, high, raw_low, raw_high, None)
                 }
             };
-            if let Some((old_bucket, old_close, _, _)) = finalized
+            if let Some((old_bucket, old_close, _, _, _, _)) = finalized
                 && let Some(point) = runtime
                     .history
                     .iter_mut()
@@ -617,6 +653,8 @@ impl Engine {
                 close,
                 low,
                 high,
+                raw_low,
+                raw_high,
                 finalized,
             )
         };
@@ -628,6 +666,8 @@ impl Engine {
             close,
             low,
             high,
+            raw_low,
+            raw_high,
             fill,
             bucket,
             event.allowed_price_min.is_some() || event.allowed_price_max.is_some(),
@@ -670,6 +710,8 @@ impl Engine {
                 close,
                 low,
                 high,
+                raw_low,
+                raw_high,
                 stock: best.quantity,
                 target_price: config.target_price,
                 desired_qty,
@@ -1312,10 +1354,12 @@ impl Engine {
         price: f64,
         low: f64,
         high: f64,
+        raw_low: f64,
+        raw_high: f64,
         fill: Option<Fill>,
         bucket: i64,
         band_changed: bool,
-        finalized: Option<(i64, f64, f64, f64)>,
+        finalized: Option<(i64, f64, f64, f64, f64, f64)>,
     ) {
         let (persisted_at, point_write_at, last_bucket) = {
             let runtime = self.runtime_for(&config.item_id, config.desired_qty);
@@ -1361,13 +1405,16 @@ impl Engine {
         // of the running value its last frame happened to see. `record_price_samples`
         // only touches the close and band, so a fill recorded in that bucket
         // survives.
-        if let Some((old_bucket, old_close, old_low, old_high)) = finalized
+        if let Some((old_bucket, old_close, old_low, old_high, old_raw_low, old_raw_high)) =
+            finalized
             && let Err(error) = store.record_price_samples(&[(
                 &config.item_id,
                 old_bucket,
                 old_close,
                 old_low,
                 old_high,
+                old_raw_low,
+                old_raw_high,
             )])
         {
             let runtime = self.runtime_for(&config.item_id, config.desired_qty);
@@ -1380,8 +1427,14 @@ impl Engine {
 
         if last_bucket != Some(bucket) || now - point_write_at >= PRICE_POINT_WRITE_INTERVAL_MS {
             let fill_tuple = fill.map(|fill| (fill.price, fill.filled as f64, fill.approx));
+            let band = PriceBand {
+                low,
+                high,
+                raw_low,
+                raw_high,
+            };
             if let Err(error) =
-                store.record_price_point(&config.item_id, bucket, price, low, high, fill_tuple)
+                store.record_price_point(&config.item_id, bucket, price, band, fill_tuple)
             {
                 let runtime = self.runtime_for(&config.item_id, config.desired_qty);
                 if now - runtime.persist_error_at > 60_000 {
@@ -1834,7 +1887,15 @@ impl Engine {
                 if agg.bucket < bucket {
                     let old_bucket = agg.bucket;
                     let old_close = agg.close();
-                    finalized.push((item_id.clone(), old_bucket, old_close, agg.low, agg.high));
+                    finalized.push((
+                        item_id.clone(),
+                        old_bucket,
+                        old_close,
+                        agg.low,
+                        agg.high,
+                        agg.raw_low,
+                        agg.raw_high,
+                    ));
                     if let Some(point) = runtime.history.iter_mut().find(|p| p.t == old_bucket) {
                         point.p = old_close;
                     }
@@ -1859,12 +1920,12 @@ impl Engine {
             if matches!(runtime.history.last(), Some(point) if point.t >= bucket) {
                 continue;
             }
-            let (price, low, high) = match runtime.minute.as_mut() {
+            let (price, low, high, raw_low, raw_high) = match runtime.minute.as_mut() {
                 Some(agg) => {
                     let price = agg.value(at);
-                    (price, agg.low, agg.high)
+                    (price, agg.low, agg.high, agg.raw_low, agg.raw_high)
                 }
-                None => (last_price, last_price, last_price),
+                None => (last_price, last_price, last_price, last_price, last_price),
             };
             runtime.history.push(Point {
                 t: bucket,
@@ -1880,13 +1941,25 @@ impl Engine {
                 price,
                 low,
                 high,
+                raw_low,
+                raw_high,
             });
         }
-        let mut rows: Vec<(&str, i64, f64, f64, f64)> = finalized
+        let mut rows: Vec<(&str, i64, f64, f64, f64, f64, f64)> = finalized
             .iter()
-            .map(|(item_id, bucket_at, price, low, high)| {
-                (item_id.as_str(), *bucket_at, *price, *low, *high)
-            })
+            .map(
+                |(item_id, bucket_at, price, low, high, raw_low, raw_high)| {
+                    (
+                        item_id.as_str(),
+                        *bucket_at,
+                        *price,
+                        *low,
+                        *high,
+                        *raw_low,
+                        *raw_high,
+                    )
+                },
+            )
             .collect();
         rows.extend(samples.iter().map(|sample| {
             (
@@ -1895,6 +1968,8 @@ impl Engine {
                 sample.price,
                 sample.low,
                 sample.high,
+                sample.raw_low,
+                sample.raw_high,
             )
         }));
         if let Err(error) = store.record_price_samples(&rows)
@@ -2719,7 +2794,13 @@ mod tests {
         );
         assert!((stored_close(&h, item, bucket) - 0.10).abs() < 1e-12);
         let point = stored_point(&h, item, bucket);
+        // The held band ignores the 2 s bait; the raw band keeps it.
         assert_eq!((point.low, point.high), (Some(0.10), Some(0.10)));
+        assert_eq!(
+            (point.raw_low, point.raw_high),
+            (Some(0.01), Some(0.10)),
+            "the raw band must expose the print the dwell guard rejected"
+        );
     }
 
     #[test]
@@ -2736,7 +2817,7 @@ mod tests {
         frame(&mut h, bucket + 1_000, 100_000);
         frame(&mut h, bucket + 20_000, 100_000);
         frame(&mut h, bucket + 20_001, 10_000);
-        // Passes the 5 s dwell, but only rules for 5 s of a 60 s minute.
+        // Passes the 3 s dwell, but only rules for 5 s of a 60 s minute.
         frame(&mut h, bucket + 25_001, 10_000);
         frame(&mut h, bucket + 30_001, 100_000);
         frame(&mut h, bucket + 35_001, 100_000);
@@ -2750,6 +2831,32 @@ mod tests {
         // expanded chart draws as its low/high column.
         let point = stored_point(&h, item, bucket);
         assert_eq!((point.low, point.high), (Some(0.01), Some(0.10)));
+    }
+
+    #[test]
+    fn a_print_that_lasts_past_the_dwell_enters_the_band() {
+        let mut h = harness();
+        let bucket = 960_000_i64;
+        let item = "6319f7baa8ce530569ed16b9";
+        let frame = |h: &mut Harness, at: i64, price: i64| {
+            h.now.store(at, Ordering::SeqCst);
+            h.engine
+                .handle_frame(&mut h.store, &market_frame(price, 4), at, true);
+        };
+
+        frame(&mut h, bucket + 1_000, 100_000);
+        frame(&mut h, bucket + 10_000, 100_000);
+        // The cheap print appears, then is still there 3.5 s later: it is real
+        // enough to join the band even though it is too short to own the close.
+        frame(&mut h, bucket + 20_000, 60_000);
+        frame(&mut h, bucket + 23_500, 60_000);
+        frame(&mut h, bucket + 24_000, 100_000);
+        frame(&mut h, bucket + 29_000, 100_000);
+        frame(&mut h, bucket + 60_001, 100_000);
+
+        assert!((stored_close(&h, item, bucket) - 0.10).abs() < 1e-12);
+        let point = stored_point(&h, item, bucket);
+        assert_eq!((point.low, point.high), (Some(0.06), Some(0.10)));
     }
 
     #[test]

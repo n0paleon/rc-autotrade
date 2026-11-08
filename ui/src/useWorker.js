@@ -412,6 +412,8 @@ export function useWorker({ notify }) {
           const close = Number(data.close);
           const low = Number(data.low);
           const high = Number(data.high);
+          const rawLow = Number(data.rawLow);
+          const rawHigh = Number(data.rawHigh);
           const plotted = Number.isFinite(close) ? close : data.price;
           updateConfig(data.itemId, (runtime) => ({
             ...runtime,
@@ -429,7 +431,15 @@ export function useWorker({ notify }) {
               : runtime.allowedPriceMax,
             allowedAt: data.allowedAt ?? runtime.allowedAt,
             trend: data.trend ?? runtime.trend,
-            history: mergeHistory(runtime.history, plotted, bucket, low, high)
+            history: mergeHistory(
+              runtime.history,
+              plotted,
+              bucket,
+              low,
+              high,
+              rawLow,
+              rawHigh
+            )
           }));
           break;
         }
@@ -449,7 +459,9 @@ export function useWorker({ notify }) {
               price,
               bucket,
               Number(data.low),
-              Number(data.high)
+              Number(data.high),
+              Number(data.rawLow),
+              Number(data.rawHigh)
             )
           }));
           break;

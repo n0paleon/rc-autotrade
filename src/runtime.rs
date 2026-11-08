@@ -541,6 +541,8 @@ fn sample_prices(state: &Arc<AppState>) {
                 "price": sample.price,
                 "low": sample.low,
                 "high": sample.high,
+                "rawLow": sample.raw_low,
+                "rawHigh": sample.raw_high,
                 "bucket": sample.bucket,
                 "at": now,
                 "sampled": true,

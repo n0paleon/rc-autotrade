@@ -49,7 +49,7 @@ pub const PRICE_BUCKET_MS: i64 = 60_000;
 /// accepts it. The feed is change-driven and the cheapest listing can be a
 /// one-unit bait order, so a print that disappears again inside this window
 /// never reaches the stored series or the live line.
-pub const PRICE_SETTLE_DWELL_MS: i64 = 5_000;
+pub const PRICE_SETTLE_DWELL_MS: i64 = 3_000;
 
 /// The sampler writes one close per minute from each target's last live frame,
 /// so an item that simply did not move reads as flat instead of missing.
