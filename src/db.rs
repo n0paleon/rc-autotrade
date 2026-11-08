@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS orders (
   item_id      TEXT NOT NULL DEFAULT '',
   label        TEXT NOT NULL DEFAULT '',
   qty          INTEGER NOT NULL DEFAULT 0,
+  requested_qty INTEGER,
   unit_price   REAL NOT NULL DEFAULT 0,
   total_price  REAL NOT NULL DEFAULT 0,
   target_price REAL NOT NULL DEFAULT 0,
@@ -195,6 +196,15 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     add_column_if_missing(conn, "price_points", "raw_high_price", "REAL")?;
     add_column_if_missing(conn, "orders", "timings", "TEXT")?;
     add_column_if_missing(conn, "orders", "raw_events", "TEXT")?;
+    // Separate the sent quantity from the quantity actually obtained. Old
+    // filled rows only recorded the fill count in `qty`, so the sent quantity
+    // is unrecoverable there; those rows keep NULL and the UI falls back to
+    // `qty`. Failed rows already stored the attempted quantity in `qty` and
+    // obtained nothing, so they can be backfilled exactly.
+    add_column_if_missing(conn, "orders", "requested_qty", "INTEGER")?;
+    conn.execute_batch(
+        "UPDATE orders SET requested_qty = qty WHERE requested_qty IS NULL AND status = 'failed'",
+    )?;
 
     // The auto-target feature is gone; drop its columns if a legacy DB has them.
     for column in ["auto_target", "auto_target_margin_pct"] {

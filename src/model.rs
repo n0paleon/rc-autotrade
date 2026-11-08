@@ -267,6 +267,11 @@ pub struct OrderEntry {
     pub label: String,
     #[serde(default)]
     pub qty: i64,
+    /// Quantity the order was placed for. `qty` was historically used for both
+    /// meanings, so a partial fill overwrote how many were actually sent.
+    /// Legacy rows decode as `qty` when this is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_qty: Option<i64>,
     #[serde(default)]
     pub unit_price: f64,
     #[serde(default)]
@@ -303,6 +308,7 @@ impl OrderEntry {
             item_id: self.item_id.clone(),
             label: self.label.clone(),
             qty: self.qty,
+            requested_qty: self.requested_qty,
             unit_price: self.unit_price,
             total_price: self.total_price,
             target_price: self.target_price,

@@ -353,6 +353,16 @@ function Detail({ request, benchmark, onCollapse }) {
 
   const points = history?.points || [];
   const summary = history?.summary || {};
+  // Headline = newest bucket only. The whole-range summary never moves when
+  // the bucket flips, which reads as broken; the newest bucket's stats do
+  // move, because a different bucket size means a different slice.
+  const bucketSummary = history?.bucketSummary || {};
+  const headline = {
+    avg: bucketSummary.avg,
+    p95: bucketSummary.p95,
+    jitter: bucketSummary.jitter,
+    orders: bucketSummary.n || 0
+  };
   const chartData = useMemo(
     () => points.map((point) => ({ ...point, band: jitterBand(point) })),
     [points]
@@ -419,17 +429,20 @@ function Detail({ request, benchmark, onCollapse }) {
           </p>
           <div className="mt-1.5 flex items-end gap-2">
             <span className="font-mono text-[30px] leading-none tabular-nums" style={{ color: PRO.avg }}>
-              {summary.avg == null ? "—" : formatPreciseMs(summary.avg)}
+              {headline.avg == null ? "—" : formatPreciseMs(headline.avg)}
             </span>
             <span className="pb-0.5 font-mono text-[10px] uppercase tracking-[0.1em] text-[#5d6b7f]">
               avg
             </span>
           </div>
           <p className="mt-1 font-mono text-[12px] tabular-nums text-[#8fa0b8]">
-            P95 <b style={{ color: PRO.p95 }}>{formatPreciseMs(summary.p95)}</b>
+            P95 <b style={{ color: PRO.p95 }}>{formatPreciseMs(headline.p95)}</b>
             <span className="text-[#5d6b7f]"> · </span>
-            Jitter <b className="text-[#c6d1e0]">{formatPreciseMs(summary.jitter)}</b>
-            <span className="text-[#5d6b7f]"> · {formatInt(summary.orders || 0)} orders</span>
+            Jitter <b className="text-[#c6d1e0]">{formatPreciseMs(headline.jitter)}</b>
+            <span className="text-[#5d6b7f]"> · {formatInt(headline.orders || 0)} orders in bucket</span>
+          </p>
+          <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.08em] text-[#5d6b7f]">
+            Newest bucket · whole window avg {summary.avg == null ? "—" : formatPreciseMs(summary.avg)}
           </p>
         </div>
 
@@ -485,8 +498,8 @@ function Detail({ request, benchmark, onCollapse }) {
           className="relative h-[min(62vh,560px)] min-h-[320px]"
           role="img"
           aria-label={`Order ${stage.label} latency over ${period.label} in ${frame.label} buckets${
-            summary.avg != null ? `, average ${formatPreciseMs(summary.avg)}` : ""
-          }${summary.p95 != null ? `, p95 ${formatPreciseMs(summary.p95)}` : ""}`}
+            headline.avg != null ? `, newest bucket average ${formatPreciseMs(headline.avg)}` : ""
+          }${headline.p95 != null ? `, p95 ${formatPreciseMs(headline.p95)}` : ""}`}
         >
           {overlay ? (
             <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#080c12]/85 px-4 text-center font-mono text-[11px] uppercase tracking-[0.12em] text-[#6f8199]">
