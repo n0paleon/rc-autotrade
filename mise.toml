@@ -1,6 +1,12 @@
 [tools]
 # Backend Rust worker. Keep this exact so CI, the VPS and this machine agree.
 rust = "1.99.1"
+# Package manager for the UI and the `bun run ...` scripts, and the runtime
+# `bun start` uses. Keep this exact so the lockfile resolves identically.
+bun = "1.4.4"
+# Vite's dev server runs on Node, not Bun (see scripts/dev.mjs), so `bun run dev`
+# needs this on PATH. It also backs `bun run dev:ui`.
+node = "24.16.0"
 
 [env]
 # Keep the crate cache inside the repo so cargo never needs write access to

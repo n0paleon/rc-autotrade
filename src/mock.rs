@@ -354,6 +354,7 @@ async fn run(
                             unauthorized: false,
                             socket: crate::dns_probe::SocketMode::Unknown,
                             dns: None,
+                            ..Default::default()
                         };
                         let _ = reply.send(accepted);
 

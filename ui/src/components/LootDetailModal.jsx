@@ -37,34 +37,6 @@ function clockMs(ts) {
   return `${time}.${String(date.getMilliseconds()).padStart(3, "0")}`;
 }
 
-function dnsValue(t) {
-  if (t?.dnsMode === "cache" || t?.dnsMode === "reused") return 0;
-  const value = Number(t?.dnsMs);
-  return Number.isFinite(value) && value >= 0 ? value : null;
-}
-
-function dnsHint(t) {
-  if (t?.dnsMode === "reused") return "Keep-alive socket reused — this request performed no DNS";
-  if (t?.dnsMode === "cache") return "DNS cache hit — no resolver round-trip";
-  if (t?.dnsMode === "pending") return "Resolver probe is still running; its result will be saved when it finishes";
-  if (t?.dnsMode === "skipped") return "Host is local or already an IP address";
-  if (t?.dnsMode === "probe") {
-    return t.dnsError
-      ? `Resolver probe failed: ${t.dnsError}`
-      : `Parallel resolver probe${t.dnsAddress ? ` → ${t.dnsAddress}` : ""} (legacy row)`;
-  }
-  if (t?.dnsMode === "lookup") {
-    if (t.dnsError) return `Resolver lookup failed: ${t.dnsError}`;
-    return t.dnsAddress
-      ? `Resolver lookup this request paid for → ${t.dnsAddress}`
-      : "Resolver lookup this request paid for";
-  }
-  if (t?.dnsError) return t.dnsError;
-  if (t?.dnsMode === "unknown") return "Connection opened but the lookup did not complete";
-  if (t?.dnsHost) return "No resolver sample for this request";
-  return "No sample (mock, IP host or local)";
-}
-
 function socketLabel(t) {
   if (t?.socketMode === "new") return "NEW";
   if (t?.socketMode === "reused") return "KEEP-ALIVE";
@@ -79,8 +51,27 @@ function socketHint(t) {
   if (t?.socketMode === "reused") {
     return "Pooled keep-alive socket reused — no DNS, TCP or TLS on this request";
   }
-  if (t?.socketMode === "unknown") return "IP upstream or no connection event observed";
+  if (t?.socketMode === "unknown") {
+    return "Not observable: IP upstream, proxied client, transport failure, or an ambiguous lookup";
+  }
   return "No sample (mock or an older row)";
+}
+
+function ttfbValue(t) {
+  const value = Number(t?.ttfbMs);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function ttfbHint(t) {
+  const base =
+    t?.socketMode === "reused"
+      ? "Time To First Byte. Keep-alive socket: server processing plus one round-trip, no DNS/TCP/TLS"
+      : t?.socketMode === "new"
+        ? "Time To First Byte. Fresh socket: includes DNS, TCP and TLS before the first byte"
+        : "Time To First Byte, measured client side until the response head arrives";
+  return Number(t?.attempts) > 1
+    ? `${base}. Final attempt only — the 401 retry and refresh are excluded`
+    : base;
 }
 
 function Metric({ label, value, text, hint, tone = "text-ink" }) {
@@ -161,18 +152,18 @@ function buildStages(t) {
     },
     {
       key: "ttfb",
-      label: "Purchase request → response headers",
+      label: "Purchase Request → TTFB",
       hint:
         Number(t.attempts) > 1
-          ? "Includes the 401 token refresh and the retried request"
-          : "Network transit plus Rollercoin processing the purchase",
+          ? "Time To First Byte of the final attempt; this span also covers the 401 refresh and retried request"
+          : "Time To First Byte: client dispatch until the first response byte (the headers) arrives",
       from: mark(t, "sendAt"),
       to: mark(t, "responseAt"),
       color: STAGE_COLORS[3]
     },
     {
       key: "body",
-      label: "Response headers → body parsed",
+      label: "First byte → body parsed",
       hint: "Rollercoin response body read and JSON parsed",
       from: mark(t, "responseAt"),
       to: mark(t, "completeAt"),
@@ -384,9 +375,9 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
                   tone="text-info"
                 />
                 <Metric
-                  label="Signal → response headers"
+                  label="Signal → first byte"
                   value={delta(signalAt, responseAt)}
-                  hint="The network round-trip is complete"
+                  hint="Time To First Byte plus everything before dispatch on this order"
                   tone="text-gold"
                 />
                 <Metric
@@ -402,9 +393,9 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
                   tone="text-signal"
                 />
                 <Metric
-                  label="DNS lookup"
-                  value={dnsValue(t)}
-                  hint={dnsHint(t)}
+                  label="Purchase Request → TTFB"
+                  value={ttfbValue(t)}
+                  hint={ttfbHint(t)}
                   tone="text-violet"
                 />
                 <Metric
@@ -486,18 +477,19 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
                     Frame: {t.signalCmd || "—"} · attempt{t.attempts === 1 ? "" : "s"}:{" "}
                     {t.attempts || "—"}
                     {t.unauthorized ? " · 401 refresh" : ""}
-                    {t.dnsHost ? ` · DNS ${t.dnsHost}` : ""}
+                    {t.ttfbMs != null ? ` · TTFB ${formatPreciseMs(t.ttfbMs)}` : ""}
                   </p>
                 </div>
               </details>
 
               <p className="mt-3 text-[11px] leading-relaxed text-faint">
-                The DNS tile is the resolver lookup this order actually paid for. When the purchase
-                opens a connection, the client&apos;s resolver records its real latency and address;
-                a pooled keep-alive socket skips DNS entirely, so the tile shows 0 and the
-                Connection tile says KEEP-ALIVE. IP upstreams bypass the resolver and are marked
-                skipped. Rows from the old worker keep their parallel-probe value and are labelled
-                as legacy.
+                TTFB is Time To First Byte: measured inside the HTTP client from dispatch until
+                the first response byte arrives. For an HTTP response that first byte is the
+                response head, so the TTFB tile and the TTFB stage describe the same instant;
+                the tile prints the monotonic per-attempt value, while the stage measures it on
+                the wall-clock timeline. The body read and JSON parse are charged to the next
+                stage. The Connection tile explains why TTFB varies: a pooled KEEP-ALIVE socket
+                skips DNS, TCP and TLS, while NEW pays for all three.
               </p>
             </>
           ) : loadingDetail ? (

@@ -60,6 +60,11 @@ pub struct Timings {
         default
     )]
     pub complete_at: Option<f64>,
+    /// Monotonic dispatch → first response byte (TTFB). Unlike the
+    /// `sendAt`/`responseAt` delta this is immune to wall-clock changes and
+    /// excludes any 401 retry: it is the TTFB of the attempt that responded.
+    #[serde(rename = "ttfbMs", skip_serializing_if = "Option::is_none", default)]
+    pub ttfb_ms: Option<f64>,
     #[serde(
         rename = "acceptedAt",
         skip_serializing_if = "Option::is_none",
@@ -157,6 +162,7 @@ pub fn sanitize(raw: &Value) -> Option<Timings> {
     out.send_at = number(raw, "sendAt").filter(|v| *v > 0.0).map(round_ms);
     out.response_at = number(raw, "responseAt").filter(|v| *v > 0.0).map(round_ms);
     out.complete_at = number(raw, "completeAt").filter(|v| *v > 0.0).map(round_ms);
+    out.ttfb_ms = number(raw, "ttfbMs").filter(|v| *v >= 0.0).map(round_ms);
     out.accepted_at = number(raw, "acceptedAt").filter(|v| *v > 0.0).map(round_ms);
     out.fill_at = number(raw, "fillAt").filter(|v| *v > 0.0).map(round_ms);
     out.fill_handled_at = number(raw, "fillHandledAt")
@@ -243,6 +249,19 @@ mod tests {
         assert_eq!(decoded.signal_at, Some(10.0));
         assert_eq!(decoded.response_at, Some(25.0));
         assert_eq!(decoded.dns_ms, Some(0.1));
+    }
+
+    #[test]
+    fn keeps_the_monotonic_ttfb() {
+        let timings = sanitize(&json!({ "signalAt": 10, "ttfbMs": 123.456 })).unwrap();
+        assert_eq!(timings.ttfb_ms, Some(123.456));
+
+        // A missing or negative duration must never look like a fast response.
+        assert!(
+            sanitize(&json!({ "signalAt": 10, "ttfbMs": -1 }))
+                .and_then(|t| t.ttfb_ms)
+                .is_none()
+        );
     }
 
     #[test]
