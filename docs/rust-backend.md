@@ -255,20 +255,30 @@ Bun worker.
 - Failed no-item orders keep the attempted `qty`/`unitPrice`/`targetPrice` and
   the full dispatch→result `latencyMs` in the loot row, matching the Bun
   `failureMeta = pendingMeta` path (covered by an engine test).
-- The loot latency debugger gets DNS facts from a recording resolver on the
-  shared `reqwest` client. hyper only resolves a name when it opens a
-  connection, so a purchase that never touched the resolver reused a pooled
-  keep-alive socket (`socketMode = "reused"`, `dnsMode = "reused"`, no DNS
-  cost), while one that did keeps the real lookup latency, address and family
-  (`socketMode = "new"`, `dnsMode = "lookup"`). IP-literal upstreams bypass the
-  resolver entirely (`skipped` / `unknown`). The lookup completes before the
-  HTTP response, so there is no separate probe task or late row patch. The
-  signal is per shared client, so a lookup from concurrent traffic (label
-  enrichment or the warm probe) during the same window can mark a reused
-  purchase as `new`; orders are normally serialized per target, so this is an
-  edge case. `tests/connection_pool.rs` covers the new→reused sequence against
-  `localhost`; `tests/wiring.rs` covers the skipped/unknown branch against
-  `127.0.0.1`.
+- The loot latency debugger measures **TTFB inside the HTTP client**: the
+  `post_json` call records `sendAt` just before dispatch, `responseAt` the
+  moment the first response byte arrives (for HTTP, the response head, before
+  the body is read), and a monotonic `ttfbMs` from the same boundary. TTFB is
+  surfaced twice: a dedicated **TTFB** tile shows the monotonic per-attempt
+  value, and the timeline's "TTFB · Time To First Byte" stage shows it on the
+  wall-clock timeline. Body read + JSON parse are charged to the next stage.
+  `ttfbMs` is per attempt: on a 401 refresh + retry the first dispatch still
+  anchors the span (so the refresh is visible) while the retry supplies the
+  stored TTFB. A transport error records no TTFB rather than a fast 0 ms.
+  Mock runs have no HTTP exchange, so they fall back to the completion mark.
+- Connection classification still uses the recording resolver on the shared
+  `reqwest` client: hyper only resolves a name when it opens a connection, so
+  `socketMode = "new"` means this purchase paid DNS + TCP + TLS, while
+  `"reused"` reused a pooled keep-alive socket. IP-literal upstreams bypass the
+  resolver (`skipped` / `unknown`). The DNS numbers themselves are no longer a
+  UI tile — they were almost always 0 behind the warm probe and duplicated the
+  Connection tile — but the `dns*` fields stay in `orders.timings` as debug
+  evidence. The signal is per shared client, so a lookup from concurrent
+  traffic (label enrichment or the warm probe) during the same window can mark
+  a reused purchase as `new`; orders are normally serialized per target, so
+  this is an edge case. `tests/connection_pool.rs` covers the new→reused
+  sequence against `localhost`; `tests/wiring.rs` covers the skipped/unknown
+  branch against `127.0.0.1`.
 - React deck opened in a real browser against the Rust worker: login with the
   access key, target list rendered, `PAUSED` state from the DB, no console
   errors. Screenshot: `.qa/rust-ui.png` (local, gitignored).

@@ -39,6 +39,19 @@ pub struct PurchaseRequest {
     pub unit_price_raw: f64,
 }
 
+/// Timing marks for one HTTP exchange, taken inside the client so the
+/// debugger can separate dispatch, first byte and body read.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct HttpMarks {
+    /// Epoch ms just before the request was dispatched.
+    pub send_at: i64,
+    /// Epoch ms when the first response byte arrived; `0` when none did.
+    pub response_at: i64,
+    /// Monotonic dispatch → first response byte (TTFB). `None` when no
+    /// response arrived, so a transport error never looks like a fast TTFB.
+    pub ttfb_ms: Option<f64>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PurchaseResult {
     pub ok: bool,
@@ -47,6 +60,12 @@ pub struct PurchaseResult {
     pub body: Option<Value>,
     pub error: Option<String>,
     pub unauthorized: bool,
+    /// Epoch ms when the request actually left the client.
+    pub send_at: Option<i64>,
+    /// Epoch ms when the first response byte arrived, before the body was read.
+    pub response_at: Option<i64>,
+    /// Monotonic dispatch → first response byte (TTFB) for this attempt.
+    pub ttfb_ms: Option<f64>,
     /// Whether the HTTP call opened a fresh connection or reused a pooled one.
     pub socket: crate::dns_probe::SocketMode,
     /// The resolver work this call actually paid for. `None` when the request
@@ -88,6 +107,11 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+fn round_duration_ms(duration: std::time::Duration) -> f64 {
+    let value = duration.as_secs_f64() * 1000.0;
+    (value * 1_000.0).round() / 1_000.0
 }
 
 fn trim_body(text: &str) -> String {
@@ -259,7 +283,7 @@ impl ApiClient {
         credentials: &Credentials,
         with_auth: bool,
         timeout: Duration,
-    ) -> (u16, Option<Value>, String, Option<String>) {
+    ) -> (u16, Option<Value>, String, Option<String>, HttpMarks) {
         self.touch();
         let started = std::time::Instant::now();
         let mut credentials = credentials.clone();
@@ -271,16 +295,32 @@ impl ApiClient {
             .post(format!("{}{}", self.base_url, path))
             .headers(self.headers(&credentials, true))
             .json(body)
-            .timeout(timeout)
-            .send()
-            .await;
+            .timeout(timeout);
+
+        let send_at = now_ms();
+        let dispatched = std::time::Instant::now();
+        let request = request.send().await;
 
         match request {
             Ok(response) => {
+                // The first response byte is here (for HTTP, the response head);
+                // the body has not been read yet. This is the TTFB boundary.
+                let response_at = now_ms();
+                let ttfb = dispatched.elapsed();
                 let status = response.status().as_u16();
                 let (parsed, text) = read_json(response).await;
                 self.record_http(started, true, None);
-                (status, parsed, text, None)
+                (
+                    status,
+                    parsed,
+                    text,
+                    None,
+                    HttpMarks {
+                        send_at,
+                        response_at,
+                        ttfb_ms: Some(round_duration_ms(ttfb)),
+                    },
+                )
             }
             Err(error) => {
                 let message = if error.is_timeout() {
@@ -292,7 +332,17 @@ impl ApiClient {
                     crate::redact::redact_secrets(&error.to_string())
                 };
                 self.record_http(started, false, Some(&message));
-                (0, None, String::new(), Some(message))
+                (
+                    0,
+                    None,
+                    String::new(),
+                    Some(message),
+                    HttpMarks {
+                        send_at,
+                        response_at: 0,
+                        ttfb_ms: None,
+                    },
+                )
             }
         }
     }
@@ -319,7 +369,7 @@ impl ApiClient {
         });
 
         let dns_mark = self.dns.mark();
-        let (status, body, text, transport_error) = self
+        let (status, body, text, transport_error, marks) = self
             .post_json(
                 "/api/marketplace/purchase-item",
                 &payload,
@@ -329,12 +379,18 @@ impl ApiClient {
             )
             .await;
         let (socket, dns) = self.classify_connection(dns_mark);
+        let send_at = (marks.send_at > 0).then_some(marks.send_at);
+        let response_at = (marks.response_at > 0).then_some(marks.response_at);
+        let ttfb_ms = marks.ttfb_ms;
 
         if let Some(error) = transport_error {
             return PurchaseResult {
                 ok: false,
                 status: 0,
                 error: Some(error),
+                send_at,
+                response_at,
+                ttfb_ms,
                 socket,
                 dns,
                 ..Default::default()
@@ -350,6 +406,9 @@ impl ApiClient {
                 body,
                 error: Some(message),
                 unauthorized,
+                send_at,
+                response_at,
+                ttfb_ms,
                 socket,
                 dns,
                 ..Default::default()
@@ -364,6 +423,9 @@ impl ApiClient {
                     "Upstream returned a non-JSON response (Cloudflare challenge or maintenance?)."
                         .to_string(),
                 ),
+                send_at,
+                response_at,
+                ttfb_ms,
                 socket,
                 dns,
                 ..Default::default()
@@ -393,6 +455,9 @@ impl ApiClient {
                 status,
                 body: Some(body),
                 error: Some(error),
+                send_at,
+                response_at,
+                ttfb_ms,
                 socket,
                 dns,
                 ..Default::default()
@@ -406,6 +471,9 @@ impl ApiClient {
             body: Some(body),
             error: None,
             unauthorized: false,
+            send_at,
+            response_at,
+            ttfb_ms,
             socket,
             dns,
         }
@@ -444,7 +512,7 @@ impl ApiClient {
             };
         }
         let payload = json!({ "refresh_token": credentials.refresh_token });
-        let (status, body, text, transport_error) = self
+        let (status, body, text, transport_error, _marks) = self
             .post_json(
                 "/api/auth/refresh",
                 &payload,
@@ -726,6 +794,14 @@ mod tests {
         let result = client.purchase(&credentials(), &purchase_request()).await;
         assert!(result.ok, "{result:?}");
         assert_eq!(result.order_id.as_deref(), Some("order-42"));
+        assert!(
+            result.send_at.is_some() && result.response_at.is_some(),
+            "a completed exchange must carry both HTTP marks"
+        );
+        assert!(
+            result.ttfb_ms.is_some_and(|ms| ms >= 0.0),
+            "headers arrived, so TTFB must be recorded: {result:?}"
+        );
 
         let state = captured.lock().unwrap();
         let headers = &state.headers[0];
@@ -827,7 +903,7 @@ mod tests {
         let base = spawn(mock_app(captured)).await;
         let client = ApiClient::with_default_timeout(&base);
 
-        let (status, body, text, transport) = client
+        let (status, body, text, transport, marks) = client
             .post_json(
                 "/api/html",
                 &json!({}),
@@ -836,6 +912,10 @@ mod tests {
                 Duration::from_secs(5),
             )
             .await;
+        assert!(
+            marks.ttfb_ms.is_some(),
+            "the first byte arrived, so TTFB exists"
+        );
         assert_eq!(status, 200);
         assert!(body.is_none());
         assert!(transport.is_none());

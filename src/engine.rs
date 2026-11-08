@@ -101,8 +101,14 @@ pub struct PurchaseOutcome {
     pub ok: bool,
     pub order_id: Option<String>,
     pub error: Option<String>,
+    /// Epoch ms when the HTTP request actually left the client. Falls back to
+    /// the provisional engine mark when the caller has no HTTP sample (mock).
+    pub send_at: Option<i64>,
     pub response_at: Option<i64>,
     pub complete_at: Option<i64>,
+    /// Monotonic dispatch → first response byte (TTFB) for the attempt that
+    /// responded.
+    pub ttfb_ms: Option<f64>,
     pub accepted_at: Option<i64>,
 }
 
@@ -665,6 +671,8 @@ impl Engine {
 
         let mut submitted = intent;
         submitted.timings.dispatch_at = Some(self.now() as f64);
+        // Provisional: the wiring replaces this with the real HTTP dispatch
+        // time when it has one, so live broadcasts still carry a mark.
         submitted.timings.send_at = Some(self.now() as f64);
 
         events.push(EngineEvent::Broadcast {
@@ -714,8 +722,13 @@ impl Engine {
         let mut events = Vec::new();
         let now = self.now();
         let mut timings = intent.timings.clone();
+        // Overwrite the provisional engine mark with the real HTTP dispatch.
+        if let Some(send_at) = outcome.send_at {
+            timings.send_at = Some(send_at as f64);
+        }
         timings.response_at = outcome.response_at.map(|value| value as f64);
         timings.complete_at = outcome.complete_at.map(|value| value as f64);
+        timings.ttfb_ms = outcome.ttfb_ms;
 
         let accepted = outcome.ok && outcome.order_id.is_some();
         if accepted {
@@ -2156,6 +2169,47 @@ mod tests {
         assert!((h.store.state.stats.spent_rlt - 0.9).abs() < 1e-9);
         assert!(h.store.has_order("order-1"));
         assert!(h.engine.pending_snapshot().is_empty());
+    }
+
+    #[test]
+    fn purchase_outcome_carries_the_http_marks_into_the_timeline() {
+        let mut h = harness();
+        let events =
+            h.engine
+                .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_001, true);
+        let intent = submissions(&events)[0].clone();
+        // The engine wrote a provisional sendAt; the HTTP mark must win.
+        assert!(intent.timings.send_at.is_some());
+
+        h.now.store(1_000_120, Ordering::SeqCst);
+        let accepted = h.engine.on_purchase_result(
+            &mut h.store,
+            &intent,
+            PurchaseOutcome {
+                ok: true,
+                order_id: Some("order-ttfb".into()),
+                send_at: Some(1_000_050),
+                response_at: Some(1_000_110),
+                complete_at: Some(1_000_111),
+                ttfb_ms: Some(60.5),
+                accepted_at: Some(1_000_120),
+                ..Default::default()
+            },
+        );
+
+        let timings = accepted
+            .iter()
+            .find_map(|event| match event {
+                EngineEvent::Broadcast {
+                    kind: "order",
+                    data,
+                } if data["phase"] == "accepted" => Some(data["timings"].clone()),
+                _ => None,
+            })
+            .expect("accepted broadcast carries timings");
+        assert_eq!(timings["sendAt"], 1_000_050.0);
+        assert_eq!(timings["responseAt"], 1_000_110.0);
+        assert_eq!(timings["ttfbMs"], 60.5);
     }
 
     #[test]

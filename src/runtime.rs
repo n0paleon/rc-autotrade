@@ -648,7 +648,15 @@ async fn run_purchase(state: Arc<AppState>, mut intent: OrderIntent) {
         Some(mock) => mock.purchase(request.clone()).await,
         None => state.api.purchase(&credentials(&state), &request).await,
     };
-    let mut response_at = now_ms();
+    // The first dispatch stays on the timeline even across a 401 retry, so the
+    // stage still shows the refresh round-trip; the retry contributes the final
+    // headers and TTFB.
+    let send_at = result.send_at;
+    let mut response_at = result.response_at;
+    let mut ttfb_ms = result.ttfb_ms;
+    let mut complete_at = now_ms();
+    let mut attempts: u8 = 1;
+    let mut refreshed = false;
 
     // 401 → refresh → retry once, like the JS `#request` path.
     if result.unauthorized {
@@ -658,21 +666,36 @@ async fn run_purchase(state: Arc<AppState>, mut intent: OrderIntent) {
         );
         if refresh_session(&state).await {
             result = state.api.purchase(&credentials(&state), &request).await;
-            response_at = now_ms();
+            response_at = result.response_at;
+            ttfb_ms = result.ttfb_ms;
+            complete_at = now_ms();
+            attempts = 2;
+            refreshed = true;
         }
+    }
+
+    intent.timings.attempts = Some(attempts);
+    if refreshed {
+        intent.timings.unauthorized = Some(true);
     }
 
     if real {
         let host = dns_probe::host_of(state.api.base_url());
         apply_dns_telemetry(&mut intent.timings, host.as_deref(), &result);
+    } else {
+        // The simulator performs no HTTP exchange, so there is no header mark.
+        // Keep the timeline readable by falling back to the completion time.
+        response_at = response_at.or(Some(complete_at));
     }
 
     let outcome = PurchaseOutcome {
         ok: result.ok,
         order_id: result.order_id,
         error: result.error,
-        response_at: Some(response_at),
-        complete_at: Some(now_ms()),
+        send_at,
+        response_at,
+        complete_at: Some(complete_at),
+        ttfb_ms,
         accepted_at: None,
     };
 
