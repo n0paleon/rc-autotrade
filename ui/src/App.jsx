@@ -1288,7 +1288,7 @@ const LOOT_PAGE_SIZE = 50;
 const LOOT_MAX_ROWS = 500;
 const LOOT_SEARCH_DEBOUNCE_MS = 250;
 
-function LootLog({ history, historyTotal, historyRevision, onReset, request, onMonitor, recentAvg, recentOrders, recentFallback }) {
+function LootLog({ history, historyTotal, historyRevision, onReset, request, onMonitor, recentAvg, recentOrders }) {
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -1525,15 +1525,13 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
           title={
             avg == null
               ? "No timed orders yet — open the monitor window"
-              : recentFallback
-                ? `Average order latency over the last 30 minutes of activity (${formatInt(recentCount)} timed orders; no orders in the last 30 minutes) — open the monitor window`
-                : `Average order latency over the last 30 minutes (${formatInt(recentCount)} timed orders) — open the monitor window`
+              : `Average order latency over the last 50 orders (${formatInt(recentCount)} timed orders) — open the monitor window`
           }
         >
           <span className="monitor-counter-icon" aria-hidden="true">
             <Icon name="i-pulse" className="h-3.5 w-3.5" />
           </span>
-          <span className="monitor-counter-label">Avg 30m{recentFallback ? "*" : ""}</span>
+          <span className="monitor-counter-label">Avg 50 orders</span>
           <b className="monitor-counter-value">{avg == null ? "—" : formatMs(avg)}</b>
           <Icon name="i-chevron" className="monitor-counter-chevron" />
         </button>
@@ -1611,7 +1609,8 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
                 <div className="min-w-0">
                   <p className="truncate text-[13px] text-ink-dim">{entry.label || shortId(entry.itemId)}</p>
                   <p className="mt-0.5 font-mono text-[13px] uppercase tracking-[0.08em] text-faint">
-                    {formatTime(entry.at)} · {formatInt(entry.qty)} × {fixedPrice(entry.unitPrice)} RLT
+                    {formatTime(entry.at)} · sent {formatInt(entry.requestedQty ?? entry.qty)} · got{" "}
+                    {formatInt(entry.qty)} × {fixedPrice(entry.unitPrice)} RLT
                   </p>
                   <p className="mt-0.5 font-mono text-[13px] text-muted">
                     Target {entry.targetPrice > 0 ? fixedPrice(entry.targetPrice) : "—"}
@@ -1642,6 +1641,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
                   <th scope="col" className="px-4 py-2 font-medium">Time</th>
                   <th scope="col" className="px-3 py-2 font-medium">Item</th>
                   <th scope="col" className="px-3 py-2 font-medium">Qty</th>
+                  <th scope="col" className="px-3 py-2 font-medium" title="Quantity actually obtained">Got</th>
                   <th scope="col" className="px-3 py-2 font-medium">Unit</th>
                   <th scope="col" className="px-3 py-2 font-medium">Total</th>
                   <th scope="col" className="px-3 py-2 font-medium">Target</th>
@@ -1671,6 +1671,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
                     <td className="whitespace-nowrap px-4 py-2 text-faint">{formatTime(entry.at)}</td>
                     <td className="max-w-[180px] truncate px-3 py-2 text-ink-dim">{entry.label || shortId(entry.itemId)}</td>
                     <td className="px-3 py-2 text-ink-dim">{formatInt(entry.qty)}</td>
+                    <td className="px-3 py-2 text-ink-dim">{formatInt(entry.requestedQty ?? entry.qty)}</td>
                     <td className="px-3 py-2 text-ink-dim">{fixedPrice(entry.unitPrice)}</td>
                     <td className="px-3 py-2 text-ink-dim">{fixedPrice(entry.totalPrice)}</td>
                     <td
@@ -2258,7 +2259,6 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
     recentOrderCount == null || !Number.isFinite(Number(recentOrderCount))
       ? 0
       : Number(recentOrderCount);
-  const recentFallback = snapshot.benchmark?.recent?.fallback === true;
 
   const eps = useEventRate(snapshot.gateway?.eventCount || 0);
   const baseUrl = worker.getConnection().baseUrl;
@@ -2452,7 +2452,6 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           onMonitor={openMonitor}
           recentAvg={recentAvg}
           recentOrders={recentOrders}
-          recentFallback={recentFallback}
         />
         <MemoReportPanel report={snapshot.report} notify={notify} />
         <MemoTargetsPanel

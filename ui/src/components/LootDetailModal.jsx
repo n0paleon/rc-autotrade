@@ -319,6 +319,10 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
             <p className="text-ink-dim">{formatInt(entry.qty)}</p>
           </div>
           <div>
+            <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Sent</p>
+            <p className="text-ink-dim">{formatInt(entry.requestedQty ?? entry.qty)}</p>
+          </div>
+          <div>
             <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Unit</p>
             <p className="text-ink-dim">{fixedPrice(entry.unitPrice)} RLT</p>
           </div>

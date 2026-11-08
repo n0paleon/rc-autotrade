@@ -220,48 +220,12 @@ impl AppState {
     /// Rolling order-pipeline benchmark rebuilt from the loot log.
     pub fn benchmark_snapshot(&self, store: &Store) -> Value {
         let now = now_ms();
+        // `benchmark_samples` returns newest-first, so the Loot Log counter
+        // can average the newest 30 orders straight from this slice — no
+        // separate time-bounded query is needed any more.
         let samples = store.benchmark_samples(benchmark::CAPACITY);
         let mut snapshot = benchmark::snapshot(&samples, now);
-        // The Loot Log counter wants the whole 30-minute window, not the last
-        // 200 orders, so it gets its own time-bounded query.
-        let recent_samples = store.benchmark_samples_between(
-            now - benchmark::RECENT_WINDOW_MS,
-            now,
-            benchmark::HISTORY_MAX_SAMPLES,
-        );
-        let mut recent = benchmark::recent(&recent_samples, now, benchmark::RECENT_WINDOW_MS);
-        // An idle market has no rows in the wall-clock window. Anchor the
-        // average to the newest order so the counter still reports the last 30
-        // minutes of activity instead of a permanent dash.
-        if recent["avg"].is_null() {
-            if let Some(last_at) = samples.first().map(|sample| sample.at) {
-                if last_at < now - benchmark::RECENT_WINDOW_MS {
-                    // The 200-row sample usually spans more than 30 minutes, so
-                    // the fallback window is already in memory. Only query the
-                    // log when a burst filled the whole sample.
-                    let covered = samples
-                        .last()
-                        .is_some_and(|oldest| oldest.at <= last_at - benchmark::RECENT_WINDOW_MS);
-                    let mut fallback = if covered {
-                        benchmark::recent(&samples, last_at, benchmark::RECENT_WINDOW_MS)
-                    } else {
-                        let fallback_samples = store.benchmark_samples_between(
-                            last_at - benchmark::RECENT_WINDOW_MS,
-                            last_at,
-                            benchmark::HISTORY_MAX_SAMPLES,
-                        );
-                        benchmark::recent(&fallback_samples, last_at, benchmark::RECENT_WINDOW_MS)
-                    };
-                    if !fallback["avg"].is_null() {
-                        if let Some(object) = fallback.as_object_mut() {
-                            object.insert("fallback".to_string(), Value::Bool(true));
-                        }
-                        recent = fallback;
-                    }
-                }
-            }
-        }
-        snapshot["recent"] = recent;
+        snapshot["recent"] = benchmark::recent(&samples, benchmark::RECENT_ORDERS);
         snapshot
     }
 

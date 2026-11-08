@@ -454,7 +454,7 @@ impl Store {
         let mut statement = self
             .db
             .prepare(
-                "SELECT id, order_id, item_id, label, qty, unit_price, total_price,
+                "SELECT id, order_id, item_id, label, qty, requested_qty, unit_price, total_price,
                         target_price, profit_rlt, status, at, latency_ms, note, message
                  FROM orders ORDER BY at DESC, id DESC LIMIT ?1",
             )
@@ -985,15 +985,16 @@ impl Store {
             .map_err(|e| format!("could not start transaction: {e}"))?;
         tx.execute(
             "INSERT OR REPLACE INTO orders
-             (id, order_id, item_id, label, qty, unit_price, total_price, target_price,
+             (id, order_id, item_id, label, qty, requested_qty, unit_price, total_price, target_price,
               profit_rlt, status, at, latency_ms, timings, raw_events, note, message)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             params![
                 entry.id,
                 entry.order_id,
                 entry.item_id,
                 entry.label,
                 entry.qty,
+                entry.requested_qty,
                 entry.unit_price,
                 entry.total_price,
                 entry.target_price,
@@ -1204,7 +1205,7 @@ impl Store {
         let (sql, bindings): (String, Vec<Box<dyn rusqlite::ToSql>>) = if cursor {
             (
                 format!(
-                    "SELECT id, order_id, item_id, label, qty, unit_price, total_price,
+                    "SELECT id, order_id, item_id, label, qty, requested_qty, unit_price, total_price,
                             target_price, profit_rlt, status, at, latency_ms,
                             note, message
                      FROM orders
@@ -1226,7 +1227,7 @@ impl Store {
         } else {
             (
                 format!(
-                    "SELECT id, order_id, item_id, label, qty, unit_price, total_price,
+                    "SELECT id, order_id, item_id, label, qty, requested_qty, unit_price, total_price,
                             target_price, profit_rlt, status, at, latency_ms,
                             note, message
                      FROM orders
@@ -1307,7 +1308,7 @@ impl Store {
     pub fn order_detail(&self, id: &str) -> Result<Option<OrderEntry>, String> {
         self.db
             .query_row(
-                "SELECT id, order_id, item_id, label, qty, unit_price, total_price,
+                "SELECT id, order_id, item_id, label, qty, requested_qty, unit_price, total_price,
                         target_price, profit_rlt, status, at, latency_ms, timings, raw_events,
                         note, message
                  FROM orders WHERE id = ?1",
@@ -2016,27 +2017,28 @@ impl Store {
 }
 
 fn row_to_entry(row: &Row<'_>) -> rusqlite::Result<OrderEntry> {
-    let timings: Option<String> = row.get(12)?;
-    let raw_events: Option<String> = row.get(13)?;
+    let timings: Option<String> = row.get(13)?;
+    let raw_events: Option<String> = row.get(14)?;
     Ok(OrderEntry {
         id: row.get(0)?,
         order_id: row.get(1)?,
         item_id: row.get(2)?,
         label: row.get(3)?,
         qty: row.get(4)?,
-        unit_price: row.get(5)?,
-        total_price: row.get(6)?,
-        target_price: row.get(7)?,
-        profit_rlt: row.get(8)?,
-        status: row.get(9)?,
-        at: row.get(10)?,
-        latency_ms: row.get(11)?,
+        requested_qty: row.get::<_, Option<i64>>(5)?.or(Some(row.get::<_, i64>(4)?)),
+        unit_price: row.get(6)?,
+        total_price: row.get(7)?,
+        target_price: row.get(8)?,
+        profit_rlt: row.get(9)?,
+        status: row.get(10)?,
+        at: row.get(11)?,
+        latency_ms: row.get(12)?,
         timings: timings
             .as_deref()
             .and_then(|text| serde_json::from_str::<Timings>(text).ok()),
         raw_events: crate::raw_events::decode(raw_events.as_deref()),
-        note: row.get(14)?,
-        message: row.get(15)?,
+        note: row.get(15)?,
+        message: row.get(16)?,
     })
 }
 
@@ -2048,17 +2050,18 @@ fn row_to_entry_lite(row: &Row<'_>) -> rusqlite::Result<OrderEntry> {
         item_id: row.get(2)?,
         label: row.get(3)?,
         qty: row.get(4)?,
-        unit_price: row.get(5)?,
-        total_price: row.get(6)?,
-        target_price: row.get(7)?,
-        profit_rlt: row.get(8)?,
-        status: row.get(9)?,
-        at: row.get(10)?,
-        latency_ms: row.get(11)?,
+        requested_qty: row.get::<_, Option<i64>>(5)?.or(Some(row.get::<_, i64>(4)?)),
+        unit_price: row.get(6)?,
+        total_price: row.get(7)?,
+        target_price: row.get(8)?,
+        profit_rlt: row.get(9)?,
+        status: row.get(10)?,
+        at: row.get(11)?,
+        latency_ms: row.get(12)?,
         timings: None,
         raw_events: None,
-        note: row.get(12)?,
-        message: row.get(13)?,
+        note: row.get(13)?,
+        message: row.get(14)?,
     })
 }
 
@@ -2077,6 +2080,7 @@ pub fn make_entry(
         item_id: item_id.to_string(),
         label: label.to_string(),
         qty,
+        requested_qty: Some(qty),
         unit_price: 0.1,
         total_price: 0.1 * qty as f64,
         target_price: 0.1,

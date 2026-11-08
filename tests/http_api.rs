@@ -320,7 +320,7 @@ async fn benchmark_requires_the_key_and_aggregates_seeded_timings() {
     assert_eq!(benchmark["windows"]["25"]["stages"]["total"]["avg"], 210.0);
     // The monotonic TTFB wins over the wall-clock send→response delta.
     assert_eq!(benchmark["windows"]["25"]["stages"]["ttfb"]["avg"], 70.0);
-    assert_eq!(benchmark["recent"]["windowMs"], 1_800_000);
+    assert_eq!(benchmark["recent"]["count"], rollercoin_worker::benchmark::RECENT_ORDERS);
     assert_eq!(benchmark["recent"]["orders"], 1);
     assert_eq!(benchmark["recent"]["avg"], 210.0);
 
@@ -357,7 +357,7 @@ async fn benchmark_requires_the_key_and_aggregates_seeded_timings() {
 }
 
 #[tokio::test]
-async fn benchmark_falls_back_to_the_last_active_window() {
+async fn benchmark_averages_the_newest_orders_regardless_of_age() {
     let dir = temp_dir();
     let upstream_calls = Arc::new(Mutex::new(0));
     let upstream = spawn_upstream(upstream_calls).await;
@@ -392,7 +392,9 @@ async fn benchmark_falls_back_to_the_last_active_window() {
         .await
         .unwrap();
     let recent = &body["benchmark"]["recent"];
-    assert_eq!(recent["fallback"], true);
+    // Count-based window: order age is irrelevant now, so the 2-hour-old order
+    // is still the "recent" one with no fallback flag needed.
+    assert!(recent.get("fallback").is_none());
     assert_eq!(recent["until"], two_hours_ago);
     assert_eq!(recent["orders"], 1);
     assert_eq!(recent["avg"], 210.0);

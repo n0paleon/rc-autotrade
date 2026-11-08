@@ -1148,6 +1148,7 @@ impl Engine {
                 item_id: item_id.clone(),
                 label: label.clone(),
                 qty: fill.count,
+                requested_qty: Some(pending_meta.qty),
                 unit_price: round_price(unit_price),
                 total_price: round_price(total_price),
                 target_price: reference,
@@ -1568,7 +1569,10 @@ impl Engine {
             order_id,
             item_id: meta.item_id.clone(),
             label: meta.label.clone(),
+            // Failures obtained nothing: `qty` keeps the attempted count for
+            // back-compat, while `requested_qty` makes that meaning explicit.
             qty: meta.qty,
+            requested_qty: Some(meta.qty),
             unit_price: meta.unit_price,
             total_price: 0.0,
             target_price: meta.target_price,

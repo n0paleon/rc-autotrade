@@ -23,14 +23,18 @@ pub const CAPACITY: usize = 200;
 /// Windows the deck can switch between without another round trip.
 pub const WINDOWS: [usize; 3] = [25, 50, CAPACITY];
 
-/// Most recent end-to-end durations returned for the trend strip.
-const SERIES_LIMIT: usize = 60;
+/// Most recent end-to-end durations returned for the trend strip. Matches the
+/// 50-order panel window so the chart and the averages always describe the
+/// same orders.
+const SERIES_LIMIT: usize = 50;
 
 /// Widest window `/api/benchmark/history` will aggregate.
 pub const HISTORY_MAX_HOURS: i64 = 168;
 
-/// Rolling average shown by the Loot Log monitor counter.
-pub const RECENT_WINDOW_MS: i64 = 30 * 60_000;
+/// Rolling average shown by the Loot Log monitor counter. Count-based, not
+/// time-based: a quiet market still reports a full window and a burst cannot
+/// crowd the window to a handful of seconds.
+pub const RECENT_ORDERS: usize = 50;
 
 /// Rows decoded for one history request. Far above a normal day of orders;
 /// keeps a pathological log from parking the reactor on JSON decoding.
@@ -290,23 +294,22 @@ pub fn empty(now: i64) -> Value {
     snapshot(&[], now)
 }
 
-/// End-to-end latency summary for the last `window_ms` ending at `until`.
+/// End-to-end latency summary over the newest `count` orders (`samples` is
+/// newest-first, as returned by the store).
 ///
-/// The Loot Log counter shows this average. The caller passes `now` for the
-/// live window and, when that window has no orders, the last order's timestamp
-/// so an idle deck still shows the most recent 30 minutes of activity.
-pub fn recent(samples: &[Sample], until: i64, window_ms: i64) -> Value {
-    let window = window_ms.max(1);
-    let since = until - window;
+/// The Loot Log counter shows this average. It is count-based rather than
+/// time-based, so quiet and busy markets both report a full window; fewer
+/// than `count` recent orders simply reports what exists.
+pub fn recent(samples: &[Sample], count: usize) -> Value {
+    let window = samples.iter().take(count.max(1));
     let mut values = Vec::new();
     let mut orders = 0usize;
     let mut filled = 0usize;
     let mut failed = 0usize;
+    let mut newest_at: Option<i64> = None;
+    let mut oldest_at: Option<i64> = None;
 
-    for sample in samples {
-        if sample.at < since || sample.at > until {
-            continue;
-        }
+    for sample in window {
         orders += 1;
         if sample.status == "filled" {
             filled += 1;
@@ -317,6 +320,8 @@ pub fn recent(samples: &[Sample], until: i64, window_ms: i64) -> Value {
         if let Some(ms) = Phase::Total.measure(&sample.timings) {
             values.push(ms);
         }
+        newest_at = Some(newest_at.map_or(sample.at, |at| at.max(sample.at)));
+        oldest_at = Some(oldest_at.map_or(sample.at, |at| at.min(sample.at)));
     }
 
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -324,12 +329,12 @@ pub fn recent(samples: &[Sample], until: i64, window_ms: i64) -> Value {
         .as_object()
         .cloned()
         .unwrap_or_default();
-    summary.insert("windowMs".to_string(), json!(window));
-    summary.insert("since".to_string(), json!(since));
-    summary.insert("until".to_string(), json!(until));
+    summary.insert("count".to_string(), json!(count.max(1)));
     summary.insert("orders".to_string(), json!(orders));
     summary.insert("filled".to_string(), json!(filled));
     summary.insert("failed".to_string(), json!(failed));
+    summary.insert("until".to_string(), json!(newest_at.unwrap_or(0)));
+    summary.insert("since".to_string(), json!(oldest_at.unwrap_or(0)));
     Value::Object(summary)
 }
 
@@ -425,6 +430,20 @@ pub fn history(
     summary.insert("failed".to_string(), json!(failed));
     summary.insert("buckets".to_string(), json!(points.len()));
 
+    // Headline stats the expanded chart shows. `total` is the same set of
+    // values regardless of bucket size, so copying it into the header makes
+    // bucket switches a no-op — misleading, not interesting. The header
+    // instead reports the *newest bucket*'s stats, so switching the bucket
+    // flips it to a different period: exactly what the user expects when
+    // they change the bucket. Buckets at the period edge can be partial, so
+    // also report the oldest bucket for context.
+    let bucket_summary = |at: i64| {
+        points.iter().find(|point| point["at"] == at).cloned()
+    };
+    let newest_bucket_at = points.last().and_then(|point| point["at"].as_i64());
+    let oldest_bucket_at = points.first().and_then(|point| point["at"].as_i64());
+    let bucket_stats = newest_bucket_at.and_then(bucket_summary);
+
     json!({
         "since": since,
         "until": until,
@@ -432,6 +451,9 @@ pub fn history(
         "tzOffsetMs": offset,
         "stage": phase.key(),
         "summary": Value::Object(summary),
+        "bucketSummary": bucket_stats,
+        "oldestBucketAt": oldest_bucket_at.unwrap_or(0),
+        "newestBucketAt": newest_bucket_at.unwrap_or(0),
         "points": points,
     })
 }
@@ -561,28 +583,29 @@ mod tests {
     }
 
     #[test]
-    fn recent_averages_only_the_rolling_window() {
-        let now = 10_000_000i64;
+    fn recent_averages_only_the_newest_n_orders() {
+        // `recent` takes the newest `count` samples; `samples` is newest-first.
         let samples = vec![
             sample(
-                now - 10 * 60_000,
+                10_000,
                 "filled",
                 json!({ "signalAt": 1_000, "fillHandledAt": 1_100 }),
             ),
             sample(
-                now - 20 * 60_000,
+                9_000,
                 "failed",
                 json!({ "signalAt": 1_000, "failedAt": 1_300 }),
             ),
             sample(
-                now - 40 * 60_000,
+                8_000,
                 "filled",
                 json!({ "signalAt": 1_000, "fillHandledAt": 1_900 }),
             ),
         ];
-        let value = recent(&samples, now, RECENT_WINDOW_MS);
-        assert_eq!(value["windowMs"], 1_800_000);
-        assert_eq!(value["until"], now);
+        let value = recent(&samples, 2);
+        assert_eq!(value["count"], 2);
+        assert_eq!(value["until"], 10_000);
+        assert_eq!(value["since"], 9_000);
         assert_eq!(value["orders"], 2);
         assert_eq!(value["filled"], 1);
         assert_eq!(value["failed"], 1);
@@ -592,30 +615,32 @@ mod tests {
     }
 
     #[test]
-    fn recent_can_be_anchored_to_the_last_activity() {
-        let now = 10_000_000i64;
-        let last = now - 3 * 3_600_000;
+    fn recent_ignores_age_and_uses_every_available_order() {
+        // Count-based: even very old orders count when fewer than `count`
+        // exist; there is no wall-clock window to fall out of.
         let samples = vec![
             sample(
-                last - 5 * 60_000,
+                1_000,
                 "filled",
                 json!({ "signalAt": 1_000, "fillHandledAt": 1_100 }),
             ),
             sample(
-                last - 15 * 60_000,
+                500,
                 "filled",
                 json!({ "signalAt": 1_000, "fillHandledAt": 1_300 }),
             ),
             sample(
-                last - 40 * 60_000,
+                100,
                 "filled",
                 json!({ "signalAt": 1_000, "fillHandledAt": 1_900 }),
             ),
         ];
-        let value = recent(&samples, last, RECENT_WINDOW_MS);
-        assert_eq!(value["until"], last);
-        assert_eq!(value["orders"], 2);
-        assert_eq!(value["avg"], 200.0);
+        let value = recent(&samples, RECENT_ORDERS);
+        assert_eq!(value["count"], RECENT_ORDERS);
+        assert_eq!(value["until"], 1_000);
+        assert_eq!(value["since"], 100);
+        assert_eq!(value["orders"], 3);
+        assert_eq!(value["avg"], 433.33);
     }
 
     #[test]
@@ -667,6 +692,18 @@ mod tests {
         assert_eq!(points[0]["p95"], 300.0);
         assert_eq!(points[1]["n"], 1);
         assert_eq!(points[1]["avg"], 200.0);
+
+        // The header summary is the newest bucket's stats, so it is *not*
+        // the whole-range average and differs when the bucket size changes.
+        assert_eq!(value["bucketSummary"]["n"], 1);
+        assert_eq!(value["bucketSummary"]["avg"], 200.0);
+        // `align` buckets onto the clock: the two samples at base and
+        // base+10s land in the bucket that starts at base - (base mod 60s),
+        // and the sample at base+70s lands in the next 60s bucket — so the
+        // newest bucket's start is `base + 60_000 - (base mod 60_000)`.
+        let aligned_first = base - (base % 60_000);
+        assert_eq!(value["newestBucketAt"], aligned_first + 60_000);
+        assert_eq!(value["oldestBucketAt"], aligned_first);
     }
 
     #[test]
