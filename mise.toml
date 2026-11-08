@@ -7,6 +7,12 @@ bun = "1.4.4"
 # Vite's dev server runs on Node, not Bun (see scripts/dev.mjs), so `bun run dev`
 # needs this on PATH. It also backs `bun run dev:ui`.
 node = "24.16.0"
+# Pinned alongside Node so `npx`/`npm run ...` (and tooling that shells out to
+# npm) behaves the same on CI, the VPS and this machine.
+npm = "12.2.2"
+# Web server / reverse proxy. Pinned so every environment serves with the same
+# binary instead of whatever the distro happens to ship.
+caddy = "2.11.9"
 
 [env]
 # Keep the crate cache inside the repo so cargo never needs write access to
