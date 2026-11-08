@@ -3,15 +3,15 @@
 //! [`RecordingResolver`] is installed on the shared `reqwest` client, so it
 //! sees the resolver work the order actually pays for:
 //!
-//! * hyper only asks for DNS when it opens a connection, so a purchase that
-//!   never touched this resolver reused a pooled keep-alive socket
-//!   ([`SocketMode::Reused`]);
 //! * when a connection is opened, the resolver reports the real lookup
 //!   latency, address and address family ([`DnsLookup`]), not a parallel
-//!   guess made by a separate probe task.
+//!   guess made by a separate probe task;
+//! * a reused socket never reaches the resolver, so it has no DNS sample.
 //!
-//! IP-literal upstreams are connected to directly by hyper, so the resolver is
-//! never called and the mode stays [`SocketMode::Unknown`].
+//! The socket decision itself is not inferred from DNS: it comes from the
+//! connector observation in [`crate::connection_probe`]. That distinction
+//! matters for IP-literal upstreams, which are connected to directly by hyper,
+//! never call the resolver, and are still classified as `new` or `reused`.
 
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,15 +19,19 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Whether the purchase had to open a connection or could reuse a pooled one.
+///
+/// The value is produced by [`crate::connection_probe`], which observes the
+/// HTTP connector; the resolver is only used for DNS facts, not for the
+/// socket decision.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SocketMode {
-    /// Not observable (IP literal upstream, mock run, or no HTTP call).
+    /// Not observable (mock run, a connection attempt that failed, or a row
+    /// written before connector telemetry existed).
     #[default]
     Unknown,
-    /// The request invoked the resolver, so it opened a fresh connection.
+    /// The connector established a new socket for this request.
     New,
-    /// The request never touched the resolver: an idle keep-alive socket was
-    /// reused from the client pool.
+    /// The connector was not called: an idle pooled socket was reused.
     Reused,
 }
 

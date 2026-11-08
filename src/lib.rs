@@ -12,6 +12,7 @@ pub mod api;
 pub mod backup;
 pub mod blocking;
 pub mod config;
+pub mod connection_probe;
 pub mod constants;
 pub mod db;
 pub mod db_metrics;

@@ -38,9 +38,19 @@ function clockMs(ts) {
 }
 
 function dnsValue(t) {
-  if (t?.dnsMode === "cache" || t?.dnsMode === "reused") return 0;
+  // A reused socket performed no resolver lookup at all. Returning null keeps
+  // that distinct from a real sub-millisecond lookup.
+  if (t?.dnsMode === "cache" || t?.dnsMode === "reused") return null;
   const value = Number(t?.dnsMs);
   return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function dnsText(t) {
+  // A bare dash looked like missing telemetry. State the reason instead.
+  if (t?.dnsMode === "reused") return "NO LOOKUP";
+  if (t?.dnsMode === "cache") return "CACHED";
+  if (t?.dnsMode === "skipped") return "SKIPPED";
+  return null;
 }
 
 function dnsHint(t) {
@@ -74,12 +84,12 @@ function socketLabel(t) {
 
 function socketHint(t) {
   if (t?.socketMode === "new") {
-    return "Fresh connection: this request resolved the host and opened a socket (DNS + TCP + TLS)";
+    return "Fresh connection: this request opened a socket (DNS when the host is a name, plus TCP + TLS)";
   }
   if (t?.socketMode === "reused") {
     return "Pooled keep-alive socket reused — no DNS, TCP or TLS on this request";
   }
-  if (t?.socketMode === "unknown") return "IP upstream or no connection event observed";
+  if (t?.socketMode === "unknown") return "No completed connection observed (mock, or the request failed while connecting)";
   return "No sample (mock or an older row)";
 }
 
@@ -403,6 +413,7 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
                 />
                 <Metric
                   label="DNS lookup"
+                  text={dnsText(t)}
                   value={dnsValue(t)}
                   hint={dnsHint(t)}
                   tone="text-violet"
@@ -492,12 +503,14 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
               </details>
 
               <p className="mt-3 text-[11px] leading-relaxed text-faint">
-                The DNS tile is the resolver lookup this order actually paid for. When the purchase
-                opens a connection, the client&apos;s resolver records its real latency and address;
-                a pooled keep-alive socket skips DNS entirely, so the tile shows 0 and the
-                Connection tile says KEEP-ALIVE. IP upstreams bypass the resolver and are marked
-                skipped. Rows from the old worker keep their parallel-probe value and are labelled
-                as legacy.
+                The DNS tile is the resolver lookup this order actually paid for. A pooled
+                keep-alive socket skips DNS entirely, so the tile shows no measurement and the
+                Connection tile says KEEP-ALIVE. The Connection label comes from the HTTP
+                client&apos;s connector: a new socket is NEW, a request served from the pool is
+                KEEP-ALIVE, and a failed connection attempt is UNKNOWN. IP upstreams bypass the
+                resolver, so their DNS tile is skipped, but their socket is still classified.
+                Rows from the old worker keep their parallel-probe value and are labelled as
+                legacy.
               </p>
             </>
           ) : loadingDetail ? (

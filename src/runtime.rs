@@ -692,7 +692,9 @@ async fn run_purchase(state: Arc<AppState>, mut intent: OrderIntent) {
 
 /// Writes the connection and resolver facts onto the order timings. A fresh
 /// connection keeps the real lookup; a pooled keep-alive socket reports
-/// `reused` with no DNS cost; IP and local upstreams are `skipped`.
+/// `reused` with no DNS sample; IP and local upstreams have their resolver
+/// mode marked `skipped` but still carry the connector's `new`/`reused`
+/// socket label.
 fn apply_dns_telemetry(timings: &mut Timings, host: Option<&str>, result: &PurchaseResult) {
     timings.socket_mode = Some(result.socket.as_str().to_string());
 
@@ -850,12 +852,14 @@ mod tests {
     #[test]
     fn local_and_ip_upstreams_are_skipped() {
         let mut timings = Timings::default();
+        // An IP upstream still opens a real socket; only its DNS lookup is
+        // skipped. The connector, not the resolver, classifies it.
         apply_dns_telemetry(
             &mut timings,
             Some("127.0.0.1"),
-            &purchase(SocketMode::Unknown, None),
+            &purchase(SocketMode::New, None),
         );
-        assert_eq!(timings.socket_mode.as_deref(), Some("unknown"));
+        assert_eq!(timings.socket_mode.as_deref(), Some("new"));
         assert_eq!(timings.dns_mode.as_deref(), Some("skipped"));
         assert_eq!(timings.dns_host.as_deref(), Some("127.0.0.1"));
         assert_eq!(timings.dns_ms, None);

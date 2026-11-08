@@ -237,9 +237,14 @@ async fn feed_to_fill_round_trip() {
         assert_eq!(timings.dns_host.as_deref(), Some("127.0.0.1"));
         assert_eq!(timings.dns_mode.as_deref(), Some("skipped"));
         assert!(timings.dns_ms.is_none());
-        // hyper bypasses the resolver for IP literals, so socket reuse is not
-        // observable for this upstream.
-        assert_eq!(timings.socket_mode.as_deref(), Some("unknown"));
+        // The connector observes the socket even though hyper never asks the
+        // resolver for an IP literal; `unknown` here would mean the direct
+        // transport signal was lost.
+        assert!(
+            matches!(timings.socket_mode.as_deref(), Some("new") | Some("reused")),
+            "IP upstream socket must still be classified, got {:?}",
+            timings.socket_mode
+        );
 
         // Same row after the SQLite round-trip the deck reads through
         // `/api/history`. Lists skip the payloads; [`order_detail`] is the
@@ -261,7 +266,13 @@ async fn feed_to_fill_round_trip() {
             .expect("stored row");
         let stored_timings = stored.timings.as_ref().expect("stored timings");
         assert_eq!(stored_timings.dns_mode.as_deref(), Some("skipped"));
-        assert_eq!(stored_timings.socket_mode.as_deref(), Some("unknown"));
+        assert!(
+            matches!(
+                stored_timings.socket_mode.as_deref(),
+                Some("new") | Some("reused")
+            ),
+            "stored IP-socket classification must survive the round-trip"
+        );
     }
 
     // The latency tracker must have seen both the purchase and the handshake.

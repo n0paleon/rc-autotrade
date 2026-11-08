@@ -78,9 +78,13 @@ pub struct ApiClient {
     timeout: Duration,
     last_request_at: std::sync::Arc<AtomicI64>,
     latency: Option<std::sync::Arc<std::sync::Mutex<crate::latency::LatencyTracker>>>,
-    /// Every resolver call the shared client makes, used to tell a fresh
-    /// connection from a reused keep-alive socket and to keep its real lookup.
+    /// Every resolver call the shared client makes, used to keep the real
+    /// lookup latency and address for a fresh connection.
     dns: std::sync::Arc<crate::dns_probe::DnsRecorder>,
+    /// Direct connector observation: counts connection attempts and completed
+    /// connections, which tells reuse apart from a fresh socket even when the
+    /// upstream is an IP literal and no DNS lookup happens.
+    connections: std::sync::Arc<crate::connection_probe::ConnectionRecorder>,
 }
 
 fn now_ms() -> i64 {
@@ -144,6 +148,7 @@ fn message_from(body: Option<&Value>, text: &str, fallback: &str) -> String {
 impl ApiClient {
     pub fn new(base_url: &str, timeout_ms: u64) -> Self {
         let dns = std::sync::Arc::new(crate::dns_probe::DnsRecorder::new());
+        let connections = std::sync::Arc::new(crate::connection_probe::ConnectionRecorder::new());
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .timeout(Duration::from_millis(timeout_ms.max(1_000)))
@@ -152,8 +157,14 @@ impl ApiClient {
             // warm probe shares *this* client, not that the timeout is repeated.
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_nodelay(true)
-            // Measures the resolver only when hyper opens a connection, which
-            // also tells a purchase whether it reused a keep-alive socket.
+            // The connector layer observes actual connection establishment.
+            // hyper only invokes it when no pooled socket can serve the
+            // request, which is the transport fact the latency debugger wants.
+            .connector_layer(crate::connection_probe::ConnectionCounterLayer::new(
+                connections.clone(),
+            ))
+            // Measures the resolver only when hyper opens a connection, so a
+            // new connection can carry its real DNS cost.
             .dns_resolver(crate::dns_probe::RecordingResolver::new(dns.clone()))
             .build()
             .expect("reqwest client");
@@ -164,6 +175,7 @@ impl ApiClient {
             last_request_at: std::sync::Arc::new(AtomicI64::new(0)),
             latency: None,
             dns,
+            connections,
         }
     }
 
@@ -318,6 +330,7 @@ impl ApiClient {
             "totalPrice": request.unit_price_raw * request.qty as f64,
         });
 
+        let connection_mark = self.connections.mark();
         let dns_mark = self.dns.mark();
         let (status, body, text, transport_error) = self
             .post_json(
@@ -328,7 +341,7 @@ impl ApiClient {
                 self.timeout,
             )
             .await;
-        let (socket, dns) = self.classify_connection(dns_mark);
+        let (socket, dns) = self.classify_connection(connection_mark, dns_mark);
 
         if let Some(error) = transport_error {
             return PurchaseResult {
@@ -411,25 +424,35 @@ impl ApiClient {
         }
     }
 
-    /// Classifies the connection the purchase just used and keeps the resolver
-    /// sample when one exists. hyper connects to IP literals without consulting
-    /// the resolver, so there is no signal either way for those; a name that
-    /// did not touch the resolver came from the client's keep-alive pool.
+    /// Classifies the socket the purchase just used and keeps the resolver
+    /// sample when the connection was fresh.
+    ///
+    /// A connector call proves that hyper could not serve the request from its
+    /// pool, so it opened a socket. No connector call means the request was
+    /// served by a pooled connection. This is a transport observation rather
+    /// than a DNS inference, so it also works for IP-literal upstreams, which
+    /// never ask the resolver.
     fn classify_connection(
         &self,
-        mark: u64,
+        connection_mark: crate::connection_probe::ConnectionMark,
+        dns_mark: u64,
     ) -> (
         crate::dns_probe::SocketMode,
         Option<crate::dns_probe::DnsLookup>,
     ) {
-        let (looked_up, sample) = self.dns.since(mark);
-        match crate::dns_probe::host_of(&self.base_url) {
-            Some(host) if crate::dns_probe::is_ip(&host) => {
-                (crate::dns_probe::SocketMode::Unknown, None)
-            }
-            Some(_) if looked_up => (crate::dns_probe::SocketMode::New, sample),
-            Some(_) => (crate::dns_probe::SocketMode::Reused, None),
-            None => (crate::dns_probe::SocketMode::Unknown, None),
+        let connection = self.connections.since(connection_mark);
+        let (_, sample) = self.dns.since(dns_mark);
+
+        if connection.opened {
+            (crate::dns_probe::SocketMode::New, sample)
+        } else if connection.attempted {
+            // A connector call started but no connection completed (DNS, TCP
+            // or TLS failure), so neither a fresh socket nor a proven reuse.
+            // Keep the resolver sample so a failed lookup still reports its
+            // error and duration.
+            (crate::dns_probe::SocketMode::Unknown, sample)
+        } else {
+            (crate::dns_probe::SocketMode::Reused, None)
         }
     }
 

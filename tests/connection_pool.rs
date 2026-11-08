@@ -59,6 +59,10 @@ async fn spawn_server() -> (String, Seen) {
 #[tokio::test]
 async fn the_warm_probe_and_purchases_share_one_connection() {
     let (base, seen) = spawn_server().await;
+    let port = base.rsplit(':').next().expect("port");
+    // Use a hostname so the probe's fresh connection also exercises the DNS
+    // path; the connector classifies IP literals too (covered below).
+    let base = format!("http://localhost:{port}");
     let api = ApiClient::with_default_timeout(&base);
 
     let keepalive = KeepaliveService::new(KeepaliveConfig {
@@ -86,6 +90,15 @@ async fn the_warm_probe_and_purchases_share_one_connection() {
     };
     let result = api.purchase(&Credentials::default(), &request).await;
     assert!(result.ok, "purchase should succeed: {result:?}");
+    assert_eq!(
+        result.socket,
+        SocketMode::Reused,
+        "the purchase must reuse the socket the probe just opened"
+    );
+    assert!(
+        result.dns.is_none(),
+        "a reused socket must not carry a DNS sample"
+    );
 
     let connections = seen.0.lock().unwrap().len();
     assert_eq!(
@@ -100,7 +113,7 @@ async fn the_warm_probe_and_purchases_share_one_connection() {
 /// name every machine resolves without external DNS.
 #[tokio::test]
 async fn purchases_report_a_new_then_a_reused_socket() {
-    let (base, _seen) = spawn_server().await;
+    let (base, seen) = spawn_server().await;
     let port = base.rsplit(':').next().expect("port");
     let api = ApiClient::with_default_timeout(&format!("http://localhost:{port}"));
     let request = PurchaseRequest {
@@ -136,5 +149,64 @@ async fn purchases_report_a_new_then_a_reused_socket() {
     assert!(
         second.dns.is_none(),
         "a reused socket performs no DNS lookup"
+    );
+
+    // The labels are not derived from a self-fulfilling client-side guess: the
+    // server's accept side must confirm that both purchases arrived on the same
+    // TCP connection.
+    assert_eq!(
+        seen.0.lock().unwrap().len(),
+        1,
+        "NEW then KEEP-ALIVE must correspond to exactly one server-side TCP connection"
+    );
+
+    // Negative control: a different client has a different pool, so its first
+    // request must open a second TCP connection and be labelled NEW again.
+    let fresh = ApiClient::with_default_timeout(&format!("http://localhost:{port}"));
+    let third = fresh.purchase(&Credentials::default(), &request).await;
+    assert!(third.ok, "third purchase should succeed: {third:?}");
+    assert_eq!(
+        third.socket,
+        SocketMode::New,
+        "a new client pool must report NEW"
+    );
+    assert!(third.dns.is_some(), "NEW must carry a real DNS sample");
+    assert_eq!(
+        seen.0.lock().unwrap().len(),
+        2,
+        "the fresh client must open a second server-side TCP connection"
+    );
+}
+
+/// IP literals never touch the resolver, so the old DNS-only signal reported
+/// `unknown` for every purchase against them. The connector observation must
+/// still tell a fresh socket from a reused one.
+#[tokio::test]
+async fn ip_literal_purchases_are_classified_by_the_connector() {
+    let (base, seen) = spawn_server().await;
+    let api = ApiClient::with_default_timeout(&base);
+    let request = PurchaseRequest {
+        item_id: "6319f7baa8ce530569ed16b9".into(),
+        item_type: "miner".into(),
+        qty: 1,
+        unit_price_raw: 1.0,
+    };
+
+    let first = api.purchase(&Credentials::default(), &request).await;
+    assert!(first.ok, "first purchase should succeed: {first:?}");
+    assert_eq!(first.socket, SocketMode::New);
+    assert!(first.dns.is_none(), "an IP literal never performs DNS");
+
+    let second = api.purchase(&Credentials::default(), &request).await;
+    assert!(second.ok, "second purchase should succeed: {second:?}");
+    assert_eq!(
+        second.socket,
+        SocketMode::Reused,
+        "the second IP purchase must reuse the pooled socket"
+    );
+    assert_eq!(
+        seen.0.lock().unwrap().len(),
+        1,
+        "both IP purchases must arrive on one server-side TCP connection"
     );
 }

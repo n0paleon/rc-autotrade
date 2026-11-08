@@ -164,7 +164,7 @@ Bun worker.
 
 ## 6. Verification during the port
 
-- `cargo test`: **144 tests** (136 unit + 4 HTTP + 3 end-to-end + 1 pool). Rules, depth,
+- `cargo test`: **191 tests** (175 unit + 10 HTTP + 3 end-to-end + 3 pool). Rules, depth,
   timings, raw events, redaction, validation, config, logger, DB schema, store
   round-trips/paging/timings merge, server helpers, **trend parity fixtures**,
   events normalisation, nine engine scenarios, six API-client scenarios against
@@ -255,20 +255,27 @@ Bun worker.
 - Failed no-item orders keep the attempted `qty`/`unitPrice`/`targetPrice` and
   the full dispatch→result `latencyMs` in the loot row, matching the Bun
   `failureMeta = pendingMeta` path (covered by an engine test).
-- The loot latency debugger gets DNS facts from a recording resolver on the
-  shared `reqwest` client. hyper only resolves a name when it opens a
-  connection, so a purchase that never touched the resolver reused a pooled
-  keep-alive socket (`socketMode = "reused"`, `dnsMode = "reused"`, no DNS
-  cost), while one that did keeps the real lookup latency, address and family
-  (`socketMode = "new"`, `dnsMode = "lookup"`). IP-literal upstreams bypass the
-  resolver entirely (`skipped` / `unknown`). The lookup completes before the
-  HTTP response, so there is no separate probe task or late row patch. The
-  signal is per shared client, so a lookup from concurrent traffic (label
-  enrichment or the warm probe) during the same window can mark a reused
-  purchase as `new`; orders are normally serialized per target, so this is an
-  edge case. `tests/connection_pool.rs` covers the new→reused sequence against
-  `localhost`; `tests/wiring.rs` covers the skipped/unknown branch against
-  `127.0.0.1`.
+- The loot latency debugger's socket label is a transport observation, not a
+  DNS inference. `connection_probe.rs` installs a `tower` layer around the
+  shared `reqwest` connector; hyper only calls that connector when it cannot
+  serve a request from its pool. A connector call that completes means the
+  purchase opened a fresh socket (`socketMode = "new"`); no connector call
+  means the request was served by a pooled keep-alive socket
+  (`socketMode = "reused"`). A DNS lookup is a separate fact: a fresh
+  connection to a name keeps the resolver latency, address and family
+  (`dnsMode = "lookup"`), while a reused socket has no lookup
+  (`dnsMode = "reused"`, no measurement rather than a misleading `0.00ms`).
+  IP-literal upstreams never call the resolver (`dnsMode = "skipped"`) but are
+  still classified by the connector, so their socket is `new`/`reused` rather
+  than `unknown`. `unknown` is reserved for a connection attempt that did not
+  complete, a mock run, or a legacy row. The counters are shared by every call
+  on the client, so concurrent traffic (label enrichment or the warm probe)
+  during the same window can attribute a fresh connection to a reused
+  purchase; orders are normally serialized per target, so this is an edge
+  case. `tests/connection_pool.rs` asserts the labels against the server's
+  accept side (one TCP connection for probe→purchase, a second for a fresh
+  client pool), so `new`/`reused` is not just a self-fulfilling client guess;
+  `tests/wiring.rs` covers the IP-literal branch against `127.0.0.1`.
 - React deck opened in a real browser against the Rust worker: login with the
   access key, target list rendered, `PAUSED` state from the DB, no console
   errors. Screenshot: `.qa/rust-ui.png` (local, gitignored).
