@@ -273,12 +273,24 @@ Bun worker.
   resolver (`skipped` / `unknown`). The DNS numbers themselves are no longer a
   UI tile — they were almost always 0 behind the warm probe and duplicated the
   Connection tile — but the `dns*` fields stay in `orders.timings` as debug
-  evidence. The signal is per shared client, so a lookup from concurrent
-  traffic (label enrichment or the warm probe) during the same window can mark
-  a reused purchase as `new`; orders are normally serialized per target, so
-  this is an edge case. `tests/connection_pool.rs` covers the new→reused
-  sequence against `localhost`; `tests/wiring.rs` covers the skipped/unknown
-  branch against `127.0.0.1`.
+  evidence.
+- Attribution is **per request, not per client**. `DnsRecorder::begin` opens a
+  window and the HTTP call is polled inside a task-local request id; the
+  resolver only records into the window of the task that is actually
+  connecting. Concurrent purchases, the warm probe and label enrichment
+  therefore cannot leak a lookup into another order. hyper-util polls the
+  connector in the request task (it does not spawn), which is what makes the
+  task-local approach exact. Windows are dropped with their guard, so cancelled
+  calls do not accumulate.
+- Three cases deliberately answer `unknown` instead of guessing: a proxied
+  client (the resolver measures the proxy hop, not the upstream), an exchange
+  that produced no response (a timeout is not "reused"), and more than one
+  connection attempt in the same window (the socket is still `new`, but the
+  ambiguous sample is dropped). Lookups outside any window are ignored.
+  `tests/connection_pool.rs` covers the new→reused sequence against
+  `localhost`, a foreign lookup that must not flip reuse into new, and the
+  shared-pool warm probe; `tests/wiring.rs` covers the skipped/unknown branch
+  against `127.0.0.1`.
 - React deck opened in a real browser against the Rust worker: login with the
   access key, target list rendered, `PAUSED` state from the DB, no console
   errors. Screenshot: `.qa/rust-ui.png` (local, gitignored).

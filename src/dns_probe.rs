@@ -4,15 +4,22 @@
 //! sees the resolver work the order actually pays for:
 //!
 //! * hyper only asks for DNS when it opens a connection, so a purchase that
-//!   never touched this resolver reused a pooled keep-alive socket
+//!   never touched the resolver reused a pooled keep-alive socket
 //!   ([`SocketMode::Reused`]);
 //! * when a connection is opened, the resolver reports the real lookup
 //!   latency, address and address family ([`DnsLookup`]), not a parallel
 //!   guess made by a separate probe task.
 //!
+//! Attribution is per request, not global: [`DnsRecorder::begin`] opens a
+//! window, and while the HTTP call is polled the task-local [`REQUEST_ID`]
+//! tells the resolver which window a lookup belongs to. Concurrent purchases,
+//! the warm probe and label enrichment therefore cannot leak samples into each
+//! other. Lookups outside any window are ignored.
+//!
 //! IP-literal upstreams are connected to directly by hyper, so the resolver is
 //! never called and the mode stays [`SocketMode::Unknown`].
 
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -21,7 +28,8 @@ use std::time::{Duration, Instant};
 /// Whether the purchase had to open a connection or could reuse a pooled one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SocketMode {
-    /// Not observable (IP literal upstream, mock run, or no HTTP call).
+    /// Not observable (IP literal upstream, mock run, no HTTP call, a proxied
+    /// connection, or an exchange that never produced a response).
     #[default]
     Unknown,
     /// The request invoked the resolver, so it opened a fresh connection.
@@ -51,16 +59,43 @@ pub struct DnsLookup {
     pub error: Option<String>,
 }
 
-/// Records the resolver work the shared client performs so the order path can
-/// tell a fresh connection from a pooled one, and can keep the real lookup.
-///
-/// `attempted` is bumped as soon as the resolver is invoked (before it
-/// completes), which keeps connection detection correct even when a request is
-/// cancelled mid-lookup. `last` stores the newest completed sample.
+/// Everything one request's resolver window collected.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DnsSnapshot {
+    /// Lookups started in this window, including ones that never completed.
+    pub attempted: u32,
+    /// Completed lookups, oldest first.
+    pub samples: Vec<DnsLookup>,
+}
+
+impl DnsSnapshot {
+    /// A single completed lookup. More than one attempt is ambiguous, so the
+    /// caller gets no sample rather than a guess.
+    pub fn single_sample(&self) -> Option<DnsLookup> {
+        if self.attempted == 1 && self.samples.len() == 1 {
+            self.samples.first().cloned()
+        } else {
+            None
+        }
+    }
+
+    /// The newest completed sample, used to keep a resolver error visible even
+    /// when the exchange produced no response.
+    pub fn last_completed(&self) -> Option<DnsLookup> {
+        self.samples.last().cloned()
+    }
+}
+
+tokio::task_local! {
+    /// The request window the current task's HTTP call belongs to.
+    static REQUEST_ID: u64;
+}
+
+/// Records the resolver work of the request whose task-local window is active.
 #[derive(Debug, Default)]
 pub struct DnsRecorder {
-    attempted: AtomicU64,
-    last: Mutex<Option<(u64, DnsLookup)>>,
+    next_id: AtomicU64,
+    requests: Mutex<HashMap<u64, DnsSnapshot>>,
 }
 
 impl DnsRecorder {
@@ -68,45 +103,90 @@ impl DnsRecorder {
         Self::default()
     }
 
-    /// Current sequence, taken before the request is sent.
-    pub fn mark(&self) -> u64 {
-        self.attempted.load(Ordering::SeqCst)
-    }
-
-    /// Called by the resolver the moment it starts, before the blocking lookup.
-    pub fn start(&self) -> u64 {
-        self.attempted.fetch_add(1, Ordering::SeqCst) + 1
-    }
-
-    /// Stores a completed lookup. Only the newest sequence wins, so an older
-    /// lookup finishing late cannot overwrite a newer one.
-    pub fn finish(&self, seq: u64, lookup: DnsLookup) {
-        let mut last = self
-            .last
+    /// Opens a window for one request. The returned guard removes the window
+    /// when dropped, so cancelled or timed-out calls do not accumulate state.
+    pub fn begin(self: &Arc<Self>) -> DnsRequestGuard {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
+        self.requests
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if last
-            .as_ref()
-            .map(|(current, _)| seq >= *current)
-            .unwrap_or(true)
-        {
-            *last = Some((seq, lookup));
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(id, DnsSnapshot::default());
+        DnsRequestGuard {
+            recorder: Arc::clone(self),
+            id,
         }
     }
 
-    /// Returns whether a resolver call started, plus the newest sample taken
-    /// after `mark`.
-    pub fn since(&self, mark: u64) -> (bool, Option<DnsLookup>) {
-        let attempted = self.attempted.load(Ordering::SeqCst);
-        let last = self
-            .last
+    fn snapshot(&self, id: u64) -> DnsSnapshot {
+        self.requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn with_current<F: FnOnce(&mut DnsSnapshot)>(&self, update: F) {
+        let Ok(id) = REQUEST_ID.try_with(|id| *id) else {
+            // The warm probe, label enrichment and any other traffic without a
+            // window must not pollute a real request's sample.
+            return;
+        };
+        let mut requests = self
+            .requests
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let sample = last
-            .as_ref()
-            .filter(|(seq, _)| *seq > mark)
-            .map(|(_, lookup)| lookup.clone());
-        (attempted > mark, sample)
+        if let Some(snapshot) = requests.get_mut(&id) {
+            update(snapshot);
+        }
+    }
+
+    /// Called by the resolver the moment it starts, before the blocking lookup.
+    fn start(&self) {
+        self.with_current(|snapshot| {
+            snapshot.attempted = snapshot.attempted.saturating_add(1);
+        });
+    }
+
+    /// Stores a completed lookup. Only the newest sequence wins is gone: each
+    /// request owns its own list, so ordering between requests no longer
+    /// matters.
+    fn finish(&self, lookup: DnsLookup) {
+        self.with_current(|snapshot| snapshot.samples.push(lookup));
+    }
+}
+
+/// The window one HTTP call owns. Drop it once the call is done.
+#[derive(Debug)]
+pub struct DnsRequestGuard {
+    recorder: Arc<DnsRecorder>,
+    id: u64,
+}
+
+impl DnsRequestGuard {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn snapshot(&self) -> DnsSnapshot {
+        self.recorder.snapshot(self.id)
+    }
+
+    /// Polls `future` with this request's window installed, so any resolver
+    /// call it makes is attributed here. hyper-util polls the connector inside
+    /// the request task, which is what makes this precise.
+    pub async fn scope<F: std::future::Future>(&self, future: F) -> F::Output {
+        REQUEST_ID.scope(self.id, future).await
+    }
+}
+
+impl Drop for DnsRequestGuard {
+    fn drop(&mut self) {
+        self.recorder
+            .requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.id);
     }
 }
 
@@ -129,7 +209,7 @@ impl reqwest::dns::Resolve for RecordingResolver {
         let host = name.as_str().to_string();
         let recorder = self.recorder.clone();
         Box::pin(async move {
-            let seq = recorder.start();
+            recorder.start();
             let started = Instant::now();
             let result = tokio::net::lookup_host((host.as_str(), 0)).await;
             let elapsed = round_ms(started.elapsed());
@@ -151,19 +231,16 @@ impl reqwest::dns::Resolve for RecordingResolver {
                             error: Some("lookup returned no addresses".to_string()),
                         },
                     };
-                    recorder.finish(seq, lookup);
+                    recorder.finish(lookup);
                     Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
                 }
                 Err(error) => {
-                    recorder.finish(
-                        seq,
-                        DnsLookup {
-                            ms: elapsed,
-                            address: None,
-                            family: None,
-                            error: Some(short_error(&error.to_string())),
-                        },
-                    );
+                    recorder.finish(DnsLookup {
+                        ms: elapsed,
+                        address: None,
+                        family: None,
+                        error: Some(short_error(&error.to_string())),
+                    });
                     Err(Box::new(error) as Box<dyn std::error::Error + Send + Sync>)
                 }
             }
@@ -210,6 +287,15 @@ mod tests {
     use super::*;
     use reqwest::dns::Resolve;
 
+    fn lookup(ms: f64, address: &str) -> DnsLookup {
+        DnsLookup {
+            ms,
+            address: Some(address.to_string()),
+            family: Some(4),
+            error: None,
+        }
+    }
+
     #[test]
     fn extracts_the_host_the_url_way() {
         assert_eq!(
@@ -243,73 +329,131 @@ mod tests {
         assert!(!is_ip("localhost"));
     }
 
-    #[test]
-    fn records_the_newest_lookup_after_a_mark() {
-        let recorder = DnsRecorder::new();
-        let mark = recorder.mark();
-        assert_eq!(recorder.since(mark), (false, None));
+    #[tokio::test]
+    async fn attributes_a_lookup_to_the_request_window() {
+        let recorder = Arc::new(DnsRecorder::new());
+        let guard = recorder.begin();
+        assert_eq!(guard.snapshot(), DnsSnapshot::default());
 
-        let first = recorder.start();
-        recorder.finish(
-            first,
-            DnsLookup {
-                ms: 4.5,
-                address: Some("104.18.0.1".into()),
-                family: Some(4),
-                error: None,
-            },
-        );
-        let (started, sample) = recorder.since(mark);
-        assert!(started);
-        assert_eq!(sample.as_ref().map(|lookup| lookup.ms), Some(4.5));
+        guard
+            .scope(async {
+                recorder.start();
+                recorder.finish(lookup(4.5, "104.18.0.1"));
+            })
+            .await;
 
-        // A later mark only sees work started after it.
-        let later = recorder.mark();
-        let (started, sample) = recorder.since(later);
-        assert!(!started);
-        assert!(sample.is_none());
+        let snapshot = guard.snapshot();
+        assert_eq!(snapshot.attempted, 1);
+        assert_eq!(snapshot.single_sample().map(|sample| sample.ms), Some(4.5));
     }
 
-    #[test]
-    fn an_older_lookup_cannot_overwrite_a_newer_one() {
-        let recorder = DnsRecorder::new();
-        let older = recorder.start();
-        let newer = recorder.start();
-        recorder.finish(
-            newer,
-            DnsLookup {
-                ms: 2.0,
-                address: Some("1.1.1.1".into()),
-                family: Some(4),
-                error: None,
-            },
+    #[tokio::test]
+    async fn concurrent_windows_do_not_share_samples() {
+        let recorder = Arc::new(DnsRecorder::new());
+        let first = recorder.begin();
+        let second = recorder.begin();
+
+        first
+            .scope(async {
+                recorder.start();
+                recorder.finish(lookup(2.0, "1.1.1.1"));
+            })
+            .await;
+        second
+            .scope(async {
+                recorder.start();
+                recorder.finish(lookup(9.0, "9.9.9.9"));
+            })
+            .await;
+
+        assert_eq!(
+            first
+                .snapshot()
+                .single_sample()
+                .and_then(|sample| sample.address),
+            Some("1.1.1.1".to_string())
         );
-        recorder.finish(
-            older,
-            DnsLookup {
-                ms: 9.0,
-                address: Some("9.9.9.9".into()),
-                family: Some(4),
-                error: None,
-            },
+        assert_eq!(
+            second
+                .snapshot()
+                .single_sample()
+                .and_then(|sample| sample.address),
+            Some("9.9.9.9".to_string())
         );
-        let (_, sample) = recorder.since(0);
-        assert_eq!(sample.map(|lookup| lookup.ms), Some(2.0));
+    }
+
+    #[tokio::test]
+    async fn traffic_outside_a_window_is_ignored() {
+        let recorder = Arc::new(DnsRecorder::new());
+        let guard = recorder.begin();
+
+        // The warm probe and label enrichment run without a window.
+        recorder.start();
+        recorder.finish(lookup(50.0, "8.8.8.8"));
+
+        assert_eq!(guard.snapshot(), DnsSnapshot::default());
+    }
+
+    #[tokio::test]
+    async fn a_started_but_unfinished_lookup_is_visible() {
+        let recorder = Arc::new(DnsRecorder::new());
+        let guard = recorder.begin();
+        guard.scope(async { recorder.start() }).await;
+
+        let snapshot = guard.snapshot();
+        assert_eq!(snapshot.attempted, 1);
+        assert!(snapshot.samples.is_empty());
+        assert!(snapshot.single_sample().is_none());
+    }
+
+    #[tokio::test]
+    async fn two_attempts_drop_the_ambiguous_sample() {
+        let recorder = Arc::new(DnsRecorder::new());
+        let guard = recorder.begin();
+        guard
+            .scope(async {
+                recorder.start();
+                recorder.finish(lookup(3.0, "1.1.1.1"));
+                recorder.start();
+                recorder.finish(lookup(4.0, "1.0.0.1"));
+            })
+            .await;
+
+        let snapshot = guard.snapshot();
+        assert_eq!(snapshot.attempted, 2);
+        assert!(snapshot.single_sample().is_none());
+        assert_eq!(snapshot.last_completed().map(|sample| sample.ms), Some(4.0));
+    }
+
+    #[tokio::test]
+    async fn dropping_a_window_removes_it() {
+        let recorder = Arc::new(DnsRecorder::new());
+        let guard = recorder.begin();
+        let id = guard.id();
+        assert!(recorder.requests.lock().unwrap().contains_key(&id));
+        drop(guard);
+        assert!(!recorder.requests.lock().unwrap().contains_key(&id));
     }
 
     #[tokio::test]
     async fn resolver_records_the_real_lookup_and_returns_every_address() {
         let recorder = Arc::new(DnsRecorder::new());
         let resolver = RecordingResolver::new(recorder.clone());
-        let mark = recorder.mark();
+        let guard = recorder.begin();
         let name: reqwest::dns::Name = "localhost".parse().expect("name");
-        let addresses: Vec<std::net::SocketAddr> =
-            resolver.resolve(name).await.expect("resolve").collect();
+        let addresses: Vec<std::net::SocketAddr> = guard
+            .scope(resolver.resolve(name))
+            .await
+            .expect("resolve")
+            .collect();
         assert!(!addresses.is_empty(), "localhost must resolve");
 
-        let (started, sample) = recorder.since(mark);
-        assert!(started, "the resolver must record the attempt");
-        let sample = sample.expect("completed sample");
+        let snapshot = guard.snapshot();
+        assert_eq!(
+            snapshot.attempted, 1,
+            "the resolver must record the attempt"
+        );
+        let sample = snapshot.single_sample().expect("completed sample");
         assert!(sample.ms >= 0.0);
         assert_eq!(sample.error, None);
         let address: IpAddr = sample.address.expect("address").parse().expect("ip");

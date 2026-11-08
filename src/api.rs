@@ -39,9 +39,9 @@ pub struct PurchaseRequest {
     pub unit_price_raw: f64,
 }
 
-/// Timing marks for one HTTP exchange, taken inside the client so the
-/// debugger can separate dispatch, first byte and body read.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+/// Timing and connection marks for one HTTP exchange, taken inside the client
+/// so the debugger can separate dispatch, first byte and body read.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct HttpMarks {
     /// Epoch ms just before the request was dispatched.
     pub send_at: i64,
@@ -50,6 +50,11 @@ pub struct HttpMarks {
     /// Monotonic dispatch → first response byte (TTFB). `None` when no
     /// response arrived, so a transport error never looks like a fast TTFB.
     pub ttfb_ms: Option<f64>,
+    /// Whether this exchange opened a connection or reused a pooled one. It is
+    /// classified at the send boundary, before the body is read.
+    pub socket: crate::dns_probe::SocketMode,
+    /// The resolver sample this exchange paid for, when it is unambiguous.
+    pub dns: Option<crate::dns_probe::DnsLookup>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -100,6 +105,9 @@ pub struct ApiClient {
     /// Every resolver call the shared client makes, used to tell a fresh
     /// connection from a reused keep-alive socket and to keep its real lookup.
     dns: std::sync::Arc<crate::dns_probe::DnsRecorder>,
+    /// A proxy makes the resolver describe the proxy hop, not the upstream, so
+    /// connection classification is reported as unknown instead of guessing.
+    proxy: bool,
 }
 
 fn now_ms() -> i64 {
@@ -112,6 +120,26 @@ fn now_ms() -> i64 {
 fn round_duration_ms(duration: std::time::Duration) -> f64 {
     let value = duration.as_secs_f64() * 1000.0;
     (value * 1_000.0).round() / 1_000.0
+}
+
+/// Whether the environment asks reqwest for a proxy. The resolver then sees
+/// the proxy hop, not the upstream, so `new`/`reused` would describe the wrong
+/// connection. Deliberately conservative: `NO_PROXY` exclusions are ignored and
+/// the answer becomes `unknown` rather than a wrong label.
+fn proxy_configured(base_url: &str) -> bool {
+    let scheme = url::Url::parse(base_url)
+        .ok()
+        .map(|url| url.scheme().to_string());
+    let keys: &[&str] = match scheme.as_deref() {
+        Some("https") => &["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"],
+        Some("http") => &["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"],
+        _ => return false,
+    };
+    keys.iter().any(|key| {
+        std::env::var(key)
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+    })
 }
 
 fn trim_body(text: &str) -> String {
@@ -167,6 +195,7 @@ fn message_from(body: Option<&Value>, text: &str, fallback: &str) -> String {
 
 impl ApiClient {
     pub fn new(base_url: &str, timeout_ms: u64) -> Self {
+        let base_url = base_url.trim_end_matches('/').to_string();
         let dns = std::sync::Arc::new(crate::dns_probe::DnsRecorder::new());
         let http = reqwest::Client::builder()
             .user_agent(USER_AGENT)
@@ -182,7 +211,8 @@ impl ApiClient {
             .build()
             .expect("reqwest client");
         Self {
-            base_url: base_url.trim_end_matches('/').to_string(),
+            proxy: proxy_configured(&base_url),
+            base_url,
             http,
             timeout: Duration::from_millis(timeout_ms.max(1_000)),
             last_request_at: std::sync::Arc::new(AtomicI64::new(0)),
@@ -297,9 +327,12 @@ impl ApiClient {
             .json(body)
             .timeout(timeout);
 
+        // One resolver window per exchange. The guard is dropped when this
+        // call ends, so cancelled calls cannot leak state.
+        let dns_window = self.dns.begin();
         let send_at = now_ms();
         let dispatched = std::time::Instant::now();
-        let request = request.send().await;
+        let request = dns_window.scope(request.send()).await;
 
         match request {
             Ok(response) => {
@@ -307,6 +340,9 @@ impl ApiClient {
                 // the body has not been read yet. This is the TTFB boundary.
                 let response_at = now_ms();
                 let ttfb = dispatched.elapsed();
+                // Classify at the send boundary: the socket decision happened
+                // here, and the window must not grow while the body downloads.
+                let (socket, dns) = self.classify_connection(&dns_window.snapshot(), true);
                 let status = response.status().as_u16();
                 let (parsed, text) = read_json(response).await;
                 self.record_http(started, true, None);
@@ -319,10 +355,13 @@ impl ApiClient {
                         send_at,
                         response_at,
                         ttfb_ms: Some(round_duration_ms(ttfb)),
+                        socket,
+                        dns,
                     },
                 )
             }
             Err(error) => {
+                let (socket, dns) = self.classify_connection(&dns_window.snapshot(), false);
                 let message = if error.is_timeout() {
                     format!(
                         "Upstream request timed out after {}ms.",
@@ -341,6 +380,8 @@ impl ApiClient {
                         send_at,
                         response_at: 0,
                         ttfb_ms: None,
+                        socket,
+                        dns,
                     },
                 )
             }
@@ -368,7 +409,6 @@ impl ApiClient {
             "totalPrice": request.unit_price_raw * request.qty as f64,
         });
 
-        let dns_mark = self.dns.mark();
         let (status, body, text, transport_error, marks) = self
             .post_json(
                 "/api/marketplace/purchase-item",
@@ -378,10 +418,15 @@ impl ApiClient {
                 self.timeout,
             )
             .await;
-        let (socket, dns) = self.classify_connection(dns_mark);
-        let send_at = (marks.send_at > 0).then_some(marks.send_at);
-        let response_at = (marks.response_at > 0).then_some(marks.response_at);
-        let ttfb_ms = marks.ttfb_ms;
+        let HttpMarks {
+            send_at,
+            response_at,
+            ttfb_ms,
+            socket,
+            dns,
+        } = marks;
+        let send_at = (send_at > 0).then_some(send_at);
+        let response_at = (response_at > 0).then_some(response_at);
 
         if let Some(error) = transport_error {
             return PurchaseResult {
@@ -479,25 +524,35 @@ impl ApiClient {
         }
     }
 
-    /// Classifies the connection the purchase just used and keeps the resolver
-    /// sample when one exists. hyper connects to IP literals without consulting
-    /// the resolver, so there is no signal either way for those; a name that
-    /// did not touch the resolver came from the client's keep-alive pool.
+    /// Classifies the connection one exchange used. The resolver window is
+    /// per-request, so any lookup in `snapshot` belongs to this call; more than
+    /// one attempt is ambiguous and drops the sample instead of guessing which
+    /// lookup won. A missing response is never reported as a reused socket.
     fn classify_connection(
         &self,
-        mark: u64,
+        snapshot: &crate::dns_probe::DnsSnapshot,
+        response_received: bool,
     ) -> (
         crate::dns_probe::SocketMode,
         Option<crate::dns_probe::DnsLookup>,
     ) {
-        let (looked_up, sample) = self.dns.since(mark);
+        use crate::dns_probe::{SocketMode, is_ip};
+
+        if self.proxy {
+            // The resolver measured a proxy hop, not the upstream.
+            return (SocketMode::Unknown, None);
+        }
         match crate::dns_probe::host_of(&self.base_url) {
-            Some(host) if crate::dns_probe::is_ip(&host) => {
-                (crate::dns_probe::SocketMode::Unknown, None)
-            }
-            Some(_) if looked_up => (crate::dns_probe::SocketMode::New, sample),
-            Some(_) => (crate::dns_probe::SocketMode::Reused, None),
-            None => (crate::dns_probe::SocketMode::Unknown, None),
+            Some(host) if is_ip(&host) => (SocketMode::Unknown, None),
+            // Never claim a pooled socket for an exchange that produced no
+            // response; keep a failed lookup so the resolver error survives.
+            Some(_) if !response_received => (SocketMode::Unknown, snapshot.last_completed()),
+            Some(_) if snapshot.attempted == 0 => (SocketMode::Reused, None),
+            Some(_) if snapshot.attempted == 1 => (SocketMode::New, snapshot.single_sample()),
+            // More than one connection attempt: definitely a fresh connection,
+            // but which lookup to attribute is ambiguous.
+            Some(_) => (SocketMode::New, None),
+            None => (SocketMode::Unknown, None),
         }
     }
 
@@ -935,5 +990,88 @@ mod tests {
         assert!(!result.ok);
         assert_eq!(result.status, 0);
         assert!(result.error.is_some());
+        assert_eq!(
+            result.socket,
+            crate::dns_probe::SocketMode::Unknown,
+            "a failed exchange must not claim a reused socket"
+        );
+    }
+
+    fn sample(ms: f64) -> crate::dns_probe::DnsLookup {
+        crate::dns_probe::DnsLookup {
+            ms,
+            address: Some("104.18.0.1".into()),
+            family: Some(4),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn classify_uses_the_per_request_snapshot() {
+        use crate::dns_probe::{DnsSnapshot, SocketMode};
+
+        // Force proxy off so the host environment cannot change the fixture.
+        let mut client = ApiClient::with_default_timeout("https://rollercoin.com");
+        client.proxy = false;
+
+        let reused = client.classify_connection(&DnsSnapshot::default(), true);
+        assert_eq!(reused, (SocketMode::Reused, None));
+
+        let single = DnsSnapshot {
+            attempted: 1,
+            samples: vec![sample(18.25)],
+        };
+        let (socket, dns) = client.classify_connection(&single, true);
+        assert_eq!(socket, SocketMode::New);
+        assert_eq!(dns.as_ref().map(|dns| dns.ms), Some(18.25));
+
+        // A lookup that was cancelled mid-flight is still a fresh connection,
+        // but there is no sample to attribute.
+        let pending = DnsSnapshot {
+            attempted: 1,
+            samples: Vec::new(),
+        };
+        assert_eq!(
+            client.classify_connection(&pending, true),
+            (SocketMode::New, None)
+        );
+
+        // Two attempts are ambiguous: keep the connection fact, drop the sample.
+        let twice = DnsSnapshot {
+            attempted: 2,
+            samples: vec![sample(3.0), sample(4.0)],
+        };
+        assert_eq!(
+            client.classify_connection(&twice, true),
+            (SocketMode::New, None)
+        );
+
+        // No response: never report reuse, but keep a failed lookup visible.
+        let failed = DnsSnapshot {
+            attempted: 1,
+            samples: vec![crate::dns_probe::DnsLookup {
+                ms: 3.5,
+                address: None,
+                family: None,
+                error: Some("lookup timed out".into()),
+            }],
+        };
+        let (socket, dns) = client.classify_connection(&failed, false);
+        assert_eq!(socket, SocketMode::Unknown);
+        assert_eq!(
+            dns.and_then(|dns| dns.error).as_deref(),
+            Some("lookup timed out")
+        );
+        assert_eq!(
+            client.classify_connection(&DnsSnapshot::default(), false),
+            (SocketMode::Unknown, None)
+        );
+
+        client.proxy = true;
+        assert_eq!(
+            client.classify_connection(&single, true),
+            (SocketMode::Unknown, None),
+            "a proxied resolver describes the proxy hop"
+        );
     }
 }

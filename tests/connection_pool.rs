@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{ConnectInfo, State};
@@ -137,4 +138,97 @@ async fn purchases_report_a_new_then_a_reused_socket() {
         second.dns.is_none(),
         "a reused socket performs no DNS lookup"
     );
+}
+
+#[derive(Clone, Default)]
+struct Slow(Arc<AtomicUsize>);
+
+/// Answers the first purchase immediately and later ones after a delay, so the
+/// test can resolve another host while a purchase is waiting for its headers.
+async fn delayed_record(State(slow): State<Slow>, _body: Option<Json<Value>>) -> Json<Value> {
+    let call = slow.0.fetch_add(1, Ordering::SeqCst);
+    if call > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    Json(json!({
+        "success": true,
+        "data": { "usersPurchaseOrder": format!("order-slow-{call}") }
+    }))
+}
+
+/// The resolver is shared by every request on the client, but attribution is
+/// per task. A lookup made by another request while a purchase is in flight
+/// must not turn a reused socket into a fresh one.
+#[tokio::test]
+async fn a_foreign_lookup_does_not_flip_a_reused_purchase() {
+    let slow = Slow::default();
+    let app = Router::new()
+        .route("/api/marketplace/purchase-item", post(delayed_record))
+        .with_state(slow.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    // A different origin on the same host name: reaching it opens a new pooled
+    // connection and therefore invokes the resolver.
+    let other = Router::new().route("/", post(|| async { Json(json!({})) }));
+    let other_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let other_port = other_listener.local_addr().expect("addr").port();
+    tokio::spawn(async move {
+        let _ = axum::serve(other_listener, other).await;
+    });
+
+    let api = ApiClient::with_default_timeout(&format!("http://localhost:{port}"));
+    let request = PurchaseRequest {
+        item_id: "6319f7baa8ce530569ed16b9".into(),
+        item_type: "miner".into(),
+        qty: 1,
+        unit_price_raw: 1.0,
+    };
+
+    let first = api.purchase(&Credentials::default(), &request).await;
+    assert!(first.ok, "warm purchase should succeed: {first:?}");
+    assert_eq!(first.socket, SocketMode::New);
+    assert!(first.dns.is_some(), "the cold purchase pays the lookup");
+
+    let in_flight = tokio::spawn({
+        let api = api.clone();
+        let request = request.clone();
+        async move { api.purchase(&Credentials::default(), &request).await }
+    });
+    // Wait until the second purchase has actually reached the slow handler.
+    for _ in 0..200 {
+        if slow.0.load(Ordering::SeqCst) >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(
+        slow.0.load(Ordering::SeqCst),
+        2,
+        "second purchase must be in flight"
+    );
+
+    let foreign = api
+        .http_client()
+        .post(format!("http://localhost:{other_port}/"))
+        .body("{}")
+        .send()
+        .await;
+    assert!(foreign.is_ok(), "the foreign request must reach its origin");
+
+    let second = in_flight.await.expect("purchase task");
+    assert!(second.ok, "second purchase should succeed: {second:?}");
+    assert_eq!(
+        second.socket,
+        SocketMode::Reused,
+        "a lookup from another task must not flip reuse into new"
+    );
+    assert!(second.dns.is_none());
 }

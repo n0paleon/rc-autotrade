@@ -51,7 +51,9 @@ function socketHint(t) {
   if (t?.socketMode === "reused") {
     return "Pooled keep-alive socket reused — no DNS, TCP or TLS on this request";
   }
-  if (t?.socketMode === "unknown") return "IP upstream or no connection event observed";
+  if (t?.socketMode === "unknown") {
+    return "Not observable: IP upstream, proxied client, transport failure, or an ambiguous lookup";
+  }
   return "No sample (mock or an older row)";
 }
 
