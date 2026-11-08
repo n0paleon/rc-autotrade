@@ -100,11 +100,21 @@ pub struct Worker {
     feed_task: JoinHandle<()>,
     ticker: JoinHandle<()>,
     sampler: JoinHandle<()>,
+    maintenance: JoinHandle<()>,
     stats_task: JoinHandle<()>,
     event_task: JoinHandle<()>,
     keepalive_task: Option<JoinHandle<()>>,
     system_tasks: Vec<JoinHandle<()>>,
 }
+
+/// How often housekeeping runs (WAL checkpoint + orphan sweep). Price points
+/// are only pruned once an hour, but the sweep itself is cheap.
+const MAINTENANCE_INTERVAL_MS: u64 = 5 * 60_000;
+/// Same retention the boot-time prune uses; the API only serves 7 days.
+const PRICE_PRUNE_INTERVAL_MS: i64 = 3_600_000;
+/// A deleted target keeps its in-memory history for a week so deleting and
+/// re-adding it still shows the same chart. After that the runtime is released.
+const ORPHAN_RUNTIME_IDLE_MS: i64 = 7 * 86_400_000;
 
 /// Cadence of the background health sampler. Broadcasts live in the control
 /// socket now; this task only samples and logs health transitions so a
@@ -318,6 +328,71 @@ impl Worker {
             }
         });
 
+        // Housekeeping: keep the price table inside its documented retention,
+        // checkpoint the WAL so it cannot grow without bound, and release the
+        // runtime of targets that have been deleted for a while. All three are
+        // invisible to the deck: the served windows and payloads do not change.
+        let maintenance_state = state.clone();
+        let maintenance = tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_millis(MAINTENANCE_INTERVAL_MS));
+            interval.tick().await; // the first tick is immediate
+            let mut pruned_at = now_ms();
+            loop {
+                interval.tick().await;
+                let now = now_ms();
+
+                let checkpoint = {
+                    let store = maintenance_state
+                        .store
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    store.checkpoint_wal()
+                };
+                if let Err(error) = checkpoint {
+                    maintenance_state
+                        .logger
+                        .warn("store", format!("WAL checkpoint failed: {error}"));
+                }
+
+                if now - pruned_at >= PRICE_PRUNE_INTERVAL_MS {
+                    pruned_at = now;
+                    let pruned = {
+                        let store = maintenance_state
+                            .store
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        store.prune_price_history()
+                    };
+                    match pruned {
+                        Ok(removed) if removed > 0 => maintenance_state
+                            .logger
+                            .info("store", format!("pruned {removed} expired price point(s)")),
+                        Ok(_) => {}
+                        Err(error) => maintenance_state.logger.warn("store", error),
+                    }
+                }
+
+                let released = {
+                    let store = maintenance_state
+                        .store
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let mut engine = maintenance_state
+                        .engine
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    engine.prune_orphan_runtimes(&store, now, ORPHAN_RUNTIME_IDLE_MS)
+                };
+                if released > 0 {
+                    maintenance_state.logger.info(
+                        "engine",
+                        format!("released {released} stale target runtime(s)"),
+                    );
+                }
+            }
+        });
+
         // Frame counts stay in memory; this task turns them into one SQLite
         // transaction every few seconds instead of a write per frame.
         let event_state = state.clone();
@@ -360,6 +435,7 @@ impl Worker {
             feed_task,
             ticker,
             sampler,
+            maintenance,
             stats_task,
             event_task,
             keepalive_task,
@@ -381,6 +457,7 @@ impl Worker {
         self.feed_task.abort();
         self.ticker.abort();
         self.sampler.abort();
+        self.maintenance.abort();
         self.stats_task.abort();
         self.event_task.abort();
     }

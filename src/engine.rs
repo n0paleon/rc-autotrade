@@ -998,11 +998,6 @@ impl Engine {
             .map(|point| now - point.t <= 30 * 60_000)
             .unwrap_or(false);
         let use_fill = fill_points.len() >= 12 && fill_span >= 30 * 60_000 && fill_fresh;
-        let series = if use_fill {
-            fill_points.clone()
-        } else {
-            runtime.history.clone()
-        };
 
         let book_qty = runtime.last_stock;
         let options = TrendOptions {
@@ -1019,8 +1014,16 @@ impl Engine {
                 approx: fill.approx,
             }),
         };
-
-        let signal = build_trend(&series, &options);
+        let signal = {
+            // Borrow the series instead of cloning up to 1440 points on every
+            // rebuild: the model only ever reads it, so the copy was pure churn.
+            let series: &[Point] = if use_fill {
+                &runtime.fill_history
+            } else {
+                &runtime.history
+            };
+            build_trend(series, &options)
+        };
         runtime.trend = Some(signal.clone());
         runtime.trend_at = now;
         runtime.trend_target = target_price;
@@ -1407,6 +1410,25 @@ impl Engine {
         }
     }
 
+    /// Releases runtimes for targets that no longer exist and have not been
+    /// seen for `max_idle_ms`. A target that is deleted and re-added within that
+    /// window keeps its history, so the chart is unchanged.
+    pub fn prune_orphan_runtimes(&mut self, store: &Store, now: i64, max_idle_ms: i64) -> usize {
+        let before = self.runtime.len();
+        self.runtime.retain(|item_id, runtime| {
+            if store.find_config(item_id).is_some() {
+                return true;
+            }
+            let last_seen = runtime.seen_at.or(runtime.hydrated_at).unwrap_or(0);
+            let has_data = runtime.last_price.is_some()
+                || !runtime.history.is_empty()
+                || !runtime.fill_history.is_empty()
+                || runtime.trend.is_some();
+            has_data && now.saturating_sub(last_seen) <= max_idle_ms
+        });
+        before - self.runtime.len()
+    }
+
     pub fn refresh_trend(&mut self, store: &Store, item_id: &str) -> Option<TrendSignal> {
         let config = store.find_config(item_id)?.clone();
         let now = self.now();
@@ -1532,47 +1554,58 @@ impl Engine {
 
     pub fn runtime_snapshot(&self, store: &Store) -> Value {
         let mut out = serde_json::Map::new();
-        for (item_id, runtime) in &self.runtime {
-            let config = store.find_config(item_id);
-            let mut value = serde_json::Map::new();
-            value.insert("label".into(), json!(label_for(config, item_id)));
-            value.insert("lastPrice".into(), json!(runtime.last_price));
-            value.insert("lastStock".into(), json!(runtime.last_stock));
-            value.insert("lastSeenAt".into(), json!(runtime.last_seen_at));
-            value.insert("seenAt".into(), json!(runtime.seen_at));
-            value.insert("stale".into(), json!(runtime.stale));
-            value.insert("itemType".into(), json!(runtime.item_type));
-            value.insert("allowedPriceMin".into(), json!(runtime.allowed_price_min));
-            value.insert("allowedPriceMax".into(), json!(runtime.allowed_price_max));
-            value.insert("allowedAt".into(), json!(runtime.allowed_at));
-            value.insert(
-                "history".into(),
-                serde_json::to_value(&runtime.history).unwrap_or(Value::Null),
-            );
-            value.insert(
-                "lastFill".into(),
-                serde_json::to_value(runtime.last_fill).unwrap_or(Value::Null),
-            );
-            value.insert(
-                "trend".into(),
-                serde_json::to_value(&runtime.trend).unwrap_or(Value::Null),
-            );
-            value.insert("trendAt".into(), json!(runtime.trend_at));
-            value.insert("hydratedAt".into(), json!(runtime.hydrated_at));
-            value.insert("inflight".into(), json!(runtime.inflight));
-            value.insert("orders".into(), json!(runtime.orders));
-            value.insert("fills".into(), json!(runtime.fills));
-            value.insert("failures".into(), json!(runtime.failures));
-            value.insert("lastResult".into(), json!(runtime.last_result));
-            value.insert("failureStreak".into(), json!(runtime.failure_streak));
-            value.insert("blockedUntil".into(), json!(runtime.blocked_until));
-            value.insert("lastLogAt".into(), json!(runtime.last_log_at));
-            value.insert("lastOrderAt".into(), json!(runtime.last_order_at));
-            value.insert("lastInRangeAt".into(), json!(runtime.last_in_range_at));
-            out.insert(item_id.clone(), Value::Object(value));
+        // Only targets that still exist are exposed. Orphan runtimes are kept
+        // for a grace period (see `prune_orphan_runtimes`) but never serialized,
+        // so a long delete history no longer costs CPU on every snapshot.
+        for config in &store.state.configs {
+            let key = config.item_id.to_ascii_lowercase();
+            let Some(runtime) = self.runtime.get(&key) else {
+                continue;
+            };
+            let label = label_for(Some(config), &key);
+            out.insert(key, runtime_json(runtime, label));
         }
         Value::Object(out)
     }
+}
+
+fn runtime_json(runtime: &Runtime, label: String) -> Value {
+    let mut value = serde_json::Map::new();
+    value.insert("label".into(), json!(label));
+    value.insert("lastPrice".into(), json!(runtime.last_price));
+    value.insert("lastStock".into(), json!(runtime.last_stock));
+    value.insert("lastSeenAt".into(), json!(runtime.last_seen_at));
+    value.insert("seenAt".into(), json!(runtime.seen_at));
+    value.insert("stale".into(), json!(runtime.stale));
+    value.insert("itemType".into(), json!(runtime.item_type));
+    value.insert("allowedPriceMin".into(), json!(runtime.allowed_price_min));
+    value.insert("allowedPriceMax".into(), json!(runtime.allowed_price_max));
+    value.insert("allowedAt".into(), json!(runtime.allowed_at));
+    value.insert(
+        "history".into(),
+        serde_json::to_value(&runtime.history).unwrap_or(Value::Null),
+    );
+    value.insert(
+        "lastFill".into(),
+        serde_json::to_value(runtime.last_fill).unwrap_or(Value::Null),
+    );
+    value.insert(
+        "trend".into(),
+        serde_json::to_value(&runtime.trend).unwrap_or(Value::Null),
+    );
+    value.insert("trendAt".into(), json!(runtime.trend_at));
+    value.insert("hydratedAt".into(), json!(runtime.hydrated_at));
+    value.insert("inflight".into(), json!(runtime.inflight));
+    value.insert("orders".into(), json!(runtime.orders));
+    value.insert("fills".into(), json!(runtime.fills));
+    value.insert("failures".into(), json!(runtime.failures));
+    value.insert("lastResult".into(), json!(runtime.last_result));
+    value.insert("failureStreak".into(), json!(runtime.failure_streak));
+    value.insert("blockedUntil".into(), json!(runtime.blocked_until));
+    value.insert("lastLogAt".into(), json!(runtime.last_log_at));
+    value.insert("lastOrderAt".into(), json!(runtime.last_order_at));
+    value.insert("lastInRangeAt".into(), json!(runtime.last_in_range_at));
+    Value::Object(value)
 }
 
 struct FailureMeta {
@@ -1708,6 +1741,37 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn orphan_runtimes_are_hidden_and_released_after_the_grace_period() {
+        let mut h = harness();
+        {
+            let runtime = h.engine.runtime_for("deleted-item", 1);
+            runtime.seen_at = Some(1_000_000);
+            runtime.history.push(Point {
+                t: 1_000_000,
+                p: 0.5,
+            });
+        }
+        assert!(
+            h.engine
+                .runtime_snapshot(&h.store)
+                .get("deleted-item")
+                .is_none(),
+            "an orphan must never be serialized into a snapshot"
+        );
+
+        // Within the grace period the runtime is kept (delete + re-add shows
+        // the same chart), after it the entry is released.
+        assert_eq!(
+            h.engine.prune_orphan_runtimes(&h.store, 1_000_000, 60_000),
+            0
+        );
+        assert_eq!(
+            h.engine.prune_orphan_runtimes(&h.store, 1_200_000, 60_000),
+            1
+        );
     }
 
     #[test]

@@ -194,7 +194,7 @@ impl Store {
             state: State::fresh(),
             db: conn,
             data_dir,
-            logger,
+            logger: logger.clone(),
             metrics,
             event_points: BTreeMap::new(),
             event_dirty: BTreeSet::new(),
@@ -203,6 +203,17 @@ impl Store {
         store.ensure_rows()?;
         store.hydrate()?;
         store.hydrate_events();
+        // Reclaim anything older than the documented retention window. The API
+        // only ever serves the last `PRICE_HISTORY_DAYS`, so this is not visible
+        // in any chart; it just stops the table from growing across restarts.
+        match store.prune_price_history() {
+            Ok(removed) if removed > 0 => logger.info(
+                "store",
+                format!("pruned {removed} price point(s) older than {PRICE_RETENTION_DAYS}d"),
+            ),
+            Ok(_) => {}
+            Err(error) => logger.warn("store", error),
+        }
         Ok(store)
     }
 
@@ -1526,6 +1537,14 @@ impl Store {
             .map_err(|e| format!("could not prune price history: {e}"))
     }
 
+    /// Non-blocking WAL checkpoint. `PASSIVE` never waits for readers and never
+    /// truncates the log from under a writer, so it is safe to run on a timer.
+    pub fn checkpoint_wal(&self) -> Result<(), String> {
+        self.db
+            .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_row| Ok(()))
+            .map_err(|e| format!("could not checkpoint WAL: {e}"))
+    }
+
     // ── market-event activity ───────────────────────────────────────────────
 
     /// Counts one market frame into its 5-minute bucket. Stays in memory: the
@@ -2031,6 +2050,25 @@ mod tests {
             vec![(1_700_000_060_000, 0.095)]
         );
         assert!(store.price_series("other-item", 0).is_empty());
+    }
+
+    #[test]
+    fn prunes_price_points_outside_the_retention_window() {
+        let store = store("prune-price");
+        let item_id = "6319f7baa8ce530569ed16b9";
+        let old = now_ms() - (PRICE_RETENTION_DAYS + 1) * 86_400_000;
+        let recent = now_ms() - 86_400_000;
+        store.record_price_point(item_id, old, 0.1, None).unwrap();
+        store
+            .record_price_point(item_id, recent, 0.2, None)
+            .unwrap();
+
+        assert_eq!(store.prune_price_history().unwrap(), 1);
+        let points = store.load_price_history(item_id, 10, 0);
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].bucket_at, recent);
+        // A passive checkpoint is always safe to run on a live database.
+        store.checkpoint_wal().unwrap();
     }
 
     #[test]

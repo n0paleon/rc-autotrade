@@ -66,20 +66,33 @@ impl Kind {
 }
 
 /// First-keyword classification, same buckets as the JS `statementKind`.
+/// Comparison is case-insensitive without allocating: this runs on every
+/// traced statement, so a `to_ascii_lowercase()` per call was pure churn.
 pub fn classify(sql: &str) -> Kind {
-    let trimmed = sql.trim_start();
-    let keyword = trimmed
+    let keyword = sql
+        .trim_start()
         .split(|ch: char| !ch.is_ascii_alphabetic())
         .find(|part| !part.is_empty())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    match keyword.as_str() {
-        "select" | "with" | "values" | "explain" => Kind::Read,
-        "insert" | "update" | "delete" | "replace" => Kind::Write,
-        "pragma" => Kind::Pragma,
-        "create" | "alter" | "drop" | "vacuum" | "reindex" => Kind::Schema,
-        "begin" | "commit" | "rollback" | "savepoint" | "release" | "end" => Kind::Transaction,
-        _ => Kind::Other,
+        .unwrap_or("");
+    let is = |candidate: &str| keyword.eq_ignore_ascii_case(candidate);
+    if is("select") || is("with") || is("values") || is("explain") {
+        Kind::Read
+    } else if is("insert") || is("update") || is("delete") || is("replace") {
+        Kind::Write
+    } else if is("pragma") {
+        Kind::Pragma
+    } else if is("create") || is("alter") || is("drop") || is("vacuum") || is("reindex") {
+        Kind::Schema
+    } else if is("begin")
+        || is("commit")
+        || is("rollback")
+        || is("savepoint")
+        || is("release")
+        || is("end")
+    {
+        Kind::Transaction
+    } else {
+        Kind::Other
     }
 }
 
@@ -445,6 +458,7 @@ mod tests {
     #[test]
     fn classifies_sql_by_first_keyword() {
         assert_eq!(classify("SELECT * FROM orders"), Kind::Read);
+        assert_eq!(classify("SeLeCt * FROM orders"), Kind::Read);
         assert_eq!(
             classify("  with x as (select 1) select * from x"),
             Kind::Read

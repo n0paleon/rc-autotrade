@@ -254,6 +254,11 @@ pub fn open(
         .map_err(|error| format!("could not enable WAL: {error}"))?;
     conn.pragma_update(None, "synchronous", "NORMAL")
         .map_err(|error| format!("could not set synchronous: {error}"))?;
+    // WAL auto-checkpoints every ~1000 pages, but the file itself is only
+    // truncated when a checkpoint finishes. Capping the journal keeps the
+    // on-disk footprint predictable without changing any stored row.
+    conn.pragma_update(None, "journal_size_limit", 32 * 1024 * 1024_i64)
+        .map_err(|error| format!("could not set journal_size_limit: {error}"))?;
     conn.pragma_update(None, "foreign_keys", "ON")
         .map_err(|error| format!("could not enable foreign keys: {error}"))?;
 

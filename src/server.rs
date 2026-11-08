@@ -140,7 +140,8 @@ impl AppState {
     }
 
     pub fn configs_view(&self, store: &Store, engine: &Engine) -> Vec<Value> {
-        let runtime = engine.runtime_snapshot(store);
+        let mut runtime = engine.runtime_snapshot(store);
+        let mut runtime_entries = runtime.as_object_mut();
         store
             .state
             .configs
@@ -149,10 +150,13 @@ impl AppState {
                 let mut value = serde_json::to_value(config).unwrap_or(Value::Null);
                 if let Some(object) = value.as_object_mut() {
                     let key = config.item_id.to_ascii_lowercase();
-                    object.insert(
-                        "runtime".to_string(),
-                        runtime.get(&key).cloned().unwrap_or(Value::Null),
-                    );
+                    // Move the entry out of the temporary map instead of
+                    // cloning the whole history for every target on each view.
+                    let entry = runtime_entries
+                        .as_mut()
+                        .and_then(|entries| entries.remove(&key))
+                        .unwrap_or(Value::Null);
+                    object.insert("runtime".to_string(), entry);
                 }
                 value
             })

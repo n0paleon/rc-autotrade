@@ -20,6 +20,11 @@ use crate::store::Store;
 
 pub const DEFAULT_TTL_MS: i64 = 10 * 60 * 1000;
 pub const FAILURE_COOLDOWN_MS: i64 = 5 * 60 * 1000;
+/// Upper bound for the resolution caches. A normal fleet is far below this, so
+/// the cap only ever bites after a long session of previewing arbitrary ids.
+const CACHE_MAX_ENTRIES: usize = 512;
+/// Failure markers older than this no longer suppress a retry.
+const FAILED_MAX_AGE_MS: i64 = 24 * 60 * 60 * 1000;
 pub const ITEM_TYPE_CANDIDATES: [&str; 5] = [
     "mutation_component",
     "miner",
@@ -161,6 +166,23 @@ fn is_type_miss(result: &ItemInfoResult) -> bool {
         && (message.contains("item not found") || message.contains("item type is invalid"))
 }
 
+/// Evicts the oldest entries until `map` is back under `limit`. Only runs when
+/// the cap is exceeded, so the normal path pays a single length check.
+fn trim_to_limit<T>(map: &mut HashMap<String, T>, limit: usize, at: impl Fn(&T) -> i64) {
+    if map.len() <= limit {
+        return;
+    }
+    let excess = map.len() - limit;
+    let mut ages: Vec<(String, i64)> = map
+        .iter()
+        .map(|(key, value)| (key.clone(), at(value)))
+        .collect();
+    ages.sort_by_key(|(_, age)| *age);
+    for (key, _) in ages.into_iter().take(excess) {
+        map.remove(&key);
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Cached {
     at: i64,
@@ -240,6 +262,7 @@ impl ItemInfoService {
                             value: value.clone(),
                         },
                     );
+                    trim_to_limit(&mut cache, CACHE_MAX_ENTRIES, |cached| cached.at);
                     drop(cache);
                     self.failed_at
                         .lock()
@@ -264,10 +287,12 @@ impl ItemInfoService {
             failed.get(&key).copied().unwrap_or(0)
         };
         if now_ms() - last > FAILURE_COOLDOWN_MS {
-            self.failed_at
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(key, now_ms());
+            let now = now_ms();
+            let mut failed = self.failed_at.lock().unwrap_or_else(|e| e.into_inner());
+            failed.retain(|_, at| now - *at <= FAILED_MAX_AGE_MS);
+            failed.insert(key, now);
+            trim_to_limit(&mut failed, CACHE_MAX_ENTRIES, |at| *at);
+            drop(failed);
             self.logger.warn(
                 "item-info",
                 format!("could not resolve {item_id}: {last_error} (HTTP {last_status})"),
@@ -315,6 +340,19 @@ impl ItemInfoService {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn trims_resolution_caches_to_the_hard_limit() {
+        let mut cache: HashMap<String, i64> = (0..10).map(|i| (format!("k{i}"), i)).collect();
+        trim_to_limit(&mut cache, 4, |value| *value);
+        assert_eq!(cache.len(), 4);
+        for kept in 6..10 {
+            assert!(cache.contains_key(&format!("k{kept}")));
+        }
+        for evicted in 0..6 {
+            assert!(!cache.contains_key(&format!("k{evicted}")));
+        }
+    }
 
     #[test]
     fn composes_rarity_and_name() {

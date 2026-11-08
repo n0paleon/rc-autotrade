@@ -19,7 +19,13 @@ module.exports = {
       merge_logs: true,
       env: {
         PORT: "8787",
-        RC_DATA_DIR: "./data"
+        RC_DATA_DIR: "./data",
+        // jemalloc: two arenas is plenty for this I/O-bound worker, and the
+        // background thread returns free pages about a second after use. Without
+        // this the allocator keeps the high-water mark, which is what made RSS
+        // climb for hours. Any allocator without jemalloc simply ignores it.
+        _RJEM_MALLOC_CONF:
+          "background_thread:true,narenas:2,dirty_decay_ms:1000,muzzy_decay_ms:1000"
       }
     }
   ]
