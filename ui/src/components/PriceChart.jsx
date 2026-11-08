@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Area,
   CartesianGrid,
+  ComposedChart,
   Line,
   LineChart,
   ReferenceDot,
@@ -159,6 +161,10 @@ function ProTooltip({ active, payload, previousClose, bucketMs, targetPrice }) {
     Number.isFinite(targetPrice) && targetPrice > 0 && point.p > 0
       ? ((targetPrice - point.p) / point.p) * 100
       : null;
+  const low = Number.isFinite(point?.l) ? point.l : null;
+  const high = Number.isFinite(point?.h) ? point.h : null;
+  const bandPct =
+    low != null && high != null && low > 0 ? ((high - low) / low) * 100 : null;
 
   return (
     <div className="pro-tip">
@@ -169,6 +175,24 @@ function ProTooltip({ active, payload, previousClose, bucketMs, targetPrice }) {
         <span>Close</span>
         <strong>{fixedPrice(point.p)} RLT</strong>
       </div>
+      {low != null && high != null ? (
+        <>
+          <div className="pro-tip-row">
+            <span>Low</span>
+            <strong>{fixedPrice(low)} RLT</strong>
+          </div>
+          <div className="pro-tip-row">
+            <span>High</span>
+            <strong>{fixedPrice(high)} RLT</strong>
+          </div>
+          {bandPct != null ? (
+            <div className="pro-tip-row">
+              <span>Band</span>
+              <b className="text-[#8fa0b8]">{bandPct.toFixed(2)}%</b>
+            </div>
+          ) : null}
+        </>
+      ) : null}
       <div className="pro-tip-row">
         <span>vs previous</span>
         <b style={{ color: delta != null && delta < 0 ? PRO.down : PRO.up }}>
@@ -245,7 +269,15 @@ function PriceDetailModal({
     () => (data.length > 1 ? timeTicks(data[0].t, data[data.length - 1].t) : undefined),
     [data]
   );
-  const values = data.map((point) => point.p);
+  const values = data.flatMap((point) => {
+    const out = [point.p];
+    if (Number.isFinite(point.l)) out.push(point.l);
+    if (Number.isFinite(point.h)) out.push(point.h);
+    return out;
+  });
+  const hasBand = data.some(
+    (point) => Number.isFinite(point.l) && Number.isFinite(point.h)
+  );
   const { domain, showTarget } = targetDomain(values, targetPrice);
   const xDomain =
     data.length > 1
@@ -357,7 +389,7 @@ function PriceDetailModal({
               </div>
             ) : null}
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData} margin={{ top: 10, right: 2, left: 0, bottom: 0 }}>
+              <ComposedChart data={chartData} margin={{ top: 10, right: 2, left: 0, bottom: 0 }}>
                 <CartesianGrid vertical={false} stroke={PRO.grid} strokeDasharray="2 4" />
                 <XAxis
                   dataKey="t"
@@ -409,6 +441,22 @@ function PriceDetailModal({
                     strokeWidth={1}
                   />
                 ) : null}
+                {hasBand ? (
+                  <Area
+                    type="linear"
+                    dataKey={(point) =>
+                      Number.isFinite(point?.l) && Number.isFinite(point?.h)
+                        ? [point.l, point.h]
+                        : null
+                    }
+                    stroke="none"
+                    fill={color}
+                    fillOpacity={0.16}
+                    isAnimationActive={false}
+                    connectNulls={false}
+                    activeDot={false}
+                  />
+                ) : null}
                 <Line
                   type="linear"
                   dataKey="p"
@@ -430,7 +478,7 @@ function PriceDetailModal({
                     ifOverflow="extendDomain"
                   />
                 ) : null}
-              </LineChart>
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
         </div>
@@ -439,6 +487,16 @@ function PriceDetailModal({
           <span>
             {formatInt(data.length)} closes · {frame.label} buckets · local time
           </span>
+          {hasBand ? (
+            <span className="flex items-center gap-1.5">
+              <i
+                className="h-2.5 w-4 rounded-[1px]"
+                style={{ backgroundColor: color, opacity: 0.22 }}
+                aria-hidden="true"
+              />
+              Low–high band
+            </span>
+          ) : null}
           {Number.isFinite(targetPrice) ? (
             <span className="flex items-center gap-1.5">
               <i
@@ -606,7 +664,7 @@ export default function PriceChart({ history, targetPrice, itemId, request, labe
           </div>
           <span
             className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint tabular-nums"
-            title="High and low closes in this window"
+            title="High and low across this window, including intra-bucket wicks"
           >
             H {fixedPrice(high)} · L {fixedPrice(low)}
           </span>

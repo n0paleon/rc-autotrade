@@ -28,8 +28,8 @@ use crate::constants::{
 use crate::db;
 use crate::logger::Logger;
 use crate::model::{
-    MarketSnapshot, Mode, OrderEntry, PricePoint, Product, ProductView, ReportTotals, ReportView,
-    Session, Settings, Stats, Target,
+    MarketSnapshot, Mode, OrderEntry, PricePoint, PriceSeriesPoint, Product, ProductView,
+    ReportTotals, ReportView, Session, Settings, Stats, Target,
 };
 use crate::rules::round_price;
 use crate::timings::Timings;
@@ -1577,7 +1577,7 @@ impl Store {
 
     pub fn load_price_history(&self, item_id: &str, limit: usize, since: i64) -> Vec<PricePoint> {
         let mut statement = match self.db.prepare(
-            "SELECT item_id, bucket_at, price, fill_price, fill_qty, fill_approx
+            "SELECT item_id, bucket_at, price, low_price, high_price, fill_price, fill_qty, fill_approx
              FROM price_points
              WHERE item_id = ?1 AND (?2 = 0 OR bucket_at >= ?2)
              ORDER BY bucket_at DESC LIMIT ?3",
@@ -1590,9 +1590,11 @@ impl Store {
                 item_id: row.get(0)?,
                 bucket_at: row.get(1)?,
                 price: row.get(2)?,
-                fill_price: row.get(3)?,
-                fill_qty: row.get(4)?,
-                fill_approx: row.get::<_, i64>(5)? != 0,
+                low_price: row.get(3)?,
+                high_price: row.get(4)?,
+                fill_price: row.get(5)?,
+                fill_qty: row.get(6)?,
+                fill_approx: row.get::<_, i64>(7)? != 0,
             })
         });
         match rows {
@@ -1605,12 +1607,12 @@ impl Store {
         }
     }
 
-    /// Raw 1-minute closes for one item, oldest first. Unlike
-    /// `load_price_history` this is not capped by the live chart window, so the
-    /// 3d/7d periods can reach back into the retained week.
-    pub fn price_series(&self, item_id: &str, since: i64) -> Vec<(i64, f64)> {
+    /// Raw 1-minute closes (plus their low/high band) for one item, oldest
+    /// first. Unlike `load_price_history` this is not capped by the live chart
+    /// window, so the 3d/7d periods can reach back into the retained week.
+    pub fn price_series(&self, item_id: &str, since: i64) -> Vec<PriceSeriesPoint> {
         let mut statement = match self.db.prepare(
-            "SELECT bucket_at, price
+            "SELECT bucket_at, price, COALESCE(low_price, price), COALESCE(high_price, price)
              FROM price_points
              WHERE item_id = ?1 AND bucket_at >= ?2
              ORDER BY bucket_at ASC",
@@ -1619,7 +1621,12 @@ impl Store {
             Err(_) => return Vec::new(),
         };
         let rows = statement.query_map(params![item_id, since], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
+            Ok(PriceSeriesPoint {
+                bucket_at: row.get(0)?,
+                price: row.get(1)?,
+                low: row.get(2)?,
+                high: row.get(3)?,
+            })
         });
         match rows {
             Ok(rows) => rows.filter_map(Result::ok).collect(),
@@ -1632,6 +1639,8 @@ impl Store {
         item_id: &str,
         bucket_at: i64,
         price: f64,
+        low: f64,
+        high: f64,
         fill: Option<(f64, f64, bool)>,
     ) -> Result<(), String> {
         let (fill_price, fill_qty, fill_approx) = match fill {
@@ -1642,10 +1651,12 @@ impl Store {
             .db
             .prepare_cached(
                 "INSERT INTO price_points
-                 (item_id, bucket_at, price, fill_price, fill_qty, fill_approx)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 (item_id, bucket_at, price, low_price, high_price, fill_price, fill_qty, fill_approx)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT(item_id, bucket_at) DO UPDATE SET
                    price = excluded.price,
+                   low_price = excluded.low_price,
+                   high_price = excluded.high_price,
                    fill_price = COALESCE(excluded.fill_price, price_points.fill_price),
                    fill_qty = COALESCE(excluded.fill_qty, price_points.fill_qty),
                    fill_approx = excluded.fill_approx",
@@ -1656,6 +1667,8 @@ impl Store {
                 item_id,
                 bucket_at,
                 price,
+                low,
+                high,
                 fill_price,
                 fill_qty,
                 fill_approx as i64
@@ -1667,7 +1680,10 @@ impl Store {
     /// Writes a batch of sampled closes in one transaction. A sample never
     /// carries a fill, so re-sampling a bucket that already holds a fill keeps
     /// the fill columns intact.
-    pub fn record_price_samples(&self, samples: &[(&str, i64, f64)]) -> Result<(), String> {
+    pub fn record_price_samples(
+        &self,
+        samples: &[(&str, i64, f64, f64, f64)],
+    ) -> Result<(), String> {
         if samples.is_empty() {
             return Ok(());
         }
@@ -1679,15 +1695,17 @@ impl Store {
             let mut statement = tx
                 .prepare_cached(
                     "INSERT INTO price_points
-                     (item_id, bucket_at, price, fill_price, fill_qty, fill_approx)
-                     VALUES (?1, ?2, ?3, NULL, NULL, 0)
+                     (item_id, bucket_at, price, low_price, high_price, fill_price, fill_qty, fill_approx)
+                     VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, 0)
                      ON CONFLICT(item_id, bucket_at) DO UPDATE SET
-                       price = excluded.price",
+                       price = excluded.price,
+                       low_price = excluded.low_price,
+                       high_price = excluded.high_price",
                 )
                 .map_err(|e| format!("could not cache price sample statement: {e}"))?;
-            for (item_id, bucket_at, price) in samples {
+            for (item_id, bucket_at, price, low, high) in samples {
                 statement
-                    .execute(params![item_id, bucket_at, price])
+                    .execute(params![item_id, bucket_at, price, low, high])
                     .map_err(|e| format!("could not record price sample: {e}"))?;
             }
         }
@@ -2299,15 +2317,19 @@ mod tests {
                 item_id,
                 1_700_000_000_000,
                 0.09,
+                0.085,
+                0.095,
                 Some((0.0905, 10.0, false)),
             )
             .unwrap();
         store
-            .record_price_point(item_id, 1_700_000_060_000, 0.095, None)
+            .record_price_point(item_id, 1_700_000_060_000, 0.095, 0.093, 0.097, None)
             .unwrap();
         let points = store.load_price_history(item_id, 10, 0);
         assert_eq!(points.len(), 2);
         assert_eq!(points[0].bucket_at, 1_700_000_000_000);
+        assert_eq!(points[0].low_price, Some(0.085));
+        assert_eq!(points[0].high_price, Some(0.095));
         assert_eq!(points[0].fill_price, Some(0.0905));
         assert_eq!(points[1].fill_price, None);
 
@@ -2315,11 +2337,29 @@ mod tests {
         // retained range for the chart's 3d/7d periods.
         assert_eq!(
             store.price_series(item_id, 1_700_000_000_000),
-            vec![(1_700_000_000_000, 0.09), (1_700_000_060_000, 0.095)]
+            vec![
+                PriceSeriesPoint {
+                    bucket_at: 1_700_000_000_000,
+                    price: 0.09,
+                    low: Some(0.085),
+                    high: Some(0.095),
+                },
+                PriceSeriesPoint {
+                    bucket_at: 1_700_000_060_000,
+                    price: 0.095,
+                    low: Some(0.093),
+                    high: Some(0.097),
+                },
+            ]
         );
         assert_eq!(
             store.price_series(item_id, 1_700_000_030_000),
-            vec![(1_700_000_060_000, 0.095)]
+            vec![PriceSeriesPoint {
+                bucket_at: 1_700_000_060_000,
+                price: 0.095,
+                low: Some(0.093),
+                high: Some(0.097),
+            }]
         );
         assert!(store.price_series("other-item", 0).is_empty());
     }
@@ -2330,9 +2370,11 @@ mod tests {
         let item_id = "6319f7baa8ce530569ed16b9";
         let old = now_ms() - (PRICE_RETENTION_DAYS + 1) * 86_400_000;
         let recent = now_ms() - 86_400_000;
-        store.record_price_point(item_id, old, 0.1, None).unwrap();
         store
-            .record_price_point(item_id, recent, 0.2, None)
+            .record_price_point(item_id, old, 0.1, 0.1, 0.1, None)
+            .unwrap();
+        store
+            .record_price_point(item_id, recent, 0.2, 0.2, 0.2, None)
             .unwrap();
 
         assert_eq!(store.prune_price_history().unwrap(), 1);
@@ -2341,6 +2383,31 @@ mod tests {
         assert_eq!(points[0].bucket_at, recent);
         // A passive checkpoint is always safe to run on a live database.
         store.checkpoint_wal().unwrap();
+    }
+
+    #[test]
+    fn reads_a_legacy_price_row_as_a_zero_width_band() {
+        let store = store("legacy-band");
+        let item_id = "6319f7baa8ce530569ed16b9";
+        // Rows written before the band columns existed have NULL edges.
+        store
+            .db
+            .execute(
+                "INSERT INTO price_points (item_id, bucket_at, price) VALUES (?1, ?2, ?3)",
+                params![item_id, 1_700_000_000_000_i64, 0.25],
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.price_series(item_id, 0),
+            vec![PriceSeriesPoint {
+                bucket_at: 1_700_000_000_000,
+                price: 0.25,
+                low: Some(0.25),
+                high: Some(0.25),
+            }],
+            "an old close must read as low = high = price, never a hole"
+        );
     }
 
     #[test]

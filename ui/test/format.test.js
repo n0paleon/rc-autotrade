@@ -9,6 +9,7 @@ import {
   itemTypeOf,
   ITEM_TYPE_ORDER,
   marketplaceUrl,
+  mergeHistory,
   runtimeHot,
   thresholdClass,
   utilizationClass
@@ -100,4 +101,23 @@ test("formatPreciseMs keeps sub-millisecond SQLite timings visible", () => {
   assert.equal(formatPreciseMs(null), "—");
   assert.equal(formatPreciseMs(Number.NaN), "—");
   assert.equal(formatPreciseMs(-1), "—");
+});
+
+test("mergeHistory carries the live minute band and never narrows it", () => {
+  const first = mergeHistory([], 0.1, 0, 0.09, 0.11);
+  assert.deepEqual(first, [{ t: 0, p: 0.1, l: 0.09, h: 0.11 }]);
+
+  const next = mergeHistory(first, 0.12, 60_000, 0.11, 0.13);
+  assert.deepEqual(next, [
+    { t: 0, p: 0.1, l: 0.09, h: 0.11 },
+    { t: 60_000, p: 0.12, l: 0.11, h: 0.13 }
+  ]);
+
+  // A close-only tick widens the bucket's band to include its own price.
+  const widened = mergeHistory(
+    [{ t: 60_000, p: 0.12, l: 0.11, h: 0.13 }],
+    0.14,
+    60_000
+  );
+  assert.deepEqual(widened, [{ t: 60_000, p: 0.14, l: 0.11, h: 0.14 }]);
 });

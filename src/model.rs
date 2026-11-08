@@ -395,9 +395,22 @@ pub struct PricePoint {
     pub item_id: String,
     pub bucket_at: i64,
     pub price: f64,
+    pub low_price: Option<f64>,
+    pub high_price: Option<f64>,
     pub fill_price: Option<f64>,
     pub fill_qty: Option<f64>,
     pub fill_approx: bool,
+}
+
+/// One stored minute as the chart consumes it: close plus the intra-minute
+/// low/high band. The band is optional so rows from a pre-band database still
+/// decode (the migration backfills them, but a live reader may race it).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PriceSeriesPoint {
+    pub bucket_at: i64,
+    pub price: f64,
+    pub low: Option<f64>,
+    pub high: Option<f64>,
 }
 
 #[cfg(test)]

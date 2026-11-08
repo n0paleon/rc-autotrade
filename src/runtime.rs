@@ -539,6 +539,8 @@ fn sample_prices(state: &Arc<AppState>) {
             json!({
                 "itemId": sample.item_id,
                 "price": sample.price,
+                "low": sample.low,
+                "high": sample.high,
                 "bucket": sample.bucket,
                 "at": now,
                 "sampled": true,

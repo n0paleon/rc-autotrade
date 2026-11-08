@@ -105,7 +105,7 @@ Rollercoin session — two of either will duplicate orders.
 | `DELETE /api/history` | ✅ | wipes the loot log + profit report and resets stats, engine counters and latency samples |
 | `GET /api/report` | ✅ | same derived columns |
 | `GET /api/events` | ➕ | Rust-only: market-frame counts per 5-minute bucket for `?days=1..7`; the deck sums them into the chart timeframe in local time |
-| `GET /api/price-history` | ➕ | Rust-only: raw 1-minute closes for one `itemId` over `?days=1..7`; the deck buckets them in local time and merges the live 24h window |
+| `GET /api/price-history` | ➕ | Rust-only: one duration-weighted median close per minute plus its low/high band for a single `itemId` over `?days=1..7`; the deck buckets them in local time and merges the live 24h window |
 | `GET /api/session` | ✅ | same preview/expires fields |
 | `POST /api/session` | ✅ | validated, `changed` flag |
 | `DELETE /api/session` | ✅ | clears all three credentials |
@@ -491,6 +491,30 @@ Control plane and durability:
 - `orders (at DESC, id DESC)` keeps the loot page sort-free, and
   `price_points (bucket_at)` lets the hourly retention `DELETE` seek instead of
   scanning every retained row.
+
+Price history:
+
+- **The stored close is a duration-weighted median, not the last frame.** The
+  feed is change-driven and `listings[0]` can be a one-unit bait ask, so taking
+  the minute's last write as its close let a single transient print redraw the
+  chart and then propagate into every coarser bucket. `MinuteAgg` weighs each
+  price by how long it held; a print seen for less than half the minute cannot
+  move the close, while a sustained move still wins. A
+  `PRICE_SETTLE_DWELL_MS` (5 s) debounce runs first, so a price that vanishes
+  within a few seconds never enters the weights. The guard only shapes the
+  chart and sampler — order decisions still read the raw best ask, so a real
+  cheap listing is never delayed.
+- **The minute is finalised when it rolls.** The frame path and the quiet-minute
+  sampler both close the previous bucket with the exact median, including the
+  tail after the last frame, and carry the settled level into the new minute.
+- **Every bucket also carries a low/high band.** `MinuteAgg` widens `low`/`high`
+  over the prices that actually held, so a print filtered by the dwell guard
+  never inflates the band. `price_points.low_price`/`high_price` store it;
+  rows from an older database have NULL edges and are read as
+  `low = high = price`, so the chart draws a zero-width band instead of a hole
+  without paying for a mass UPDATE at startup. `/api/price-history` returns
+  `l`/`h` next to `p`, and the expanded chart renders the band behind the close
+  line, with Low/High/Band rows in its tooltip.
 
 Still open (deliberately unchanged): per-request auth rate limiting, loot-log
 retention plus `COUNT(*)` caching for a very large `orders` table, and a release

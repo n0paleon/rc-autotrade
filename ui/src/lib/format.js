@@ -212,14 +212,27 @@ export function drawPixelAvatar(canvas, seed, preferredColor) {
   ctx.fillRect(1, 1, 2, 1);
 }
 
-export function mergeHistory(history, point, bucket) {
+export function mergeHistory(history, point, bucket, low, high) {
   const next = Array.isArray(history) ? [...history] : [];
   const last = next[next.length - 1];
+  const edge = (value, fallback) =>
+    value != null && Number.isFinite(Number(value)) ? Number(value) : fallback;
+  const inBucket = last != null && last.t === bucket;
+  const previousLow = inBucket && Number.isFinite(last.l) ? last.l : point;
+  const previousHigh = inBucket && Number.isFinite(last.h) ? last.h : point;
+  const entry = {
+    t: bucket,
+    p: point,
+    // A running minute's band only grows; every tick widens it, and a
+    // close-only tick can never narrow it.
+    l: Math.min(previousLow, edge(low, point), point),
+    h: Math.max(previousHigh, edge(high, point), point)
+  };
   if (!last || last.t < bucket) {
-    next.push({ t: bucket, p: point });
+    next.push(entry);
     if (next.length > 1440) next.splice(0, next.length - 1440);
   } else {
-    next[next.length - 1] = { ...last, p: point };
+    next[next.length - 1] = { ...last, ...entry };
   }
   return next;
 }

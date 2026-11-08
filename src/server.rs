@@ -982,7 +982,14 @@ async fn price_history_view(
     let points: Vec<Value> = store
         .price_series(item_id, since)
         .into_iter()
-        .map(|(bucket_at, price)| json!({ "t": bucket_at, "p": price }))
+        .map(|point| {
+            json!({
+                "t": point.bucket_at,
+                "p": point.price,
+                "l": point.low,
+                "h": point.high,
+            })
+        })
         .collect();
     Json(json!({
         "ok": true,
