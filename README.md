@@ -34,8 +34,8 @@ A headless Rollercoin marketplace sniper with an arcade-style control deck built
 Requirements:
 
 - Rust 1.99.1 (pinned in `mise.toml`) or a recent Rust toolchain
-- Bun 1.2 or newer
-- Node.js for the Vite development server
+- Bun 1.4.4 (pinned in `mise.toml`)
+- Node.js 24.16.0 (pinned in `mise.toml`) for the Vite development server
 - `libssl3` on Debian and Ubuntu
 
 Steps:

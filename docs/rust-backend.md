@@ -15,11 +15,13 @@ cargo run --release          # backend at http://127.0.0.1:8787
 
 ## 1. Toolchain
 
-`mise.toml` pins the exact compiler and keeps the crate cache inside the repo:
+`mise.toml` pins the exact toolchain and keeps the crate cache inside the repo:
 
 ```toml
 [tools]
 rust = "1.99.1"
+bun = "1.4.4"
+node = "24.16.0"
 
 [env]
 CARGO_HOME = "{{config_root}}/.cargo-home"
