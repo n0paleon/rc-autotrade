@@ -152,11 +152,11 @@ function buildStages(t) {
     },
     {
       key: "ttfb",
-      label: "TTFB · Time To First Byte",
+      label: "Purchase Request → TTFB",
       hint:
         Number(t.attempts) > 1
-          ? "Final attempt's first byte; this span also covers the 401 refresh and retried request"
-          : "Client dispatch until the first response byte (the headers) arrives",
+          ? "Time To First Byte of the final attempt; this span also covers the 401 refresh and retried request"
+          : "Time To First Byte: client dispatch until the first response byte (the headers) arrives",
       from: mark(t, "sendAt"),
       to: mark(t, "responseAt"),
       color: STAGE_COLORS[3]
@@ -377,7 +377,7 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
                 <Metric
                   label="Signal → first byte"
                   value={delta(signalAt, responseAt)}
-                  hint="TTFB plus everything before dispatch on this order"
+                  hint="Time To First Byte plus everything before dispatch on this order"
                   tone="text-gold"
                 />
                 <Metric
@@ -393,7 +393,7 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
                   tone="text-signal"
                 />
                 <Metric
-                  label="TTFB"
+                  label="Purchase Request → TTFB"
                   value={ttfbValue(t)}
                   hint={ttfbHint(t)}
                   tone="text-violet"
