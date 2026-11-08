@@ -43,6 +43,7 @@ export function ModalShell({
   closeRef: externalCloseRef,
   wide = false,
   small = false,
+  size = null,
   role = "dialog",
   titleColor = "lime"
 }) {
@@ -127,7 +128,13 @@ export function ModalShell({
       <div
         ref={panelRef}
         className={`panel modal-panel relative z-10 flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-none sm:rounded-none ${
-          wide ? "sm:max-w-3xl" : small ? "sm:max-w-md" : "sm:max-w-lg"
+          size === "monitor"
+            ? "sm:h-[92dvh] sm:max-w-[min(1500px,96vw)]"
+            : wide
+              ? "sm:max-w-3xl"
+              : small
+                ? "sm:max-w-md"
+                : "sm:max-w-lg"
         }${closing ? " is-closing" : ""}`}
         role={role}
         aria-modal="true"

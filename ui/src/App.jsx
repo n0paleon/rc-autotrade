@@ -1,6 +1,7 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import TrendPanel, { TrendChip } from "./components/TrendPanel.jsx";
-import { Icon, ModalShell } from "./components/ModalShell.jsx";
+import { Icon } from "./components/ModalShell.jsx";
+import { MonitorWindow } from "./components/MonitorWindow.jsx";
 import { BackupModal } from "./components/BackupModal.jsx";
 import { LootDetailModal } from "./components/LootDetailModal.jsx";
 import {
@@ -38,18 +39,12 @@ import {
   trimPrice,
   drawPixelAvatar,
   formatMs,
-  formatPreciseMs,
-  formatBytes,
-  formatPercent,
   latencyChannelLabel,
-  latencyClass,
-  sparkBars,
-  thresholdClass,
-  utilizationClass
+  latencyClass
 } from "./lib/format.js";
 import { sound } from "./lib/sound.js";
 import { countTargetsByStatus, filterTargets } from "./lib/targets.js";
-import { EVENT_RATE_STALE_MS, modeOf, TELEMETRY_PUSH_MS } from "./lib/constants.js";
+import { EVENT_RATE_STALE_MS, modeOf } from "./lib/constants.js";
 import { ModeMenu } from "./components/ModeMenu.jsx";
 
 /** Header chip text per trading mode. */
@@ -312,7 +307,7 @@ function BootScreen({ onLogin, busy, error }) {
   );
 }
 
-function Header({ snapshot, status, latency, soundOn, onSound, onLogout, onSetMode, modeBusy }) {
+function Header({ snapshot, status, latency, soundOn, onSound, onLogout, onSetMode, modeBusy, onMonitor }) {
   const now = useNow(1000);
   const gateway = snapshot.gateway?.status;
   let connLabel = "LINK LOST";
@@ -370,14 +365,28 @@ function Header({ snapshot, status, latency, soundOn, onSound, onLogout, onSetMo
           <span id="conn-chip" className={`chip ${connClass}`} title={snapshot.gateway?.lastError || "Control-plane link status"}>
             <span className="led" />{connLabel}
           </span>
-          <span className="hidden items-center gap-1 font-mono text-[12px] text-info md:inline-flex" title="Control link round-trip">
+          <button
+            className="hidden items-center gap-1 font-mono text-[12px] text-info hover:text-ink md:inline-flex"
+            type="button"
+            title="Open the monitor window — order benchmark, latency and system"
+            onClick={onMonitor}
+          >
             <Icon name="i-wifi" className="h-3 w-3" />
             <span className="tabular-nums">{latency != null ? `${latency}ms` : "--"}</span>
-          </span>
+          </button>
           <span className="hidden items-center gap-1 font-mono text-[12px] text-violet lg:inline-flex" title="Local time">
             <Icon name="i-clock" className="h-3 w-3" />
             <span className="tabular-nums">{formatTime(now)}</span>
           </span>
+          <button
+            className="icon-btn hidden h-8 w-8 sm:inline-flex"
+            type="button"
+            aria-label="Open monitor window"
+            title="Monitor — order benchmark, latency and system"
+            onClick={onMonitor}
+          >
+            <Icon name="i-pulse" />
+          </button>
           <button
             className="icon-btn h-10 w-10 sm:h-8 sm:w-8"
             type="button"
@@ -1278,9 +1287,15 @@ const LOOT_PAGE_SIZE = 50;
 const LOOT_MAX_ROWS = 500;
 const LOOT_SEARCH_DEBOUNCE_MS = 250;
 
-function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
+function LootLog({ history, historyTotal, historyRevision, onReset, request, onMonitor, recentAvg, recentOrders, recentFallback }) {
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [profitFilter, setProfitFilter] = useState("");
+  // The unfiltered live view: while no filter/search is active we can prepend
+  // socket entries and keep paging from the optimistic snapshot. Any active
+  // filter forces a server query, like search does.
+  const filtered = Boolean(query || statusFilter || profitFilter);
   const [entries, setEntries] = useState([]);
   const [total, setTotal] = useState(Number(historyTotal) || 0);
   const [hasMore, setHasMore] = useState(false);
@@ -1299,16 +1314,16 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
     return () => clearTimeout(timer);
   }, [draft]);
 
-  // Leaving search mode always falls back to the newest live page.
+  // Leaving filtered mode always falls back to the newest live page.
   useEffect(() => {
-    if (query) return;
+    if (filtered) return;
     const seed = (Array.isArray(history) ? history : []).filter(Boolean);
     idsRef.current = new Set(seed.map((entry) => entry.id));
     setEntries(seed);
     setError("");
     setLoading(false);
     setHasMore(idsRef.current.size < (Number(historyTotal) || 0));
-  }, [query]);
+  }, [filtered]);
 
   // A reset or backup restore replaces the permanent history. Re-seed this
   // locally paged view from the optimistic snapshot as soon as that mutation
@@ -1318,6 +1333,8 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
     idsRef.current = new Set(seed.map((entry) => entry.id));
     setDraft("");
     setQuery("");
+    setStatusFilter("");
+    setProfitFilter("");
     setEntries(seed);
     setTotal(Number(historyTotal) || 0);
     setHasMore(idsRef.current.size < (Number(historyTotal) || 0));
@@ -1330,7 +1347,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
   useEffect(() => {
     const nextTotal = Number(historyTotal);
     if (!Number.isFinite(nextTotal)) return;
-    if (query) {
+    if (filtered) {
       if (nextTotal !== 0) return;
       idsRef.current = new Set();
       setEntries([]);
@@ -1348,14 +1365,14 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
       return;
     }
     setHasMore(idsRef.current.size < nextTotal);
-  }, [historyTotal, query]);
+  }, [historyTotal, filtered]);
 
   // Live socket entries are prepended so the newest loot stays on screen even
   // while older pages are loaded below it.
   useEffect(() => {
     const list = Array.isArray(history) ? history : [];
     if (list.length === 0) return;
-    const fresh = query
+    const fresh = filtered
       ? []
       : list.filter((entry) => entry && !idsRef.current.has(entry.id));
     for (const entry of fresh) idsRef.current.add(entry.id);
@@ -1367,11 +1384,13 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
       });
       return [...fresh, ...updated].slice(0, LOOT_MAX_ROWS);
     });
-  }, [history, query]);
+  }, [history, filtered]);
 
-  // Server-side search over the whole permanent log (product name / item id).
+  // Server-side search/filter over the whole permanent log (product name / item
+  // id, status, profit sign). Runs whenever the debounced search text or either
+  // filter select changes.
   useEffect(() => {
-    if (!query) return;
+    if (!filtered) return;
     let cancelled = false;
     idsRef.current = new Set();
     setEntries([]);
@@ -1379,7 +1398,10 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
     setHasMore(false);
     setError("");
     setLoading(true);
-    const params = new URLSearchParams({ q: query, limit: String(LOOT_PAGE_SIZE) });
+    const params = new URLSearchParams({ limit: String(LOOT_PAGE_SIZE) });
+    if (query) params.set("q", query);
+    if (statusFilter) params.set("status", statusFilter);
+    if (profitFilter) params.set("profit", profitFilter);
     request(`/api/history?${params.toString()}`)
       .then((data) => {
         if (cancelled) return;
@@ -1398,13 +1420,15 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
     return () => {
       cancelled = true;
     };
-  }, [query, request]);
+  }, [filtered, query, statusFilter, profitFilter, request]);
 
   const loadOlder = useCallback(async () => {
     if (loading || !hasMore) return;
     const oldest = entries[entries.length - 1];
     const params = new URLSearchParams({ limit: String(LOOT_PAGE_SIZE) });
     if (query) params.set("q", query);
+    if (statusFilter) params.set("status", statusFilter);
+    if (profitFilter) params.set("profit", profitFilter);
     if (oldest) {
       params.set("beforeAt", String(oldest.at));
       params.set("beforeId", String(oldest.id));
@@ -1427,13 +1451,15 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
     } finally {
       setLoading(false);
     }
-  }, [entries, hasMore, loading, query, request]);
+  }, [entries, hasMore, loading, query, statusFilter, profitFilter, request]);
 
   const resetLog = async () => {
     const didReset = await onReset();
     if (didReset === false) return;
     setDraft("");
     setQuery("");
+    setStatusFilter("");
+    setProfitFilter("");
     idsRef.current = new Set();
     setEntries([]);
     setTotal(0);
@@ -1443,15 +1469,22 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
 
   const shown = entries.length;
   const trimmed = shown < total;
-  const emptyTitle = error ? "Loot log unavailable" : query ? "No matching loot" : "No loot yet";
+  const emptyTitle = error ? "Loot log unavailable" : filtered ? "No matching loot" : "No loot yet";
   const emptyHint = error
     ? error
-    : query
-      ? `Nothing in the permanent log matches “${query}”.`
+    : filtered
+      ? "Nothing in the permanent log matches the current search/filter."
       : "Confirmed fills will drop here with profit and latency.";
   const latestDetail = detail
     ? entries.find((entry) => entry.id === detail.id) || detail
     : null;
+  // `Number(null)` is 0, which used to turn "no data" into a fake 0ms.
+  const avg =
+    recentAvg == null || !Number.isFinite(Number(recentAvg)) ? null : Number(recentAvg);
+  const recentCount =
+    recentOrders == null || !Number.isFinite(Number(recentOrders))
+      ? 0
+      : Number(recentOrders);
 
   return (
     <>
@@ -1466,8 +1499,28 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
             {formatInt(shown)}{trimmed ? ` / ${formatInt(total)}` : ""}
           </span>
         </h2>
-        <div className="ml-auto flex w-full items-center gap-2 sm:w-auto">
-          <div className="relative min-w-0 flex-1 sm:w-56 sm:flex-none">
+        <button
+          className="monitor-counter"
+          type="button"
+          onClick={onMonitor}
+          aria-haspopup="dialog"
+          title={
+            avg == null
+              ? "No timed orders yet — open the monitor window"
+              : recentFallback
+                ? `Average order latency over the last 30 minutes of activity (${formatInt(recentCount)} timed orders; no orders in the last 30 minutes) — open the monitor window`
+                : `Average order latency over the last 30 minutes (${formatInt(recentCount)} timed orders) — open the monitor window`
+          }
+        >
+          <span className="monitor-counter-icon" aria-hidden="true">
+            <Icon name="i-pulse" className="h-3.5 w-3.5" />
+          </span>
+          <span className="monitor-counter-label">Avg 30m{recentFallback ? "*" : ""}</span>
+          <b className="monitor-counter-value">{avg == null ? "—" : formatMs(avg)}</b>
+          <Icon name="i-chevron" className="monitor-counter-chevron" />
+        </button>
+        <div className="ml-auto flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
+          <div className="relative min-w-0 flex-1 sm:w-44 sm:flex-none">
             <Icon name="i-search" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
             <input
               className="input input-sm pl-8"
@@ -1481,6 +1534,28 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
               aria-label="Search loot log by product name"
             />
           </div>
+          <select
+            className="input input-sm w-auto shrink-0 px-2"
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value)}
+            aria-label="Filter loot log by status"
+            title="Filter by status: success (filled) or failed"
+          >
+            <option value="">Status: All</option>
+            <option value="filled">Status: Success</option>
+            <option value="failed">Status: Failed</option>
+          </select>
+          <select
+            className="input input-sm w-auto shrink-0 px-2"
+            value={profitFilter}
+            onChange={(event) => setProfitFilter(event.target.value)}
+            aria-label="Filter loot log by profit"
+            title="Filter by profit sign: positive or negative"
+          >
+            <option value="">Profit: All</option>
+            <option value="positive">Profit: Positive (+)</option>
+            <option value="negative">Profit: Negative (−)</option>
+          </select>
           <button className="btn btn-ghost btn-sm" type="button" onClick={resetLog}>
             <Icon name="i-trash" className="h-3 w-3" /> Reset
           </button>
@@ -1520,6 +1595,9 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
                   <p className="mt-0.5 font-mono text-[13px] uppercase tracking-[0.08em] text-faint">
                     {formatTime(entry.at)} · {formatInt(entry.qty)} × {fixedPrice(entry.unitPrice)} RLT
                   </p>
+                  <p className="mt-0.5 font-mono text-[13px] text-muted">
+                    Target {entry.targetPrice > 0 ? fixedPrice(entry.targetPrice) : "—"}
+                  </p>
                   {entry.status === "failed" ? (
                     <p className="mt-0.5 truncate font-mono text-[13px] text-danger/80" title={entry.message || entry.note || undefined}>
                       {entry.message || entry.note || "failed"}
@@ -1540,7 +1618,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
           )}
           {wide ? (
           <div className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain">
-            <table className="w-full min-w-[760px] border-collapse text-left font-mono text-[13px] tabular-nums">
+            <table className="w-full min-w-[860px] border-collapse text-left font-mono text-[13px] tabular-nums">
               <thead className="sticky top-0 z-10 bg-night-900">
                 <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
                   <th scope="col" className="px-4 py-2 font-medium">Time</th>
@@ -1548,6 +1626,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
                   <th scope="col" className="px-3 py-2 font-medium">Qty</th>
                   <th scope="col" className="px-3 py-2 font-medium">Unit</th>
                   <th scope="col" className="px-3 py-2 font-medium">Total</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Target</th>
                   <th scope="col" className="px-3 py-2 font-medium">Profit</th>
                   <th scope="col" className="px-3 py-2 font-medium">Latency</th>
                   <th scope="col" className="px-3 py-2 font-medium">Status</th>
@@ -1576,6 +1655,12 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
                     <td className="px-3 py-2 text-ink-dim">{formatInt(entry.qty)}</td>
                     <td className="px-3 py-2 text-ink-dim">{fixedPrice(entry.unitPrice)}</td>
                     <td className="px-3 py-2 text-ink-dim">{fixedPrice(entry.totalPrice)}</td>
+                    <td
+                      className="px-3 py-2 text-muted"
+                      title="Target price in effect when this order was executed"
+                    >
+                      {entry.targetPrice > 0 ? fixedPrice(entry.targetPrice) : "—"}
+                    </td>
                     <td className={`px-3 py-2 ${entry.profitRlt > 0 ? "text-gold" : entry.profitRlt < 0 ? "text-danger" : "text-ink-dim"}`}>
                       {entry.status === "failed" ? "0.000000" : formatSignedRlt(entry.profitRlt)}
                     </td>
@@ -1601,7 +1686,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
       )}
       <div className="flex shrink-0 items-center justify-between gap-2 border-t-2 border-line px-3 py-2">
         <span className="min-w-0 truncate font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
-          {query
+          {filtered
             ? `${formatInt(shown)} match${shown === 1 ? "" : "es"}`
             : trimmed
               ? `Showing ${formatInt(shown)} of ${formatInt(total)}`
@@ -1912,418 +1997,6 @@ function LinkPanel({ snapshot, worker, notify, onEditSession, onBridge, onClearS
   );
 }
 
-function LatencyChannel({ label, stats }) {
-  const bars = sparkBars(stats?.recent || []);
-  const count = stats?.count || 0;
-  const errors = stats?.errors || 0;
-  const metrics = [
-    ["Avg", stats?.avg],
-    ["P50", stats?.p50],
-    ["P95", stats?.p95, latencyClass(stats?.p95)],
-    ["Min", stats?.min],
-    ["Max", stats?.max],
-    ["Jitter", stats?.jitter]
-  ];
-
-  return (
-    <article className="lat-card @container" aria-label={`${label} latency`}>
-      <div className="flex items-baseline justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="label truncate">{label}</h3>
-          <span className="mt-1 block font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
-            {formatInt(count)} {count === 1 ? "sample" : "samples"}
-            {errors > 0 ? <b className="text-danger"> · {formatInt(errors)} err</b> : null}
-          </span>
-        </div>
-        <b className={`shrink-0 font-mono text-[20px] font-bold leading-none tabular-nums ${latencyClass(stats?.last) || "text-muted"}`}>
-          {formatMs(stats?.last)}
-        </b>
-      </div>
-      <div className="lat-spark mt-2.5" aria-hidden="true">
-        {bars.length === 0 ? (
-          <span className="lat-spark-empty">No samples yet</span>
-        ) : (
-          bars.map((bar, index) => (
-            <i
-              key={index}
-              className={latencyClass(bar.value)}
-              style={{ height: `${bar.height}%` }}
-              title={formatMs(bar.value)}
-            />
-          ))
-        )}
-      </div>
-      <dl className="mt-2.5 grid grid-cols-3 gap-1.5 @[27rem]:grid-cols-6">
-        {metrics.map(([key, value, tone]) => (
-          <div key={key} className="lat-metric">
-            <dt>{key}</dt>
-            <dd className={tone || ""}>{formatMs(value)}</dd>
-          </div>
-        ))}
-      </dl>
-      {errors > 0 ? (
-        <p className="mt-2 flex items-start gap-1.5 font-mono text-[11px] leading-snug text-danger">
-          <Icon name="i-alert" className="mt-px h-3 w-3 shrink-0" />
-          <span className="break-words">{stats.lastError || "Upstream call failed"}</span>
-        </p>
-      ) : null}
-    </article>
-  );
-}
-
-function ConfigPanel({ snapshot, worker, notify }) {
-  const latency = snapshot.latency || {};
-  const channels = latency.channels || {};
-  const fresh = latency.freshest || null;
-  const channelOrder = ["http", "keepalive", "wsHandshake", "wsPing"];
-  const [probing, setProbing] = useState(false);
-  const { fetchLatency } = worker;
-
-  // Safety net: the worker pushes latency on every telemetry tick, but poll
-  // quietly too so the panel stays fresh even if the push stream is missed
-  // (e.g. an older worker binary that has not been restarted since this update).
-  useEffect(() => {
-    if (typeof fetchLatency !== "function") return undefined;
-    const timer = setInterval(() => {
-      fetchLatency().catch(() => {
-        /* the push stream or a reconnect will deliver it — stay silent */
-      });
-    }, 10_000);
-    return () => clearInterval(timer);
-  }, [fetchLatency]);
-
-  const runProbe = async () => {
-    setProbing(true);
-    try {
-      const result = await worker.refreshLatency();
-      if (result?.probe?.skipped) {
-        notify("info", "PROBE SKIPPED", "Keepalive probe is disabled (or mock mode).");
-      } else if (result?.probe?.ok) {
-        notify("success", "PROBE DONE", "Fresh upstream sample recorded.");
-      } else {
-        notify("warn", "PROBE FAILED", result?.probe?.error || "No response from upstream.");
-      }
-    } catch (error) {
-      notify("error", "PROBE FAILED", error.message);
-    } finally {
-      setProbing(false);
-    }
-  };
-
-  return (
-    <section className="panel @container" data-accent="cyan">
-      <div className="panel-head">
-        <h2 className="panel-title"><Icon name="i-wifi" className="h-4 w-4 text-info" /> Upstream latency</h2>
-        <span
-          className="tag hidden shrink-0 gap-1.5 text-info @[19rem]:inline-flex"
-          title={`The worker pushes latency every ${TELEMETRY_PUSH_MS / 1000} seconds; this panel polls it as a fallback`}
-        >
-          <span className="led led-pulse" aria-hidden="true" /> Auto · {TELEMETRY_PUSH_MS / 1000}s
-        </span>
-      </div>
-      <div className="panel-body">
-        <div className="flex flex-wrap items-end justify-between gap-3 border-2 border-line bg-night-950/70 p-3">
-          <div className="min-w-0">
-            <span className="label flex items-center gap-1.5"><Icon name="i-wifi" className="h-3 w-3" /> Worker → upstream</span>
-            <div className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-1">
-              <b className={`font-mono text-[28px] font-bold leading-none tabular-nums ${fresh ? latencyClass(fresh.last) : "text-muted"}`}>
-                {fresh ? formatMs(fresh.last) : "—"}
-              </b>
-              <span className="min-w-0 truncate font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
-                {fresh ? `${latencyChannelLabel(fresh.channel)} · ${relTime(fresh.lastAt)}` : "Waiting for the first sample"}
-              </span>
-            </div>
-          </div>
-          <button className="btn btn-sm" type="button" onClick={runProbe} disabled={probing} data-busy={probing ? "true" : undefined} aria-busy={probing}>
-            {probing ? "Probing…" : "Probe now"}
-          </button>
-        </div>
-        <div className="grid grid-cols-1 gap-2 @[37rem]:grid-cols-2">
-          {channelOrder.map((key) => (
-            <LatencyChannel key={key} label={latencyChannelLabel(key)} stats={channels[key] || { count: 0, recent: [] }} />
-          ))}
-        </div>
-        <p className="text-[13px] leading-relaxed text-faint">
-          HTTP covers purchases, item info and token refresh. Warm probe is the keepalive GET. WS handshake and ping cover the market feed. Failures still count because they used upstream time.
-        </p>
-      </div>
-    </section>
-  );
-}
-
-/**
- * Worker health panel. The worker samples itself every few seconds and pushes
- * a `system` event, so this panel is almost entirely a render of
- * `snapshot.system`; a slow poll is only a safety net.
- */
-function SystemMeter({ label, value, detail, tone }) {
-  const number = Number(value);
-  const width = Number.isFinite(number) ? Math.max(0, Math.min(100, number)) : 0;
-  const fill =
-    tone === "text-danger" ? "bg-danger" : tone === "text-warn" ? "bg-warn" : "bg-signal";
-  return (
-    <div className="border-2 border-line bg-night-950/60 p-3">
-      <div className="flex items-center justify-between gap-2">
-        <span className="label">{label}</span>
-        <b className={`font-mono text-[14px] font-semibold tabular-nums ${tone || "text-ink-dim"}`}>
-          {formatPercent(value, 1)}
-        </b>
-      </div>
-      <div className="meter meter-thin mt-2">
-        <i className={fill} style={{ "--meter-value": `${width}%` }} />
-      </div>
-      <span className="mt-1.5 block font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
-        {detail}
-      </span>
-    </div>
-  );
-}
-
-function StatTile({ label, value, tone, meta }) {
-  return (
-    <span className="flex min-w-0 flex-col gap-0.5 border border-line/70 bg-night-900/60 px-1.5 py-1 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
-      <span className="truncate leading-tight">{label}</span>
-      <b className={`whitespace-nowrap text-[12px] font-semibold leading-tight tracking-normal tabular-nums ${tone || "text-ink-dim"}`}>
-        {value}
-      </b>
-      {meta ? <span className="whitespace-nowrap text-[11px] leading-tight tracking-[0.04em]">{meta}</span> : null}
-    </span>
-  );
-}
-
-function HistoryStrip({ label, bars, format, tone }) {
-  return (
-    <div className="@container border-2 border-line bg-night-950/60 p-3">
-      <div className="flex items-center justify-between gap-2">
-        <span className="label min-w-0 whitespace-nowrap">{label}</span>
-        <span className="hidden shrink-0 whitespace-nowrap font-mono text-[12px] uppercase tracking-[0.08em] text-faint @[20rem]:inline">
-          {bars.length} samples
-        </span>
-      </div>
-      <div className="mt-2 flex h-10 items-end gap-[2px]" aria-hidden="true">
-        {bars.length === 0 ? (
-          <span className="font-mono text-[12px] uppercase tracking-wide text-faint">Collecting…</span>
-        ) : (
-          bars.map((bar, index) => (
-            <i
-              key={index}
-              className={`max-w-[10px] min-w-[2px] flex-1 bg-current ${tone ? tone(bar.value) : "text-signal"}`}
-              style={{ height: `${bar.height}%` }}
-              title={format(bar.value)}
-            />
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-function SystemPanel({ snapshot, worker }) {
-  const system = snapshot.system || null;
-  const health = system?.health || { level: "ok", reasons: [] };
-  const proc = system?.process || {};
-  const cpu = system?.cpu || {};
-  const memory = system?.memory || {};
-  const host = system?.system || {};
-  const loop = system?.eventLoop || {};
-  const lag = loop.lag || {};
-  const history = system?.history || [];
-  const db = system?.db || null;
-  const dbFiles = db?.files || {};
-  const dbStorage = db?.storage || {};
-  const dbSqlite = db?.sqlite || {};
-  const dbQueries = db?.queries || {};
-  const dbWindow = db?.window || {};
-  const dbTransactions = db?.transactions || {};
-  const dbWarn = Number(db?.thresholds?.p95WarnMs) || 25;
-  const dbCritical = Number(db?.thresholds?.p95CriticalMs) || 100;
-
-  // Safety net: the worker pushes `system` alongside gateway/latency on every
-  // telemetry tick. Quietly poll as well so the panel survives a missed push
-  // after a reconnect. Depend on the stable callback, not the whole worker
-  // object: the deck re-renders every second and would otherwise restart this
-  // timer forever.
-  const fetchSystem = worker?.fetchSystem;
-  useEffect(() => {
-    if (typeof fetchSystem !== "function") return undefined;
-    const timer = setInterval(() => {
-      fetchSystem().catch(() => {
-        /* a reconnect or the push stream will refresh it */
-      });
-    }, 10_000);
-    return () => clearInterval(timer);
-  }, [fetchSystem]);
-
-  if (!system) {
-    return (
-      <section className="panel" data-accent="lime">
-        <div className="panel-head">
-          <h2 className="panel-title"><Icon name="i-bolt" className="h-4 w-4 text-signal" /> Worker health</h2>
-        </div>
-        <div className="panel-body">
-          <p className="text-[13px] leading-relaxed text-faint">
-            Waiting for the first metrics sample. The worker samples CPU, memory and event-loop
-            health every few seconds; make sure it is running the latest build.
-          </p>
-        </div>
-      </section>
-    );
-  }
-
-  const healthLabel = health.level === "critical" ? "CRITICAL" : health.level === "warn" ? "DEGRADED" : "HEALTHY";
-  const healthChip =
-    health.level === "critical" ? "chip-offline" : health.level === "warn" ? "chip-warn" : "chip-online";
-  const heapTone = utilizationClass(memory.heapPercent, 80, 92);
-  const hostTone = utilizationClass(host.usedPercent, 88, 96);
-  const cpuTone = thresholdClass(cpu.processPercent, 80, 100);
-  const loadPerCore = Number.isFinite(Number(cpu.load1)) && cpu.cores ? cpu.load1 / cpu.cores : null;
-
-  return (
-    <section className="panel @container" data-accent="lime">
-      <div className="panel-head">
-        <h2 className="panel-title"><Icon name="i-bolt" className="h-4 w-4 text-signal" /> Worker health</h2>
-        <span className={`chip ${healthChip}`} title={health.reasons?.join(" · ") || "All health checks passed"}>
-          <span className="led led-pulse" />{healthLabel}
-        </span>
-      </div>
-      <div className="panel-body">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="label flex items-center gap-1.5">
-            <Icon name="i-clock" className="h-3 w-3" /> Uptime {formatUptime(proc.uptimeMs)}
-          </span>
-          <span className="font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
-            PID {proc.pid} · {proc.runtime || proc.node}
-          </span>
-        </div>
-
-        {health.level !== "ok" ? (
-          <p className="border-2 border-line bg-night-950/60 px-3 py-2 font-mono text-[12px] uppercase tracking-[0.08em] text-warn">
-            {health.reasons?.length ? health.reasons.join(" · ") : "Health check degraded"}
-          </p>
-        ) : null}
-
-        <div className="grid grid-cols-1 gap-2 @2xl:grid-cols-3">
-          <SystemMeter
-            label="Worker CPU"
-            value={cpu.processPercent}
-            detail={`${formatInt(cpu.cores)} cores · host ${formatPercent(cpu.hostPercent, 1)}`}
-            tone={cpuTone}
-          />
-          <SystemMeter
-            label="Heap"
-            value={memory.heapPercent}
-            detail={`${formatBytes(memory.heapUsed)} / ${formatBytes(memory.heapLimit)}`}
-            tone={heapTone}
-          />
-          <SystemMeter
-            label="System RAM"
-            value={host.usedPercent}
-            detail={`${formatBytes(host.used)} / ${formatBytes(host.total)}`}
-            tone={hostTone}
-          />
-        </div>
-
-        <div className="grid grid-cols-3 gap-1.5 @xl:grid-cols-6">
-          {[
-            ["RSS", formatBytes(memory.rss), "text-ink-dim"],
-            ["External", formatBytes(memory.external), "text-ink-dim"],
-            ["Free RAM", formatBytes(host.available), thresholdClass(host.usedPercent, 88, 96)],
-            ["Load 1m", Number.isFinite(Number(cpu.load1)) ? Number(cpu.load1).toFixed(2) : "—", thresholdClass(loadPerCore ? loadPerCore * 100 : null, 70, 95)],
-            ["Loop p95", formatMs(lag.p95), thresholdClass(lag.p95, 100, 250)],
-            ["Handles", proc.activeHandles == null ? "—" : formatInt(proc.activeHandles), "text-ink-dim"]
-          ].map(([label, value, tone]) => (
-            <StatTile key={label} label={label} value={value} tone={tone} />
-          ))}
-        </div>
-
-        <div className="border-2 border-line bg-night-950/60 p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="label flex items-center gap-1.5">
-              <Icon name="i-download" className="h-3 w-3" /> SQLite · {dbSqlite.driver || "—"} ·{" "}
-              {dbSqlite.journalMode || "—"}
-            </span>
-            <span
-              className={`font-mono text-[12px] uppercase tracking-[0.08em] ${
-                db?.instrumented ? "text-signal" : "text-faint"
-              }`}
-              title="Statements are timed through wrapped prepare/transaction calls"
-            >
-              {db?.instrumented ? "instrumented" : "not instrumented"}
-            </span>
-          </div>
-          <div className="mt-2 grid grid-cols-2 gap-1.5 @xs:grid-cols-4">
-            {[
-              ["DB", formatBytes(dbFiles.db), "text-ink-dim"],
-              ["WAL", formatBytes(dbFiles.wal), thresholdClass(dbFiles.wal, db?.thresholds?.walWarnBytes, db?.thresholds?.walCriticalBytes)],
-              ["Q/S", Number(dbQueries.rate).toFixed(1), "text-violet"],
-              ["P95", formatPreciseMs(dbWindow.p95Ms), thresholdClass(dbWindow.p95Ms, dbWarn, dbCritical)],
-              ["AVG", formatPreciseMs(dbWindow.avgMs), "text-ink-dim"],
-              ["MAX", formatPreciseMs(dbWindow.maxMs), thresholdClass(dbWindow.maxMs, dbWarn * 4, dbCritical)],
-              ["TX", formatInt(dbTransactions.count || 0), "text-ink-dim"],
-              [
-                "ERR",
-                formatInt((dbWindow.errors || 0) + (dbWindow.busy || 0)),
-                dbWindow.errors + dbWindow.busy > 0 ? "text-danger" : "text-ink-dim"
-              ]
-            ].map(([label, value, tone]) => (
-              <StatTile key={label} label={label} value={value} tone={tone} />
-            ))}
-          </div>
-          {db?.recentSlow?.length ? (
-            <div className="mt-2 space-y-1">
-              {db.recentSlow.slice(0, 2).map((item, index) => (
-                <div
-                  key={`${item.at}-${index}`}
-                  className="flex items-baseline gap-2 font-mono text-[11px] uppercase tracking-[0.06em]"
-                >
-                  <b className="shrink-0 text-warn">{formatPreciseMs(item.ms)}</b>
-                  <code className="truncate text-faint" title={item.sql}>
-                    {item.sql}
-                  </code>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <span className="mt-1.5 block font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
-              {formatInt(dbWindow.count || 0)} statements · no slow queries in the last 60s
-            </span>
-          )}
-        </div>
-
-        <div className="grid grid-cols-1 gap-2 @xs:grid-cols-2">
-          <HistoryStrip
-            label="CPU"
-            bars={sparkBars(history.map((point) => point.cpu ?? 0))}
-            format={(value) => formatPercent(value, 1)}
-            tone={(value) => thresholdClass(value, 80, 100)}
-          />
-          <HistoryStrip
-            label="RSS"
-            bars={sparkBars(history.map((point) => point.rss ?? 0))}
-            format={(value) => formatBytes(value * 1024 * 1024)}
-            tone={() => "text-info"}
-          />
-          <HistoryStrip
-            label="SQL"
-            bars={sparkBars((db?.history || []).map((point) => point.qps ?? 0))}
-            format={(value) => `${Number(value).toFixed(1)}/s`}
-            tone={() => "text-violet"}
-          />
-        </div>
-
-        <p className="text-[13px] leading-relaxed text-faint">
-          Sampled every {formatInt(Math.round((system.intervalMs || 2000) / 1000)) || 1}s, pushed every{" "}
-          {TELEMETRY_PUSH_MS / 1000}s. CPU is the worker process as a percentage of one core; system
-          RAM uses MemAvailable on Linux. Warnings trigger at 80% heap, 88% RAM, 100ms event-loop p95, a DB p95 above{" "}
-          {formatInt(dbWarn)}ms, or a WAL above{" "}
-          {formatBytes(db?.thresholds?.walWarnBytes || 64 * 1024 * 1024)}. Query timings include only
-          the SQL text, never bound values.
-        </p>
-      </div>
-    </section>
-  );
-}
-
 function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, onBackup, baseUrl, onSetMode }) {
   const settings = snapshot.settings || {};
   const mode = modeOf(settings);
@@ -2454,9 +2127,7 @@ function SidePanel({ tab, setTab, snapshot, logs, worker, notify, onEditSession,
   const tabs = [
     { id: "feed", label: "FEED" },
     { id: "link", label: "LINK" },
-    { id: "config", label: "CONFIG" },
-    { id: "latency", label: "LATENCY" },
-    { id: "system", label: "SYSTEM" }
+    { id: "config", label: "CONFIG" }
   ];
   return (
     <aside className="flex min-w-0 flex-col gap-3 max-lg:order-4 lg:sticky lg:top-24 lg:col-start-2 lg:row-start-1 lg:row-span-3 lg:max-h-[calc(100dvh-6rem)] lg:self-start lg:overflow-y-auto">
@@ -2499,14 +2170,6 @@ function SidePanel({ tab, setTab, snapshot, logs, worker, notify, onEditSession,
             onSetMode={onSetMode}
           />
         ) : null}
-        {tab === "latency" ? (
-          <ConfigPanel
-            snapshot={snapshot}
-            worker={worker}
-            notify={notify}
-          />
-        ) : null}
-        {tab === "system" ? <SystemPanel snapshot={snapshot} worker={worker} /> : null}
       </div>
     </aside>
   );
@@ -2558,12 +2221,26 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
   const [statusFilter, setStatusFilter] = useState("all");
   const [modal, setModal] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
+  const [monitorOpen, setMonitorOpen] = useState(false);
   const [soundOn, setSoundOn] = useState(sound.enabled);
   const [modeBusy, setModeBusy] = useState(false);
   // Handlers stay referentially stable so memoised cards are not invalidated by
   // a new snapshot. The ref always points at the newest worker instance.
   const workerRef = useRef(worker);
   workerRef.current = worker;
+
+  const openMonitor = useCallback(() => setMonitorOpen(true), []);
+  const recentAverage = snapshot.benchmark?.recent?.avg;
+  const recentAvg =
+    recentAverage == null || !Number.isFinite(Number(recentAverage))
+      ? null
+      : Number(recentAverage);
+  const recentOrderCount = snapshot.benchmark?.recent?.orders;
+  const recentOrders =
+    recentOrderCount == null || !Number.isFinite(Number(recentOrderCount))
+      ? 0
+      : Number(recentOrderCount);
+  const recentFallback = snapshot.benchmark?.recent?.fallback === true;
 
   const eps = useEventRate(snapshot.gateway?.eventCount || 0);
   const baseUrl = worker.getConnection().baseUrl;
@@ -2735,6 +2412,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
         onLogout={worker.logout}
         onSetMode={setMode}
         modeBusy={modeBusy}
+        onMonitor={openMonitor}
       />
       <Ticker configs={snapshot.configs || []} mock={snapshot.worker?.mock} />
       <div className="deck-enter deck-enter-2 mx-auto w-full max-w-[1600px] px-3 pt-4 sm:px-4 lg:px-6">
@@ -2753,6 +2431,10 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           historyRevision={worker.historyRevision}
           onReset={resetStats}
           request={worker.request}
+          onMonitor={openMonitor}
+          recentAvg={recentAvg}
+          recentOrders={recentOrders}
+          recentFallback={recentFallback}
         />
         <MemoReportPanel report={snapshot.report} notify={notify} />
         <MemoTargetsPanel
@@ -2801,6 +2483,13 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
         </div>
       </footer>
 
+      <MonitorWindow
+        open={monitorOpen}
+        snapshot={snapshot}
+        worker={worker}
+        notify={notify}
+        onClose={() => setMonitorOpen(false)}
+      />
       {modal?.type === "target" ? (
         <TargetModal
           config={modal.config}

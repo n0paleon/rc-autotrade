@@ -130,6 +130,10 @@ CREATE TABLE IF NOT EXISTS price_points (
   item_id    TEXT NOT NULL,
   bucket_at  INTEGER NOT NULL,
   price      REAL NOT NULL,
+  low_price  REAL,
+  high_price REAL,
+  raw_low_price  REAL,
+  raw_high_price REAL,
   fill_price REAL,
   fill_qty   REAL,
   fill_approx INTEGER NOT NULL DEFAULT 0,
@@ -185,6 +189,10 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         "fill_approx",
         "INTEGER NOT NULL DEFAULT 0",
     )?;
+    add_column_if_missing(conn, "price_points", "low_price", "REAL")?;
+    add_column_if_missing(conn, "price_points", "high_price", "REAL")?;
+    add_column_if_missing(conn, "price_points", "raw_low_price", "REAL")?;
+    add_column_if_missing(conn, "price_points", "raw_high_price", "REAL")?;
     add_column_if_missing(conn, "orders", "timings", "TEXT")?;
     add_column_if_missing(conn, "orders", "raw_events", "TEXT")?;
 

@@ -1,11 +1,12 @@
 /**
  * Price-history chart maths.
  *
- * The worker stores one close per minute. The deck fetches a longer window for
+ * The worker stores one close per minute plus the low/high band of the prices
+ * that actually held during that minute. The deck fetches a longer window for
  * the 3d/7d periods and re-buckets client-side, aligning each boundary to the
  * viewer's local clock the same way `events.js` does for market activity.
- * Inside a bucket the close is the last tick, not an average, so the line keeps
- * reading as "the price at that moment".
+ * Inside a bucket the close is the newest minute's close; the band is the
+ * widest low/high any minute in that bucket reached.
  */
 
 export const PRICE_PERIODS = Object.freeze([
@@ -29,6 +30,30 @@ export const PRICE_DEFAULT_BUCKET = "5m";
 const MINUTE = 60_000;
 const DAY = 86_400_000;
 
+function finite(value) {
+  return Number.isFinite(Number(value)) && value !== null && value !== "";
+}
+
+/** Low edge of a point's held band, falling back to its close. */
+export function priceLow(point, fallback) {
+  return point?.l != null && finite(point.l) ? Number(point.l) : fallback;
+}
+
+/** High edge of a point's held band, falling back to its close. */
+export function priceHigh(point, fallback) {
+  return point?.h != null && finite(point.h) ? Number(point.h) : fallback;
+}
+
+/** Low edge of the raw band: every print, including guard-rejected ones. */
+export function priceRawLow(point, fallback) {
+  return point?.rl != null && finite(point.rl) ? Number(point.rl) : fallback;
+}
+
+/** High edge of the raw band: every print, including guard-rejected ones. */
+export function priceRawHigh(point, fallback) {
+  return point?.rh != null && finite(point.rh) ? Number(point.rh) : fallback;
+}
+
 /** Local-clock offset for an instant, in milliseconds east of UTC. */
 export function timezoneOffsetMs(now = Date.now()) {
   const offset = new Date(now).getTimezoneOffset();
@@ -37,8 +62,9 @@ export function timezoneOffsetMs(now = Date.now()) {
 
 /**
  * Keeps the newest close in each `bucketMs` bucket, clipped to the requested
- * window. Quiet buckets are not invented: a price chart should connect the
- * ticks it actually has instead of drawing a flat line through a gap.
+ * window, and widens that bucket's low/high band over every minute it covers.
+ * Quiet buckets are not invented: a price chart should connect the ticks it
+ * actually has instead of drawing a flat line through a gap.
  */
 export function bucketPrice(
   points,
@@ -52,13 +78,31 @@ export function bucketPrice(
 
   const from = now - span;
   const buckets = new Map();
+  const newest = new Map();
   for (const point of Array.isArray(points) ? points : []) {
     const at = Number(point?.t);
     const price = Number(point?.p);
     if (!Number.isFinite(at) || !Number.isFinite(price) || at < from || at > now) continue;
     const key = align(at);
+    const low = Math.min(priceLow(point, price), price);
+    const high = Math.max(priceHigh(point, price), price);
+    // The raw band can only be wider than the held one.
+    const rawLow = Math.min(priceRawLow(point, low), low);
+    const rawHigh = Math.max(priceRawHigh(point, high), high);
     const current = buckets.get(key);
-    if (!current || at >= current.t) buckets.set(key, { t: key, p: price });
+    if (!current) {
+      buckets.set(key, { t: key, p: price, l: low, h: high, rl: rawLow, rh: rawHigh });
+      newest.set(key, at);
+      continue;
+    }
+    current.l = Math.min(current.l, low);
+    current.h = Math.max(current.h, high);
+    current.rl = Math.min(current.rl, rawLow);
+    current.rh = Math.max(current.rh, rawHigh);
+    if (at >= newest.get(key)) {
+      current.p = price;
+      newest.set(key, at);
+    }
   }
   return [...buckets.values()].sort((a, b) => a.t - b.t);
 }
@@ -67,6 +111,7 @@ export function bucketPrice(
  * Stands in for a missing bucket so a line chart can break instead of drawing a
  * straight segment across a quiet stretch. Recharts joins every point in a
  * numeric series; a single `p: null` marker tells it to stop the stroke there.
+ * The band edges travel with the marker as nulls so the ranged area breaks too.
  */
 export function breakPriceGaps(series, bucketMs) {
   const size = Number(bucketMs);
@@ -79,9 +124,18 @@ export function breakPriceGaps(series, bucketMs) {
     const price = Number(point?.p);
     if (!Number.isFinite(at) || !Number.isFinite(price)) continue;
     if (previous !== null && at - previous > size * 1.5) {
-      out.push({ t: previous + size, p: null });
+      out.push({ t: previous + size, p: null, l: null, h: null, rl: null, rh: null });
     }
-    out.push({ t: at, p: price });
+    const low = priceLow(point, price);
+    const high = priceHigh(point, price);
+    out.push({
+      t: at,
+      p: price,
+      l: low,
+      h: high,
+      rl: Math.min(priceRawLow(point, low), low),
+      rh: Math.max(priceRawHigh(point, high), high)
+    });
     previous = at;
   }
   return out;
@@ -90,6 +144,8 @@ export function breakPriceGaps(series, bucketMs) {
 /**
  * Merges the fetched long-range series with the live 24h window. Live points
  * win on the same minute, so a polled snapshot never overwrites a fresh tick.
+ * A live point that carries no band (the boot snapshot's history only has
+ * closes) keeps the stored band and widens it to include the live close.
  */
 export function mergePriceSeries(stored, live) {
   const merged = new Map();
@@ -97,13 +153,39 @@ export function mergePriceSeries(stored, live) {
     const at = Number(point?.t);
     const price = Number(point?.p);
     if (!Number.isFinite(at) || !Number.isFinite(price)) continue;
-    merged.set(at, { t: at, p: price });
+    const low = priceLow(point, price);
+    const high = priceHigh(point, price);
+    merged.set(at, {
+      t: at,
+      p: price,
+      l: low,
+      h: high,
+      rl: Math.min(priceRawLow(point, low), low),
+      rh: Math.max(priceRawHigh(point, high), high)
+    });
   }
   for (const point of Array.isArray(live) ? live : []) {
     const at = Number(point?.t);
     const price = Number(point?.p);
     if (!Number.isFinite(at) || !Number.isFinite(price)) continue;
-    merged.set(at, { t: at, p: price });
+    const previous = merged.get(at);
+    const low = Math.min(
+      priceLow(point, previous ? Math.min(previous.l, price) : price),
+      price
+    );
+    const high = Math.max(
+      priceHigh(point, previous ? Math.max(previous.h, price) : price),
+      price
+    );
+    const rawLow = Math.min(
+      priceRawLow(point, previous ? Math.min(previous.rl, low) : low),
+      low
+    );
+    const rawHigh = Math.max(
+      priceRawHigh(point, previous ? Math.max(previous.rh, high) : high),
+      high
+    );
+    merged.set(at, { t: at, p: price, l: low, h: high, rl: rawLow, rh: rawHigh });
   }
   return [...merged.values()].sort((a, b) => a.t - b.t);
 }
@@ -119,8 +201,10 @@ export function summarizePrice(series) {
   let low = null;
   for (const point of points) {
     if (!Number.isFinite(point?.p)) continue;
-    if (high === null || point.p > high) high = point.p;
-    if (low === null || point.p < low) low = point.p;
+    const bandLow = priceLow(point, point.p);
+    const bandHigh = priceHigh(point, point.p);
+    if (high === null || bandHigh > high) high = bandHigh;
+    if (low === null || bandLow < low) low = bandLow;
   }
   return { first, last, change, high, low };
 }

@@ -105,7 +105,7 @@ Rollercoin session — two of either will duplicate orders.
 | `DELETE /api/history` | ✅ | wipes the loot log + profit report and resets stats, engine counters and latency samples |
 | `GET /api/report` | ✅ | same derived columns |
 | `GET /api/events` | ➕ | Rust-only: market-frame counts per 5-minute bucket for `?days=1..7`; the deck sums them into the chart timeframe in local time |
-| `GET /api/price-history` | ➕ | Rust-only: raw 1-minute closes for one `itemId` over `?days=1..7`; the deck buckets them in local time and merges the live 24h window |
+| `GET /api/price-history` | ➕ | Rust-only: one duration-weighted median close per minute plus its held and raw low/high bands for a single `itemId` over `?days=1..7`; the deck buckets them in local time and merges the live 24h window |
 | `GET /api/session` | ✅ | same preview/expires fields |
 | `POST /api/session` | ✅ | validated, `changed` flag |
 | `DELETE /api/session` | ✅ | clears all three credentials |
@@ -114,6 +114,8 @@ Rollercoin session — two of either will duplicate orders.
 | `GET /api/latency` | ✅ | four-channel snapshot |
 | `POST /api/latency/probe` | ✅ | on-demand warm probe; also broadcasts `latency` |
 | `GET /api/system` | ✅ | live sampler (CPU/RAM/load/loop lag/db files) |
+| `GET /api/benchmark` | ➕ | Rust-only: per-stage order pipeline stats (avg/p50/p95/jitter) over the last 25/50/200 timed orders, rebuilt from `orders.timings` |
+| `GET /api/benchmark/history` | ➕ | Rust-only: local-clock buckets (`?hours=1..168&bucket=5m..1d&stage=total&tzOffsetMs=`) with per-bucket avg/p95/jitter plus a range summary, for the expanded latency chart |
 | `GET /api/item-info` | ✅ | resolver with type fallbacks; updates the target label/rarity |
 | `POST /api/session/push`, `/refresh` | ✅ | bridge merge rules + coalesced refresh |
 | `WS /ws` (`rcw.v1`) | ✅ | token as 2nd subprotocol or `?token=`; `hello`, `snapshot`, `ping`/`pong`, `refresh`, broadcasts |
@@ -130,9 +132,9 @@ Bun worker.
    measures ~40 µs here, so synchronous writes stay until the frame path has a
    measured reason to defer them.
 3. **`runtime` is `null` until a target has a live frame or a cached snapshot,**
-   and `pending` is `[]` until an order is in flight. `latency`, `system` and
-   `keepalive` are always populated. The deck handles the nullables with
-   optional chaining (verified in the browser).
+   and `pending` is `[]` until an order is in flight. `latency`, `benchmark`,
+   `system` and `keepalive` are always populated. The deck handles the nullables
+   with optional chaining (verified in the browser).
 4. **No auth-failure rate limit yet.** The Bun worker returns 429 after 20 bad
    keys per IP per minute.
 5. **Logger timestamps are UTC `HH:MM:SS`;** the JS one uses local time.
@@ -489,6 +491,32 @@ Control plane and durability:
 - `orders (at DESC, id DESC)` keeps the loot page sort-free, and
   `price_points (bucket_at)` lets the hourly retention `DELETE` seek instead of
   scanning every retained row.
+
+Price history:
+
+- **The stored close is a duration-weighted median, not the last frame.** The
+  feed is change-driven and `listings[0]` can be a one-unit bait ask, so taking
+  the minute's last write as its close let a single transient print redraw the
+  chart and then propagate into every coarser bucket. `MinuteAgg` weighs each
+  price by how long it held; a print seen for less than half the minute cannot
+  move the close, while a sustained move still wins. A
+  `PRICE_SETTLE_DWELL_MS` (3 s) debounce runs first, so a price that vanishes
+  within a few seconds never enters the weights. The guard only shapes the
+  chart and sampler — order decisions still read the raw best ask, so a real
+  cheap listing is never delayed.
+- **The minute is finalised when it rolls.** The frame path and the quiet-minute
+  sampler both close the previous bucket with the exact median, including the
+  tail after the last frame, and carry the settled level into the new minute.
+- **Every bucket also carries a held and a raw band.** `MinuteAgg` widens
+  `low`/`high` over the prices that actually held (post-dwell) and
+  `raw_low`/`raw_high` over every print, so the chart can show either. They are
+  stored in `price_points.low_price`/`high_price` and
+  `raw_low_price`/`raw_high_price`; rows from an older database have NULL edges
+  and are read as `low = high = price`, so the chart draws a zero-width band
+  instead of a hole without paying for a mass UPDATE at startup.
+  `/api/price-history` returns `l`/`h` and `rl`/`rh` next to `p`. The expanded
+  chart draws the selected band behind the close line, has a Held/Raw switch,
+  and lists Held low/high and Raw low/high in its tooltip.
 
 Still open (deliberately unchanged): per-request auth rate limiting, loot-log
 retention plus `COUNT(*)` caching for a very large `orders` table, and a release

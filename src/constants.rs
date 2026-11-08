@@ -42,6 +42,15 @@ pub const MARKET_SNAPSHOT_THROTTLE_MS: i64 = 2_000;
 /// Current-minute price point is rewritten at most this often.
 pub const PRICE_POINT_WRITE_INTERVAL_MS: i64 = 15_000;
 
+/// Width of one stored price bucket. The chart's finest period is 1 minute.
+pub const PRICE_BUCKET_MS: i64 = 60_000;
+
+/// A new best price must hold this long before the chart's minute close
+/// accepts it. The feed is change-driven and the cheapest listing can be a
+/// one-unit bait order, so a print that disappears again inside this window
+/// never reaches the stored series or the live line.
+pub const PRICE_SETTLE_DWELL_MS: i64 = 3_000;
+
 /// The sampler writes one close per minute from each target's last live frame,
 /// so an item that simply did not move reads as flat instead of missing.
 pub const PRICE_SAMPLE_INTERVAL_MS: u64 = 60_000;
@@ -71,8 +80,9 @@ pub const EVENT_FLUSH_INTERVAL_MS: u64 = 10_000;
 pub const EVENT_SAMPLE_SIZE: usize = 60;
 
 /// Control-socket telemetry cadence. Every `TELEMETRY_INTERVAL_SECS` the
-/// socket pushes `gateway` (which carries `eventCount`), `system` and `latency`
-/// together. Pushing `gateway` per frame re-rendered the HUD for no benefit.
+/// socket pushes `gateway` (which carries `eventCount`), `system`, `latency`
+/// and `benchmark` together. Pushing `gateway` per frame re-rendered the HUD
+/// for no benefit.
 ///
 /// The deck mirrors this in `ui/src/lib/constants.js` (`TELEMETRY_PUSH_MS`):
 /// the `/s` readout decays after ~1.3× this window, so changing one without the

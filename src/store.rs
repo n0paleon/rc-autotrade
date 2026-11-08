@@ -28,8 +28,8 @@ use crate::constants::{
 use crate::db;
 use crate::logger::Logger;
 use crate::model::{
-    MarketSnapshot, Mode, OrderEntry, PricePoint, Product, ProductView, ReportTotals, ReportView,
-    Session, Settings, Stats, Target,
+    MarketSnapshot, Mode, OrderEntry, PriceBand, PricePoint, PriceSeriesPoint, Product,
+    ProductView, ReportTotals, ReportView, Session, Settings, Stats, Target,
 };
 use crate::rules::round_price;
 use crate::timings::Timings;
@@ -160,6 +160,9 @@ pub struct HistoryPage {
 pub struct HistoryQuery {
     pub q: String,
     pub status: String,
+    /// "" (all) | "positive" (profit_rlt > 0) | "negative" (profit_rlt < 0).
+    /// Rows with exactly zero profit match neither bucket.
+    pub profit: String,
     pub limit: Option<usize>,
     pub offset: i64,
     pub before_at: i64,
@@ -1094,6 +1097,75 @@ impl Store {
         true
     }
 
+    /// Newest completed orders with their timing marks, for the benchmark
+    /// window. Rows without a decodable `timings` object are skipped: they
+    /// predate the latency debugger and have nothing to aggregate.
+    pub fn benchmark_samples(&self, limit: usize) -> Vec<crate::benchmark::Sample> {
+        let limit = limit.clamp(1, 1_000) as i64;
+        let Ok(mut statement) = self.db.prepare(
+            "SELECT at, status, timings FROM orders
+             WHERE timings IS NOT NULL AND timings != ''
+             ORDER BY at DESC, id DESC LIMIT ?1",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = statement.query_map(params![limit], |row| {
+            let at: i64 = row.get(0)?;
+            let status: String = row.get(1)?;
+            let timings: Option<String> = row.get(2)?;
+            Ok((at, status, timings))
+        }) else {
+            return Vec::new();
+        };
+        rows.flatten()
+            .filter_map(|(at, status, text)| {
+                let timings = crate::timings::decode(text.as_deref())?;
+                Some(crate::benchmark::Sample {
+                    at,
+                    status,
+                    timings,
+                })
+            })
+            .collect()
+    }
+
+    /// Completed orders with timing marks inside a time range, newest first.
+    /// Used by the bucketed history chart; the range is inclusive.
+    pub fn benchmark_samples_between(
+        &self,
+        since: i64,
+        until: i64,
+        limit: usize,
+    ) -> Vec<crate::benchmark::Sample> {
+        let limit = limit.clamp(1, crate::benchmark::HISTORY_MAX_SAMPLES) as i64;
+        let Ok(mut statement) = self.db.prepare(
+            "SELECT at, status, timings FROM orders
+             WHERE at >= ?1 AND at <= ?2
+               AND timings IS NOT NULL AND timings != ''
+             ORDER BY at DESC, id DESC LIMIT ?3",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = statement.query_map(params![since, until, limit], |row| {
+            let at: i64 = row.get(0)?;
+            let status: String = row.get(1)?;
+            let timings: Option<String> = row.get(2)?;
+            Ok((at, status, timings))
+        }) else {
+            return Vec::new();
+        };
+        rows.flatten()
+            .filter_map(|(at, status, text)| {
+                let timings = crate::timings::decode(text.as_deref())?;
+                Some(crate::benchmark::Sample {
+                    at,
+                    status,
+                    timings,
+                })
+            })
+            .collect()
+    }
+
     pub fn history_count(&self) -> i64 {
         self.db
             .query_row("SELECT COUNT(*) FROM orders", [], |row| row.get(0))
@@ -1113,6 +1185,11 @@ impl Store {
         } else {
             String::new()
         };
+        let profit = if query.profit == "positive" || query.profit == "negative" {
+            query.profit.clone()
+        } else {
+            String::new()
+        };
         let page_size = query
             .limit
             .unwrap_or(LOOT_LOG_PAGE_SIZE)
@@ -1121,20 +1198,26 @@ impl Store {
         let cursor = query.before_at > 0 && !query.before_id.is_empty();
         let skip = if cursor { 0 } else { query.offset.max(0) };
 
+        // `(?3 = 'positive' AND profit_rlt > 0) OR (?3 = 'negative' AND profit_rlt < 0)
+        //  OR ?3 = ''` — empty means no profit filter.
+        let profit_clause = "((?3 = '' OR (?3 = 'positive' AND profit_rlt > 0) OR (?3 = 'negative' AND profit_rlt < 0)))";
         let (sql, bindings): (String, Vec<Box<dyn rusqlite::ToSql>>) = if cursor {
             (
-                "SELECT id, order_id, item_id, label, qty, unit_price, total_price,
-                        target_price, profit_rlt, status, at, latency_ms,
-                        note, message
-                 FROM orders
-                 WHERE (?1 = '' OR label LIKE ?1 ESCAPE '\\' OR item_id LIKE ?1 ESCAPE '\\')
-                   AND (?2 = '' OR status = ?2)
-                   AND (at < ?3 OR (at = ?3 AND id < ?4))
-                 ORDER BY at DESC, id DESC LIMIT ?5"
-                    .to_string(),
+                format!(
+                    "SELECT id, order_id, item_id, label, qty, unit_price, total_price,
+                            target_price, profit_rlt, status, at, latency_ms,
+                            note, message
+                     FROM orders
+                     WHERE (?1 = '' OR label LIKE ?1 ESCAPE '\\' OR item_id LIKE ?1 ESCAPE '\\')
+                       AND (?2 = '' OR status = ?2)
+                       AND {profit_clause}
+                       AND (at < ?4 OR (at = ?4 AND id < ?5))
+                     ORDER BY at DESC, id DESC LIMIT ?6"
+                ),
                 vec![
                     Box::new(like),
                     Box::new(status),
+                    Box::new(profit),
                     Box::new(query.before_at),
                     Box::new(query.before_id),
                     Box::new((page_size + 1) as i64),
@@ -1142,17 +1225,20 @@ impl Store {
             )
         } else {
             (
-                "SELECT id, order_id, item_id, label, qty, unit_price, total_price,
-                        target_price, profit_rlt, status, at, latency_ms,
-                        note, message
-                 FROM orders
-                 WHERE (?1 = '' OR label LIKE ?1 ESCAPE '\\' OR item_id LIKE ?1 ESCAPE '\\')
-                   AND (?2 = '' OR status = ?2)
-                 ORDER BY at DESC, id DESC LIMIT ?3 OFFSET ?4"
-                    .to_string(),
+                format!(
+                    "SELECT id, order_id, item_id, label, qty, unit_price, total_price,
+                            target_price, profit_rlt, status, at, latency_ms,
+                            note, message
+                     FROM orders
+                     WHERE (?1 = '' OR label LIKE ?1 ESCAPE '\\' OR item_id LIKE ?1 ESCAPE '\\')
+                       AND (?2 = '' OR status = ?2)
+                       AND {profit_clause}
+                     ORDER BY at DESC, id DESC LIMIT ?4 OFFSET ?5"
+                ),
                 vec![
                     Box::new(like),
                     Box::new(status),
+                    Box::new(profit),
                     Box::new((page_size + 1) as i64),
                     Box::new(skip),
                 ],
@@ -1178,7 +1264,9 @@ impl Store {
             .query_row(
                 "SELECT COUNT(*) FROM orders
                  WHERE (?1 = '' OR label LIKE ?1 ESCAPE '\\' OR item_id LIKE ?1 ESCAPE '\\')
-                   AND (?2 = '' OR status = ?2)",
+                   AND (?2 = '' OR status = ?2)
+                   AND (?3 = '' OR (?3 = 'positive' AND profit_rlt > 0)
+                        OR (?3 = 'negative' AND profit_rlt < 0))",
                 params![
                     if term.is_empty() {
                         String::new()
@@ -1187,6 +1275,11 @@ impl Store {
                     },
                     if query.status == "filled" || query.status == "failed" {
                         query.status
+                    } else {
+                        String::new()
+                    },
+                    if query.profit == "positive" || query.profit == "negative" {
+                        query.profit
                     } else {
                         String::new()
                     }
@@ -1508,7 +1601,8 @@ impl Store {
 
     pub fn load_price_history(&self, item_id: &str, limit: usize, since: i64) -> Vec<PricePoint> {
         let mut statement = match self.db.prepare(
-            "SELECT item_id, bucket_at, price, fill_price, fill_qty, fill_approx
+            "SELECT item_id, bucket_at, price, low_price, high_price,
+                    raw_low_price, raw_high_price, fill_price, fill_qty, fill_approx
              FROM price_points
              WHERE item_id = ?1 AND (?2 = 0 OR bucket_at >= ?2)
              ORDER BY bucket_at DESC LIMIT ?3",
@@ -1521,9 +1615,13 @@ impl Store {
                 item_id: row.get(0)?,
                 bucket_at: row.get(1)?,
                 price: row.get(2)?,
-                fill_price: row.get(3)?,
-                fill_qty: row.get(4)?,
-                fill_approx: row.get::<_, i64>(5)? != 0,
+                low_price: row.get(3)?,
+                high_price: row.get(4)?,
+                raw_low_price: row.get(5)?,
+                raw_high_price: row.get(6)?,
+                fill_price: row.get(7)?,
+                fill_qty: row.get(8)?,
+                fill_approx: row.get::<_, i64>(9)? != 0,
             })
         });
         match rows {
@@ -1536,12 +1634,16 @@ impl Store {
         }
     }
 
-    /// Raw 1-minute closes for one item, oldest first. Unlike
-    /// `load_price_history` this is not capped by the live chart window, so the
-    /// 3d/7d periods can reach back into the retained week.
-    pub fn price_series(&self, item_id: &str, since: i64) -> Vec<(i64, f64)> {
+    /// Raw 1-minute closes (plus their held and raw low/high bands) for one
+    /// item, oldest first. Unlike `load_price_history` this is not capped by
+    /// the live chart window, so the 3d/7d periods can reach back into the
+    /// retained week.
+    pub fn price_series(&self, item_id: &str, since: i64) -> Vec<PriceSeriesPoint> {
         let mut statement = match self.db.prepare(
-            "SELECT bucket_at, price
+            "SELECT bucket_at, price,
+                    COALESCE(low_price, price), COALESCE(high_price, price),
+                    COALESCE(raw_low_price, low_price, price),
+                    COALESCE(raw_high_price, high_price, price)
              FROM price_points
              WHERE item_id = ?1 AND bucket_at >= ?2
              ORDER BY bucket_at ASC",
@@ -1550,7 +1652,14 @@ impl Store {
             Err(_) => return Vec::new(),
         };
         let rows = statement.query_map(params![item_id, since], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?))
+            Ok(PriceSeriesPoint {
+                bucket_at: row.get(0)?,
+                price: row.get(1)?,
+                low: row.get(2)?,
+                high: row.get(3)?,
+                raw_low: row.get(4)?,
+                raw_high: row.get(5)?,
+            })
         });
         match rows {
             Ok(rows) => rows.filter_map(Result::ok).collect(),
@@ -1563,6 +1672,7 @@ impl Store {
         item_id: &str,
         bucket_at: i64,
         price: f64,
+        band: PriceBand,
         fill: Option<(f64, f64, bool)>,
     ) -> Result<(), String> {
         let (fill_price, fill_qty, fill_approx) = match fill {
@@ -1573,10 +1683,15 @@ impl Store {
             .db
             .prepare_cached(
                 "INSERT INTO price_points
-                 (item_id, bucket_at, price, fill_price, fill_qty, fill_approx)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 (item_id, bucket_at, price, low_price, high_price,
+                  raw_low_price, raw_high_price, fill_price, fill_qty, fill_approx)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT(item_id, bucket_at) DO UPDATE SET
                    price = excluded.price,
+                   low_price = excluded.low_price,
+                   high_price = excluded.high_price,
+                   raw_low_price = excluded.raw_low_price,
+                   raw_high_price = excluded.raw_high_price,
                    fill_price = COALESCE(excluded.fill_price, price_points.fill_price),
                    fill_qty = COALESCE(excluded.fill_qty, price_points.fill_qty),
                    fill_approx = excluded.fill_approx",
@@ -1587,6 +1702,10 @@ impl Store {
                 item_id,
                 bucket_at,
                 price,
+                band.low,
+                band.high,
+                band.raw_low,
+                band.raw_high,
                 fill_price,
                 fill_qty,
                 fill_approx as i64
@@ -1598,7 +1717,10 @@ impl Store {
     /// Writes a batch of sampled closes in one transaction. A sample never
     /// carries a fill, so re-sampling a bucket that already holds a fill keeps
     /// the fill columns intact.
-    pub fn record_price_samples(&self, samples: &[(&str, i64, f64)]) -> Result<(), String> {
+    pub fn record_price_samples(
+        &self,
+        samples: &[(&str, i64, f64, f64, f64, f64, f64)],
+    ) -> Result<(), String> {
         if samples.is_empty() {
             return Ok(());
         }
@@ -1610,15 +1732,22 @@ impl Store {
             let mut statement = tx
                 .prepare_cached(
                     "INSERT INTO price_points
-                     (item_id, bucket_at, price, fill_price, fill_qty, fill_approx)
-                     VALUES (?1, ?2, ?3, NULL, NULL, 0)
+                     (item_id, bucket_at, price, low_price, high_price,
+                      raw_low_price, raw_high_price, fill_price, fill_qty, fill_approx)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL, 0)
                      ON CONFLICT(item_id, bucket_at) DO UPDATE SET
-                       price = excluded.price",
+                       price = excluded.price,
+                       low_price = excluded.low_price,
+                       high_price = excluded.high_price,
+                       raw_low_price = excluded.raw_low_price,
+                       raw_high_price = excluded.raw_high_price",
                 )
                 .map_err(|e| format!("could not cache price sample statement: {e}"))?;
-            for (item_id, bucket_at, price) in samples {
+            for (item_id, bucket_at, price, low, high, raw_low, raw_high) in samples {
                 statement
-                    .execute(params![item_id, bucket_at, price])
+                    .execute(params![
+                        item_id, bucket_at, price, low, high, raw_low, raw_high
+                    ])
                     .map_err(|e| format!("could not record price sample: {e}"))?;
             }
         }
@@ -2203,6 +2332,59 @@ mod tests {
                 .iter()
                 .all(|entry| entry.status == "filled")
         );
+
+        // Profit-sign filter: re-point the same rows at non-zero profits.
+        // Zero-profit rows must match neither bucket.
+        let db = &store.db;
+        db.execute("UPDATE orders SET profit_rlt = 0.5 WHERE id = 'o0'", [])
+            .unwrap();
+        db.execute("UPDATE orders SET profit_rlt = -0.25 WHERE id = 'o2'", [])
+            .unwrap();
+        db.execute("UPDATE orders SET profit_rlt = 1.0 WHERE id = 'o4'", [])
+            .unwrap();
+        // o1 (failed) and o3 (failed) stay at 0.0.
+
+        let positive = store
+            .history_page(HistoryQuery {
+                profit: "positive".into(),
+                limit: Some(10),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(positive.total, 2);
+        assert!(positive.entries.iter().all(|entry| entry.profit_rlt > 0.0));
+
+        let negative = store
+            .history_page(HistoryQuery {
+                profit: "negative".into(),
+                limit: Some(10),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(negative.total, 1);
+        assert!(negative.entries.iter().all(|entry| entry.profit_rlt < 0.0));
+
+        // Combined filters compose: filled + positive.
+        let filled_positive = store
+            .history_page(HistoryQuery {
+                status: "filled".into(),
+                profit: "positive".into(),
+                limit: Some(10),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(filled_positive.total, 2);
+        assert_eq!(filled_positive.entries.len(), 2);
+
+        // Unknown profit values fall back to no filter.
+        let unknown = store
+            .history_page(HistoryQuery {
+                profit: "bogus".into(),
+                limit: Some(10),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(unknown.total, 5);
     }
 
     #[test]
@@ -2230,15 +2412,36 @@ mod tests {
                 item_id,
                 1_700_000_000_000,
                 0.09,
+                PriceBand {
+                    low: 0.085,
+                    high: 0.095,
+                    raw_low: 0.07,
+                    raw_high: 0.11,
+                },
                 Some((0.0905, 10.0, false)),
             )
             .unwrap();
         store
-            .record_price_point(item_id, 1_700_000_060_000, 0.095, None)
+            .record_price_point(
+                item_id,
+                1_700_000_060_000,
+                0.095,
+                PriceBand {
+                    low: 0.093,
+                    high: 0.097,
+                    raw_low: 0.092,
+                    raw_high: 0.098,
+                },
+                None,
+            )
             .unwrap();
         let points = store.load_price_history(item_id, 10, 0);
         assert_eq!(points.len(), 2);
         assert_eq!(points[0].bucket_at, 1_700_000_000_000);
+        assert_eq!(points[0].low_price, Some(0.085));
+        assert_eq!(points[0].high_price, Some(0.095));
+        assert_eq!(points[0].raw_low_price, Some(0.07));
+        assert_eq!(points[0].raw_high_price, Some(0.11));
         assert_eq!(points[0].fill_price, Some(0.0905));
         assert_eq!(points[1].fill_price, None);
 
@@ -2246,11 +2449,35 @@ mod tests {
         // retained range for the chart's 3d/7d periods.
         assert_eq!(
             store.price_series(item_id, 1_700_000_000_000),
-            vec![(1_700_000_000_000, 0.09), (1_700_000_060_000, 0.095)]
+            vec![
+                PriceSeriesPoint {
+                    bucket_at: 1_700_000_000_000,
+                    price: 0.09,
+                    low: Some(0.085),
+                    high: Some(0.095),
+                    raw_low: Some(0.07),
+                    raw_high: Some(0.11),
+                },
+                PriceSeriesPoint {
+                    bucket_at: 1_700_000_060_000,
+                    price: 0.095,
+                    low: Some(0.093),
+                    high: Some(0.097),
+                    raw_low: Some(0.092),
+                    raw_high: Some(0.098),
+                },
+            ]
         );
         assert_eq!(
             store.price_series(item_id, 1_700_000_030_000),
-            vec![(1_700_000_060_000, 0.095)]
+            vec![PriceSeriesPoint {
+                bucket_at: 1_700_000_060_000,
+                price: 0.095,
+                low: Some(0.093),
+                high: Some(0.097),
+                raw_low: Some(0.092),
+                raw_high: Some(0.098),
+            }]
         );
         assert!(store.price_series("other-item", 0).is_empty());
     }
@@ -2261,9 +2488,17 @@ mod tests {
         let item_id = "6319f7baa8ce530569ed16b9";
         let old = now_ms() - (PRICE_RETENTION_DAYS + 1) * 86_400_000;
         let recent = now_ms() - 86_400_000;
-        store.record_price_point(item_id, old, 0.1, None).unwrap();
+        let flat = |price: f64| PriceBand {
+            low: price,
+            high: price,
+            raw_low: price,
+            raw_high: price,
+        };
         store
-            .record_price_point(item_id, recent, 0.2, None)
+            .record_price_point(item_id, old, 0.1, flat(0.1), None)
+            .unwrap();
+        store
+            .record_price_point(item_id, recent, 0.2, flat(0.2), None)
             .unwrap();
 
         assert_eq!(store.prune_price_history().unwrap(), 1);
@@ -2272,6 +2507,33 @@ mod tests {
         assert_eq!(points[0].bucket_at, recent);
         // A passive checkpoint is always safe to run on a live database.
         store.checkpoint_wal().unwrap();
+    }
+
+    #[test]
+    fn reads_a_legacy_price_row_as_a_zero_width_band() {
+        let store = store("legacy-band");
+        let item_id = "6319f7baa8ce530569ed16b9";
+        // Rows written before the band columns existed have NULL edges.
+        store
+            .db
+            .execute(
+                "INSERT INTO price_points (item_id, bucket_at, price) VALUES (?1, ?2, ?3)",
+                params![item_id, 1_700_000_000_000_i64, 0.25],
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.price_series(item_id, 0),
+            vec![PriceSeriesPoint {
+                bucket_at: 1_700_000_000_000,
+                price: 0.25,
+                low: Some(0.25),
+                high: Some(0.25),
+                raw_low: Some(0.25),
+                raw_high: Some(0.25),
+            }],
+            "an old close must read as low = high = price, never a hole"
+        );
     }
 
     #[test]
@@ -2340,6 +2602,56 @@ mod tests {
         let timings = row.timings.expect("timings");
         assert_eq!(timings.signal_at, Some(100.0));
         assert_eq!(timings.response_at, Some(250.0));
+    }
+
+    #[test]
+    fn benchmark_samples_are_newest_first_and_skip_untimed_rows() {
+        let mut store = store("benchmark");
+        let mut older = make_entry("o1", "item-1", "Hashboard", "filled", 1, 1_000);
+        older.timings =
+            crate::timings::sanitize(&serde_json::json!({ "signalAt": 100, "fillAt": 160 }));
+        store.add_history(older).unwrap();
+        let mut newer = make_entry("o2", "item-1", "Hashboard", "failed", 1, 2_000);
+        newer.timings =
+            crate::timings::sanitize(&serde_json::json!({ "signalAt": 100, "failedAt": 140 }));
+        store.add_history(newer).unwrap();
+        // Rows written before the latency debugger had no timings at all.
+        store
+            .add_history(make_entry("o3", "item-1", "Hashboard", "filled", 1, 3_000))
+            .unwrap();
+
+        let samples = store.benchmark_samples(10);
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].at, 2_000);
+        assert_eq!(samples[0].status, "failed");
+        assert_eq!(samples[1].at, 1_000);
+
+        // The limit applies to usable rows, not to the raw table tail.
+        let newest = store.benchmark_samples(1);
+        assert_eq!(newest.len(), 1);
+        assert_eq!(newest[0].at, 2_000);
+    }
+
+    #[test]
+    fn benchmark_history_query_respects_the_time_range() {
+        let mut store = store("benchmark-range");
+        for (id, at) in [("o1", 1_000), ("o2", 2_000), ("o3", 3_000)] {
+            let mut entry = make_entry(id, "item-1", "Hashboard", "filled", 1, at);
+            entry.timings = crate::timings::sanitize(&serde_json::json!({
+                "signalAt": 100,
+                "fillHandledAt": 200
+            }));
+            store.add_history(entry).unwrap();
+        }
+
+        let ranged = store.benchmark_samples_between(1_500, 3_500, 10);
+        assert_eq!(ranged.len(), 2);
+        assert_eq!(ranged[0].at, 3_000);
+        assert_eq!(ranged[1].at, 2_000);
+
+        let inclusive = store.benchmark_samples_between(2_000, 3_000, 10);
+        assert_eq!(inclusive.len(), 2);
+        assert!(store.benchmark_samples_between(3_001, 4_000, 10).is_empty());
     }
 
     #[test]

@@ -10,6 +10,7 @@
 
 pub mod api;
 pub mod backup;
+pub mod benchmark;
 pub mod blocking;
 pub mod config;
 pub mod constants;

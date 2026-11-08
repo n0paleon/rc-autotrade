@@ -405,6 +405,16 @@ export function useWorker({ notify }) {
         case "market": {
           const bucket =
             Number(data.bucket) || Math.floor((data.at || Date.now()) / 60_000) * 60_000;
+          // `price` is the raw best ask for the readout; `close` is the
+          // worker's duration-weighted minute median, which is what the chart
+          // plots so a transient bait price cannot bend the line. `low`/`high`
+          // widen the intra-minute band the expanded chart draws behind it.
+          const close = Number(data.close);
+          const low = Number(data.low);
+          const high = Number(data.high);
+          const rawLow = Number(data.rawLow);
+          const rawHigh = Number(data.rawHigh);
+          const plotted = Number.isFinite(close) ? close : data.price;
           updateConfig(data.itemId, (runtime) => ({
             ...runtime,
             itemId: data.itemId,
@@ -421,7 +431,15 @@ export function useWorker({ notify }) {
               : runtime.allowedPriceMax,
             allowedAt: data.allowedAt ?? runtime.allowedAt,
             trend: data.trend ?? runtime.trend,
-            history: mergeHistory(runtime.history, data.price, bucket)
+            history: mergeHistory(
+              runtime.history,
+              plotted,
+              bucket,
+              low,
+              high,
+              rawLow,
+              rawHigh
+            )
           }));
           break;
         }
@@ -436,7 +454,15 @@ export function useWorker({ notify }) {
           updateConfig(data.itemId, (runtime) => ({
             ...runtime,
             itemId: data.itemId,
-            history: mergeHistory(runtime.history, price, bucket)
+            history: mergeHistory(
+              runtime.history,
+              price,
+              bucket,
+              Number(data.low),
+              Number(data.high),
+              Number(data.rawLow),
+              Number(data.rawHigh)
+            )
           }));
           break;
         }
@@ -553,6 +579,11 @@ export function useWorker({ notify }) {
         }
         case "latency":
           setSnapshot((previous) => (previous ? { ...previous, latency: data } : previous));
+          break;
+        case "benchmark":
+          if (data) {
+            setSnapshot((previous) => (previous ? { ...previous, benchmark: data } : previous));
+          }
           break;
         case "system":
           if (data) {
@@ -1154,6 +1185,14 @@ export function useWorker({ notify }) {
     return result;
   }, [request]);
 
+  const fetchBenchmark = useCallback(async () => {
+    const result = await request("/api/benchmark");
+    if (result?.benchmark) {
+      setSnapshot((previous) => (previous ? { ...previous, benchmark: result.benchmark } : previous));
+    }
+    return result;
+  }, [request]);
+
   const previewItem = useCallback(
     (itemId, itemType = "mutation_component") => {
       const params = new URLSearchParams({ itemId, itemType });
@@ -1193,6 +1232,7 @@ export function useWorker({ notify }) {
     refreshLatency,
     fetchLatency,
     fetchSystem,
+    fetchBenchmark,
     clearLogs,
     appendLog
   };
