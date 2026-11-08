@@ -1290,6 +1290,12 @@ const LOOT_SEARCH_DEBOUNCE_MS = 250;
 function LootLog({ history, historyTotal, historyRevision, onReset, request, onMonitor, recentAvg, recentOrders, recentFallback }) {
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [profitFilter, setProfitFilter] = useState("");
+  // The unfiltered live view: while no filter/search is active we can prepend
+  // socket entries and keep paging from the optimistic snapshot. Any active
+  // filter forces a server query, like search does.
+  const filtered = Boolean(query || statusFilter || profitFilter);
   const [entries, setEntries] = useState([]);
   const [total, setTotal] = useState(Number(historyTotal) || 0);
   const [hasMore, setHasMore] = useState(false);
@@ -1308,16 +1314,16 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
     return () => clearTimeout(timer);
   }, [draft]);
 
-  // Leaving search mode always falls back to the newest live page.
+  // Leaving filtered mode always falls back to the newest live page.
   useEffect(() => {
-    if (query) return;
+    if (filtered) return;
     const seed = (Array.isArray(history) ? history : []).filter(Boolean);
     idsRef.current = new Set(seed.map((entry) => entry.id));
     setEntries(seed);
     setError("");
     setLoading(false);
     setHasMore(idsRef.current.size < (Number(historyTotal) || 0));
-  }, [query]);
+  }, [filtered]);
 
   // A reset or backup restore replaces the permanent history. Re-seed this
   // locally paged view from the optimistic snapshot as soon as that mutation
@@ -1327,6 +1333,8 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
     idsRef.current = new Set(seed.map((entry) => entry.id));
     setDraft("");
     setQuery("");
+    setStatusFilter("");
+    setProfitFilter("");
     setEntries(seed);
     setTotal(Number(historyTotal) || 0);
     setHasMore(idsRef.current.size < (Number(historyTotal) || 0));
@@ -1339,7 +1347,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
   useEffect(() => {
     const nextTotal = Number(historyTotal);
     if (!Number.isFinite(nextTotal)) return;
-    if (query) {
+    if (filtered) {
       if (nextTotal !== 0) return;
       idsRef.current = new Set();
       setEntries([]);
@@ -1357,14 +1365,14 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
       return;
     }
     setHasMore(idsRef.current.size < nextTotal);
-  }, [historyTotal, query]);
+  }, [historyTotal, filtered]);
 
   // Live socket entries are prepended so the newest loot stays on screen even
   // while older pages are loaded below it.
   useEffect(() => {
     const list = Array.isArray(history) ? history : [];
     if (list.length === 0) return;
-    const fresh = query
+    const fresh = filtered
       ? []
       : list.filter((entry) => entry && !idsRef.current.has(entry.id));
     for (const entry of fresh) idsRef.current.add(entry.id);
@@ -1376,11 +1384,13 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
       });
       return [...fresh, ...updated].slice(0, LOOT_MAX_ROWS);
     });
-  }, [history, query]);
+  }, [history, filtered]);
 
-  // Server-side search over the whole permanent log (product name / item id).
+  // Server-side search/filter over the whole permanent log (product name / item
+  // id, status, profit sign). Runs whenever the debounced search text or either
+  // filter select changes.
   useEffect(() => {
-    if (!query) return;
+    if (!filtered) return;
     let cancelled = false;
     idsRef.current = new Set();
     setEntries([]);
@@ -1388,7 +1398,10 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
     setHasMore(false);
     setError("");
     setLoading(true);
-    const params = new URLSearchParams({ q: query, limit: String(LOOT_PAGE_SIZE) });
+    const params = new URLSearchParams({ limit: String(LOOT_PAGE_SIZE) });
+    if (query) params.set("q", query);
+    if (statusFilter) params.set("status", statusFilter);
+    if (profitFilter) params.set("profit", profitFilter);
     request(`/api/history?${params.toString()}`)
       .then((data) => {
         if (cancelled) return;
@@ -1407,13 +1420,15 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
     return () => {
       cancelled = true;
     };
-  }, [query, request]);
+  }, [filtered, query, statusFilter, profitFilter, request]);
 
   const loadOlder = useCallback(async () => {
     if (loading || !hasMore) return;
     const oldest = entries[entries.length - 1];
     const params = new URLSearchParams({ limit: String(LOOT_PAGE_SIZE) });
     if (query) params.set("q", query);
+    if (statusFilter) params.set("status", statusFilter);
+    if (profitFilter) params.set("profit", profitFilter);
     if (oldest) {
       params.set("beforeAt", String(oldest.at));
       params.set("beforeId", String(oldest.id));
@@ -1436,13 +1451,15 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
     } finally {
       setLoading(false);
     }
-  }, [entries, hasMore, loading, query, request]);
+  }, [entries, hasMore, loading, query, statusFilter, profitFilter, request]);
 
   const resetLog = async () => {
     const didReset = await onReset();
     if (didReset === false) return;
     setDraft("");
     setQuery("");
+    setStatusFilter("");
+    setProfitFilter("");
     idsRef.current = new Set();
     setEntries([]);
     setTotal(0);
@@ -1452,11 +1469,11 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
 
   const shown = entries.length;
   const trimmed = shown < total;
-  const emptyTitle = error ? "Loot log unavailable" : query ? "No matching loot" : "No loot yet";
+  const emptyTitle = error ? "Loot log unavailable" : filtered ? "No matching loot" : "No loot yet";
   const emptyHint = error
     ? error
-    : query
-      ? `Nothing in the permanent log matches “${query}”.`
+    : filtered
+      ? "Nothing in the permanent log matches the current search/filter."
       : "Confirmed fills will drop here with profit and latency.";
   const latestDetail = detail
     ? entries.find((entry) => entry.id === detail.id) || detail
@@ -1502,8 +1519,8 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
           <b className="monitor-counter-value">{avg == null ? "—" : formatMs(avg)}</b>
           <Icon name="i-chevron" className="monitor-counter-chevron" />
         </button>
-        <div className="ml-auto flex w-full items-center gap-2 sm:w-auto">
-          <div className="relative min-w-0 flex-1 sm:w-56 sm:flex-none">
+        <div className="ml-auto flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
+          <div className="relative min-w-0 flex-1 sm:w-44 sm:flex-none">
             <Icon name="i-search" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
             <input
               className="input input-sm pl-8"
@@ -1517,6 +1534,28 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
               aria-label="Search loot log by product name"
             />
           </div>
+          <select
+            className="input input-sm w-auto shrink-0 px-2"
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value)}
+            aria-label="Filter loot log by status"
+            title="Filter by status: success (filled) or failed"
+          >
+            <option value="">Status: All</option>
+            <option value="filled">Status: Success</option>
+            <option value="failed">Status: Failed</option>
+          </select>
+          <select
+            className="input input-sm w-auto shrink-0 px-2"
+            value={profitFilter}
+            onChange={(event) => setProfitFilter(event.target.value)}
+            aria-label="Filter loot log by profit"
+            title="Filter by profit sign: positive or negative"
+          >
+            <option value="">Profit: All</option>
+            <option value="positive">Profit: Positive (+)</option>
+            <option value="negative">Profit: Negative (−)</option>
+          </select>
           <button className="btn btn-ghost btn-sm" type="button" onClick={resetLog}>
             <Icon name="i-trash" className="h-3 w-3" /> Reset
           </button>
@@ -1556,6 +1595,9 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
                   <p className="mt-0.5 font-mono text-[13px] uppercase tracking-[0.08em] text-faint">
                     {formatTime(entry.at)} · {formatInt(entry.qty)} × {fixedPrice(entry.unitPrice)} RLT
                   </p>
+                  <p className="mt-0.5 font-mono text-[13px] text-muted">
+                    Target {entry.targetPrice > 0 ? fixedPrice(entry.targetPrice) : "—"}
+                  </p>
                   {entry.status === "failed" ? (
                     <p className="mt-0.5 truncate font-mono text-[13px] text-danger/80" title={entry.message || entry.note || undefined}>
                       {entry.message || entry.note || "failed"}
@@ -1576,7 +1618,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
           )}
           {wide ? (
           <div className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain">
-            <table className="w-full min-w-[760px] border-collapse text-left font-mono text-[13px] tabular-nums">
+            <table className="w-full min-w-[860px] border-collapse text-left font-mono text-[13px] tabular-nums">
               <thead className="sticky top-0 z-10 bg-night-900">
                 <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
                   <th scope="col" className="px-4 py-2 font-medium">Time</th>
@@ -1584,6 +1626,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
                   <th scope="col" className="px-3 py-2 font-medium">Qty</th>
                   <th scope="col" className="px-3 py-2 font-medium">Unit</th>
                   <th scope="col" className="px-3 py-2 font-medium">Total</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Target</th>
                   <th scope="col" className="px-3 py-2 font-medium">Profit</th>
                   <th scope="col" className="px-3 py-2 font-medium">Latency</th>
                   <th scope="col" className="px-3 py-2 font-medium">Status</th>
@@ -1612,6 +1655,12 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
                     <td className="px-3 py-2 text-ink-dim">{formatInt(entry.qty)}</td>
                     <td className="px-3 py-2 text-ink-dim">{fixedPrice(entry.unitPrice)}</td>
                     <td className="px-3 py-2 text-ink-dim">{fixedPrice(entry.totalPrice)}</td>
+                    <td
+                      className="px-3 py-2 text-muted"
+                      title="Target price in effect when this order was executed"
+                    >
+                      {entry.targetPrice > 0 ? fixedPrice(entry.targetPrice) : "—"}
+                    </td>
                     <td className={`px-3 py-2 ${entry.profitRlt > 0 ? "text-gold" : entry.profitRlt < 0 ? "text-danger" : "text-ink-dim"}`}>
                       {entry.status === "failed" ? "0.000000" : formatSignedRlt(entry.profitRlt)}
                     </td>
@@ -1637,7 +1686,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
       )}
       <div className="flex shrink-0 items-center justify-between gap-2 border-t-2 border-line px-3 py-2">
         <span className="min-w-0 truncate font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
-          {query
+          {filtered
             ? `${formatInt(shown)} match${shown === 1 ? "" : "es"}`
             : trimmed
               ? `Showing ${formatInt(shown)} of ${formatInt(total)}`

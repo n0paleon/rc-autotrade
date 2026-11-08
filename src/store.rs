@@ -160,6 +160,9 @@ pub struct HistoryPage {
 pub struct HistoryQuery {
     pub q: String,
     pub status: String,
+    /// "" (all) | "positive" (profit_rlt > 0) | "negative" (profit_rlt < 0).
+    /// Rows with exactly zero profit match neither bucket.
+    pub profit: String,
     pub limit: Option<usize>,
     pub offset: i64,
     pub before_at: i64,
@@ -1182,6 +1185,11 @@ impl Store {
         } else {
             String::new()
         };
+        let profit = if query.profit == "positive" || query.profit == "negative" {
+            query.profit.clone()
+        } else {
+            String::new()
+        };
         let page_size = query
             .limit
             .unwrap_or(LOOT_LOG_PAGE_SIZE)
@@ -1190,20 +1198,26 @@ impl Store {
         let cursor = query.before_at > 0 && !query.before_id.is_empty();
         let skip = if cursor { 0 } else { query.offset.max(0) };
 
+        // `(?3 = 'positive' AND profit_rlt > 0) OR (?3 = 'negative' AND profit_rlt < 0)
+        //  OR ?3 = ''` — empty means no profit filter.
+        let profit_clause = "((?3 = '' OR (?3 = 'positive' AND profit_rlt > 0) OR (?3 = 'negative' AND profit_rlt < 0)))";
         let (sql, bindings): (String, Vec<Box<dyn rusqlite::ToSql>>) = if cursor {
             (
-                "SELECT id, order_id, item_id, label, qty, unit_price, total_price,
-                        target_price, profit_rlt, status, at, latency_ms,
-                        note, message
-                 FROM orders
-                 WHERE (?1 = '' OR label LIKE ?1 ESCAPE '\\' OR item_id LIKE ?1 ESCAPE '\\')
-                   AND (?2 = '' OR status = ?2)
-                   AND (at < ?3 OR (at = ?3 AND id < ?4))
-                 ORDER BY at DESC, id DESC LIMIT ?5"
-                    .to_string(),
+                format!(
+                    "SELECT id, order_id, item_id, label, qty, unit_price, total_price,
+                            target_price, profit_rlt, status, at, latency_ms,
+                            note, message
+                     FROM orders
+                     WHERE (?1 = '' OR label LIKE ?1 ESCAPE '\\' OR item_id LIKE ?1 ESCAPE '\\')
+                       AND (?2 = '' OR status = ?2)
+                       AND {profit_clause}
+                       AND (at < ?4 OR (at = ?4 AND id < ?5))
+                     ORDER BY at DESC, id DESC LIMIT ?6"
+                ),
                 vec![
                     Box::new(like),
                     Box::new(status),
+                    Box::new(profit),
                     Box::new(query.before_at),
                     Box::new(query.before_id),
                     Box::new((page_size + 1) as i64),
@@ -1211,17 +1225,20 @@ impl Store {
             )
         } else {
             (
-                "SELECT id, order_id, item_id, label, qty, unit_price, total_price,
-                        target_price, profit_rlt, status, at, latency_ms,
-                        note, message
-                 FROM orders
-                 WHERE (?1 = '' OR label LIKE ?1 ESCAPE '\\' OR item_id LIKE ?1 ESCAPE '\\')
-                   AND (?2 = '' OR status = ?2)
-                 ORDER BY at DESC, id DESC LIMIT ?3 OFFSET ?4"
-                    .to_string(),
+                format!(
+                    "SELECT id, order_id, item_id, label, qty, unit_price, total_price,
+                            target_price, profit_rlt, status, at, latency_ms,
+                            note, message
+                     FROM orders
+                     WHERE (?1 = '' OR label LIKE ?1 ESCAPE '\\' OR item_id LIKE ?1 ESCAPE '\\')
+                       AND (?2 = '' OR status = ?2)
+                       AND {profit_clause}
+                     ORDER BY at DESC, id DESC LIMIT ?4 OFFSET ?5"
+                ),
                 vec![
                     Box::new(like),
                     Box::new(status),
+                    Box::new(profit),
                     Box::new((page_size + 1) as i64),
                     Box::new(skip),
                 ],
@@ -1247,7 +1264,9 @@ impl Store {
             .query_row(
                 "SELECT COUNT(*) FROM orders
                  WHERE (?1 = '' OR label LIKE ?1 ESCAPE '\\' OR item_id LIKE ?1 ESCAPE '\\')
-                   AND (?2 = '' OR status = ?2)",
+                   AND (?2 = '' OR status = ?2)
+                   AND (?3 = '' OR (?3 = 'positive' AND profit_rlt > 0)
+                        OR (?3 = 'negative' AND profit_rlt < 0))",
                 params![
                     if term.is_empty() {
                         String::new()
@@ -1256,6 +1275,11 @@ impl Store {
                     },
                     if query.status == "filled" || query.status == "failed" {
                         query.status
+                    } else {
+                        String::new()
+                    },
+                    if query.profit == "positive" || query.profit == "negative" {
+                        query.profit
                     } else {
                         String::new()
                     }
@@ -2308,6 +2332,59 @@ mod tests {
                 .iter()
                 .all(|entry| entry.status == "filled")
         );
+
+        // Profit-sign filter: re-point the same rows at non-zero profits.
+        // Zero-profit rows must match neither bucket.
+        let db = &store.db;
+        db.execute("UPDATE orders SET profit_rlt = 0.5 WHERE id = 'o0'", [])
+            .unwrap();
+        db.execute("UPDATE orders SET profit_rlt = -0.25 WHERE id = 'o2'", [])
+            .unwrap();
+        db.execute("UPDATE orders SET profit_rlt = 1.0 WHERE id = 'o4'", [])
+            .unwrap();
+        // o1 (failed) and o3 (failed) stay at 0.0.
+
+        let positive = store
+            .history_page(HistoryQuery {
+                profit: "positive".into(),
+                limit: Some(10),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(positive.total, 2);
+        assert!(positive.entries.iter().all(|entry| entry.profit_rlt > 0.0));
+
+        let negative = store
+            .history_page(HistoryQuery {
+                profit: "negative".into(),
+                limit: Some(10),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(negative.total, 1);
+        assert!(negative.entries.iter().all(|entry| entry.profit_rlt < 0.0));
+
+        // Combined filters compose: filled + positive.
+        let filled_positive = store
+            .history_page(HistoryQuery {
+                status: "filled".into(),
+                profit: "positive".into(),
+                limit: Some(10),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(filled_positive.total, 2);
+        assert_eq!(filled_positive.entries.len(), 2);
+
+        // Unknown profit values fall back to no filter.
+        let unknown = store
+            .history_page(HistoryQuery {
+                profit: "bogus".into(),
+                limit: Some(10),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(unknown.total, 5);
     }
 
     #[test]

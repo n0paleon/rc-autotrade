@@ -865,6 +865,7 @@ async fn history(
     let query = HistoryQuery {
         q: params.get("q").cloned().unwrap_or_default(),
         status: params.get("status").cloned().unwrap_or_default(),
+        profit: params.get("profit").cloned().unwrap_or_default(),
         limit: Some(limit),
         offset,
         before_at: params
