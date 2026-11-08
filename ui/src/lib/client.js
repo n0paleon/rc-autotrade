@@ -230,6 +230,10 @@ export class WorkerClient {
         if (Array.isArray(message.data?.recentLogs)) this.onLogs?.(message.data.recentLogs);
       } else if (message.type === "snapshot") {
         this.onSnapshot?.(message.data);
+      } else if (message.type === "resync") {
+        // The worker dropped frames for this socket. Pull a fresh snapshot over
+        // HTTP instead of leaning on the next push to repair the deck.
+        this.resync();
       } else if (message.type === "pong") {
         if (message.data?.t) this.onLatency?.(Math.max(0, Date.now() - message.data.t));
       } else {

@@ -60,6 +60,8 @@ pub struct MockStats {
     pub reconnects: i64,
     pub event_count: i64,
     pub parse_errors: i64,
+    /// Simulated frames the core loop could not take (queue full).
+    pub dropped: i64,
     pub cmd_counts: BTreeMap<String, i64>,
     pub last_ping_ms: Option<f64>,
 }
@@ -98,6 +100,7 @@ impl MockHandle {
             "reconnects": stats.reconnects,
             "eventCount": stats.event_count,
             "parseErrors": stats.parse_errors,
+            "dropped": stats.dropped,
             "commands": commands,
             "upstream": "mock",
             "uptimeMs": stats.connected_at.map(|at| now_ms() - at).unwrap_or(0),
@@ -158,6 +161,7 @@ fn status_payload(stats: &Arc<Mutex<MockStats>>) -> Value {
         "reconnects": stats.reconnects,
         "eventCount": stats.event_count,
         "parseErrors": stats.parse_errors,
+        "dropped": stats.dropped,
         "commands": [],
         "upstream": "mock",
         "uptimeMs": stats.connected_at.map(|at| now_ms() - at).unwrap_or(0),
@@ -187,10 +191,16 @@ fn emit(
     value: Value,
 ) {
     record_frame(stats, cmd);
-    let _ = events.try_send(GatewayEvent::Frame {
-        raw: json!({ "cmd": cmd, "value": value }),
-        at: now_ms(),
-    });
+    if events
+        .try_send(GatewayEvent::Frame {
+            raw: json!({ "cmd": cmd, "value": value }),
+            at: now_ms(),
+        })
+        .is_err()
+    {
+        let mut guard = stats.lock().unwrap_or_else(|e| e.into_inner());
+        guard.dropped += 1;
+    }
 }
 
 /// Builds one `marketplace_orders_update` frame the way the simulator does.
@@ -370,10 +380,14 @@ async fn run(
                                     "status": 12,
                                 })
                             };
-                            let _ = event_tx.try_send(GatewayEvent::Frame {
-                                raw: json!({ "cmd": "marketplace_orders_filled", "value": value }),
-                                at: now_ms(),
-                            });
+                            // Never dropped: this is the fill the engine waits
+                            // for to write the loot row.
+                            let _ = event_tx
+                                .send(GatewayEvent::Frame {
+                                    raw: json!({ "cmd": "marketplace_orders_filled", "value": value }),
+                                    at: now_ms(),
+                                })
+                                .await;
                         });
                     }
                     Some(MockCommand::Reconnect) => {

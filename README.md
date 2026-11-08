@@ -21,7 +21,7 @@ A headless Rollercoin marketplace sniper with an arcade-style control deck built
 - **Market activity chart.** Every market frame is counted into 5-minute buckets kept for a week, so the deck can chart how busy the feed was over 1, 3, or 7 days at 5m, 15m, 30m, 1h, or 2h buckets, aligned to your local clock.
 - **Session manager.** Access and refresh tokens are stored in SQLite. The access token is refreshed before expiry, and requests are retried once after a 401 response.
 - **Token bridge.** A Tampermonkey userscript or console snippet keeps Rollercoin tokens in sync every 30 seconds.
-- **Safety rails.** Includes a global cooldown between orders, an orders-per-minute cap, backoff after rejected purchases, three explicit trading modes (off, shadow, live), strict validation, and a STOP/START control in the header.
+- **Safety rails.** Includes a global cooldown between orders, an orders-per-minute cap, backoff after rejected purchases, three explicit trading modes (off, shadow, live), strict validation, a data-directory lock that refuses a second worker, and a STOP/START control in the header.
 - **Persistent loot log.** Every fill and failure is stored in SQLite, with server-side search and cursor-based paging.
 - **Profit report.** Shows per-product totals for fills, quantity, spend, average buy price, profit, margin, and success rate, with CSV export.
 - **Backup and migration.** Export a portable JSON file or a database copy, then restore it on another worker.
