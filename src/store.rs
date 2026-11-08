@@ -452,13 +452,12 @@ impl Store {
             .db
             .prepare(
                 "SELECT id, order_id, item_id, label, qty, unit_price, total_price,
-                        target_price, profit_rlt, status, at, latency_ms, timings, raw_events,
-                        note, message
+                        target_price, profit_rlt, status, at, latency_ms, note, message
                  FROM orders ORDER BY at DESC, id DESC LIMIT ?1",
             )
             .map_err(|e| format!("could not prepare history read: {e}"))?;
         let rows = statement
-            .query_map(params![limit as i64], row_to_entry)
+            .query_map(params![limit as i64], row_to_entry_lite)
             .map_err(|e| format!("could not read history: {e}"))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("could not decode history: {e}"))
@@ -1125,7 +1124,7 @@ impl Store {
         let (sql, bindings): (String, Vec<Box<dyn rusqlite::ToSql>>) = if cursor {
             (
                 "SELECT id, order_id, item_id, label, qty, unit_price, total_price,
-                        target_price, profit_rlt, status, at, latency_ms, timings, raw_events,
+                        target_price, profit_rlt, status, at, latency_ms,
                         note, message
                  FROM orders
                  WHERE (?1 = '' OR label LIKE ?1 ESCAPE '\\' OR item_id LIKE ?1 ESCAPE '\\')
@@ -1144,7 +1143,7 @@ impl Store {
         } else {
             (
                 "SELECT id, order_id, item_id, label, qty, unit_price, total_price,
-                        target_price, profit_rlt, status, at, latency_ms, timings, raw_events,
+                        target_price, profit_rlt, status, at, latency_ms,
                         note, message
                  FROM orders
                  WHERE (?1 = '' OR label LIKE ?1 ESCAPE '\\' OR item_id LIKE ?1 ESCAPE '\\')
@@ -1167,7 +1166,7 @@ impl Store {
         let rows: Vec<OrderEntry> = {
             let refs: Vec<&dyn rusqlite::ToSql> = bindings.iter().map(|b| b.as_ref()).collect();
             let mapped = statement
-                .query_map(refs.as_slice(), row_to_entry)
+                .query_map(refs.as_slice(), row_to_entry_lite)
                 .map_err(|e| format!("could not query history: {e}"))?;
             mapped
                 .collect::<Result<Vec<_>, _>>()
@@ -1204,6 +1203,26 @@ impl Store {
             offset: skip,
             has_more,
         })
+    }
+
+    /// Reads the two heavy JSON columns for a single row.
+    ///
+    /// Lists never select `timings`/`raw_events`: the SQLite profile timer keeps
+    /// running until the statement resets, so decoding frames while iterating
+    /// rows is reported as a slow SELECT even when the query itself is cheap.
+    /// The deck asks for one entry at a time when its detail modal opens.
+    pub fn order_detail(&self, id: &str) -> Result<Option<OrderEntry>, String> {
+        self.db
+            .query_row(
+                "SELECT id, order_id, item_id, label, qty, unit_price, total_price,
+                        target_price, profit_rlt, status, at, latency_ms, timings, raw_events,
+                        note, message
+                 FROM orders WHERE id = ?1",
+                params![id],
+                row_to_entry,
+            )
+            .optional()
+            .map_err(|e| format!("could not read order {id}: {e}"))
     }
 
     // ── report ──────────────────────────────────────────────────────────────
@@ -1886,6 +1905,28 @@ fn row_to_entry(row: &Row<'_>) -> rusqlite::Result<OrderEntry> {
     })
 }
 
+/// The list shape: everything the loot table renders, without the JSON blobs.
+fn row_to_entry_lite(row: &Row<'_>) -> rusqlite::Result<OrderEntry> {
+    Ok(OrderEntry {
+        id: row.get(0)?,
+        order_id: row.get(1)?,
+        item_id: row.get(2)?,
+        label: row.get(3)?,
+        qty: row.get(4)?,
+        unit_price: row.get(5)?,
+        total_price: row.get(6)?,
+        target_price: row.get(7)?,
+        profit_rlt: row.get(8)?,
+        status: row.get(9)?,
+        at: row.get(10)?,
+        latency_ms: row.get(11)?,
+        timings: None,
+        raw_events: None,
+        note: row.get(12)?,
+        message: row.get(13)?,
+    })
+}
+
 /// Convenience for building an in-memory entry in tests and the engine round.
 pub fn make_entry(
     id: &str,
@@ -2250,16 +2291,68 @@ mod tests {
         store.add_history(entry).unwrap();
 
         assert!(store.update_history_timings("o1", &serde_json::json!({ "responseAt": 250 })));
-        let row = store
+        let row = store.order_detail("o1").unwrap().expect("detail");
+        let timings = row.timings.expect("timings");
+        assert_eq!(timings.signal_at, Some(100.0));
+        assert_eq!(timings.response_at, Some(250.0));
+    }
+
+    #[test]
+    fn lists_skip_raw_payloads_and_the_detail_reader_loads_them() {
+        let mut store = store("history-lite");
+        let mut entry = make_entry("o1", "item-1", "Hashboard", "filled", 1, now_ms());
+        entry.timings = crate::timings::sanitize(&serde_json::json!({ "signalAt": 100 }));
+        entry.raw_events = crate::raw_events::sanitize(&serde_json::json!({
+            "priceEvent": { "cmd": "marketplace_orders_update" },
+            "resultEvent": { "cmd": "marketplace_orders_filled" }
+        }));
+        store.add_history(entry).unwrap();
+
+        let listed = store
             .history_page(HistoryQuery {
                 ..Default::default()
             })
             .unwrap()
             .entries
             .remove(0);
-        let timings = row.timings.expect("timings");
-        assert_eq!(timings.signal_at, Some(100.0));
-        assert_eq!(timings.response_at, Some(250.0));
+        assert!(listed.timings.is_none(), "list must not decode timings");
+        assert!(listed.raw_events.is_none(), "list must not decode frames");
+
+        let detail = store.order_detail("o1").unwrap().expect("detail");
+        assert_eq!(detail.timings.unwrap().signal_at, Some(100.0));
+        assert_eq!(
+            detail.raw_events.unwrap()["priceEvent"]["cmd"],
+            "marketplace_orders_update"
+        );
+
+        assert!(store.order_detail("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn hydrate_loads_lists_without_heavy_frames() {
+        let dir = temp_dir("history-reload");
+        let logger = Arc::new(Logger::new("error"));
+        let mut store = Store::open(dir.clone(), logger.clone()).unwrap();
+        let mut entry = make_entry("o1", "item-1", "Hashboard", "filled", 1, now_ms());
+        entry.raw_events = crate::raw_events::sanitize(&serde_json::json!({
+            "priceEvent": { "cmd": "marketplace_orders_update" },
+        }));
+        store.add_history(entry).unwrap();
+        drop(store);
+
+        let store = Store::open(dir.clone(), logger).unwrap();
+        let row = &store.state.history[0];
+        assert!(row.timings.is_none(), "boot list must stay lean");
+        assert!(row.raw_events.is_none(), "boot list must stay lean");
+        assert!(
+            store
+                .order_detail("o1")
+                .unwrap()
+                .unwrap()
+                .raw_events
+                .is_some(),
+            "the detail row still carries the frames"
+        );
     }
 
     #[test]

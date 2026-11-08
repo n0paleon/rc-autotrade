@@ -98,7 +98,8 @@ Rollercoin session — two of either will duplicate orders.
 | `DELETE /api/configs/:id` | ✅ | 404 when unknown |
 | `PATCH /api/settings` | ✅ | validated ranges, broadcasts `settings` |
 | `POST /api/control` | ✅ | `off`/`shadow`/`live` (legacy `pause`/`resume`/`toggle` aliases) and `reconnect` |
-| `GET /api/history` | ✅ | cursor + offset + `q`/`status` filters |
+| `GET /api/history` | ✅ | cursor + offset + `q`/`status` filters; rows omit the two JSON payloads |
+| `GET /api/history/:id` | ➕ | Rust-only: `timings` + `rawEvents` for one row (the detail modal) |
 | `DELETE /api/history` | ✅ | resets stats, engine counters and latency samples |
 | `GET /api/report` | ✅ | same derived columns |
 | `GET /api/events` | ➕ | Rust-only: market-frame counts per 5-minute bucket for `?days=1..7`; the deck sums them into the chart timeframe in local time |
@@ -456,6 +457,14 @@ Control plane and durability:
 - Store writes that used to be silently ignored (target upserts, session
   persistence, the order counter) now log at most once a minute. A full disk
   used to look exactly like a healthy worker.
+- Loot lists (boot hydration, `/api/history`, `/api/state`) no longer select
+  `timings`/`raw_events`. SQLite's profile timer runs until the statement
+  resets, so decoding the two JSON columns while iterating rows was reported as
+  a slow `SELECT` even when the query itself was microseconds. `GET
+  /api/history/:id` loads them for the single row a detail modal opens.
+- `orders (at DESC, id DESC)` keeps the loot page sort-free, and
+  `price_points (bucket_at)` lets the hourly retention `DELETE` seek instead of
+  scanning every retained row.
 
 Still open (deliberately unchanged): per-request auth rate limiting, loot-log
 retention plus `COUNT(*)` caching for a very large `orders` table, and a release

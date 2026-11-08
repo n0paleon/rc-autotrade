@@ -242,14 +242,23 @@ async fn feed_to_fill_round_trip() {
         assert_eq!(timings.socket_mode.as_deref(), Some("unknown"));
 
         // Same row after the SQLite round-trip the deck reads through
-        // `/api/history`; the DNS fields must survive encode/decode.
+        // `/api/history`. Lists skip the payloads; [`order_detail`] is the
+        // reader the detail modal uses, and must keep the DNS fields.
         let page = store
             .history_page(rollercoin_worker::store::HistoryQuery {
                 limit: Some(1),
                 ..Default::default()
             })
             .expect("history page");
-        let stored = page.entries.first().expect("stored row");
+        let listed = page.entries.first().expect("stored row");
+        assert!(
+            listed.timings.is_none() && listed.raw_events.is_none(),
+            "list rows must not carry the JSON payloads"
+        );
+        let stored = store
+            .order_detail(&listed.id)
+            .expect("detail query")
+            .expect("stored row");
         let stored_timings = stored.timings.as_ref().expect("stored timings");
         assert_eq!(stored_timings.dns_mode.as_deref(), Some("skipped"));
         assert_eq!(stored_timings.socket_mode.as_deref(), Some("unknown"));

@@ -274,7 +274,13 @@ impl AppState {
             "configs": self.configs_view(store, engine),
             "stats": store.state.stats,
             "report": store.report_view(),
-            "history": store.state.history.iter().take(LOOT_LOG_PAGE_SIZE).cloned().collect::<Vec<_>>(),
+            "history": store
+                .state
+                .history
+                .iter()
+                .take(LOOT_LOG_PAGE_SIZE)
+                .map(|entry| entry.lite())
+                .collect::<Vec<_>>(),
             "historyTotal": store.history_count(),
             "pending": pending,
             "workerTokenPreview": store.state.worker_token_preview,
@@ -832,6 +838,26 @@ async fn history(
             "hasMore": page.has_more,
         }))
         .into_response(),
+        Err(message) => error_body(StatusCode::INTERNAL_SERVER_ERROR, &message),
+    }
+}
+
+/// The two heavy JSON columns for one loot row.
+///
+/// The list endpoints stay lean on purpose (see `Store::order_detail`); the
+/// detail modal calls this for the single entry it is showing.
+async fn history_detail(
+    _auth: Auth,
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    let entry = crate::blocking::run(|| {
+        let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
+        store.order_detail(&id)
+    });
+    match entry {
+        Ok(Some(entry)) => Json(json!({ "ok": true, "entry": entry })).into_response(),
+        Ok(None) => error_body(StatusCode::NOT_FOUND, "Unknown order id."),
         Err(message) => error_body(StatusCode::INTERNAL_SERVER_ERROR, &message),
     }
 }
@@ -1729,6 +1755,7 @@ pub fn router(state: Arc<AppState>, dist_dir: std::path::PathBuf) -> Router {
         .route("/api/settings", patch(patch_settings))
         .route("/api/control", post(control))
         .route("/api/history", get(history).delete(delete_history))
+        .route("/api/history/{id}", get(history_detail))
         .route("/api/report", get(report))
         .route("/api/events", get(events_view))
         .route("/api/price-history", get(price_history_view))

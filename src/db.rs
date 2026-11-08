@@ -98,6 +98,9 @@ CREATE TABLE IF NOT EXISTS orders (
 
 CREATE INDEX IF NOT EXISTS orders_at ON orders (at DESC);
 CREATE INDEX IF NOT EXISTS orders_item_at ON orders (item_id, at DESC);
+-- The loot log pages on `at` with `id` as the tiebreak. Without both columns in
+-- the index SQLite sorts every page through a temp B-tree.
+CREATE INDEX IF NOT EXISTS orders_at_id ON orders (at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS report_products (
   product_key TEXT PRIMARY KEY,
@@ -132,6 +135,10 @@ CREATE TABLE IF NOT EXISTS price_points (
   fill_approx INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (item_id, bucket_at)
 ) WITHOUT ROWID;
+
+-- Retention deletes by time alone, which the (item_id, bucket_at) primary key
+-- cannot serve: without this index every prune scans the whole table.
+CREATE INDEX IF NOT EXISTS price_points_bucket_at ON price_points (bucket_at);
 
 -- Market-frame activity, one row per 5-minute bucket. Additive: older builds
 -- that know schema v7 simply ignore the table, so `user_version` stays put.
@@ -392,6 +399,55 @@ mod tests {
                 "missing {expected}"
             );
         }
+
+        let indexes: Vec<String> = {
+            let mut statement = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master
+                     WHERE type='index' AND name NOT LIKE 'sqlite_autoindex%'
+                     ORDER BY name",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect()
+        };
+        for expected in ["orders_at_id", "price_points_bucket_at"] {
+            assert!(
+                indexes.iter().any(|name| name == expected),
+                "missing index {expected}"
+            );
+        }
+
+        // The whole point of the two indexes: the loot page must not need a
+        // sort, and the hourly prune must not scan the whole price table.
+        let order_plan: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN
+                 SELECT id, order_id, item_id, label, qty, unit_price, total_price,
+                        target_price, profit_rlt, status, at, latency_ms, note, message
+                 FROM orders ORDER BY at DESC, id DESC LIMIT 50",
+                [],
+                |row| row.get(3),
+            )
+            .unwrap();
+        assert!(
+            !order_plan.to_ascii_uppercase().contains("TEMP B-TREE"),
+            "loot page should not sort, got {order_plan}"
+        );
+        let prune_plan: String = conn
+            .query_row(
+                "EXPLAIN QUERY PLAN DELETE FROM price_points WHERE bucket_at < 1",
+                [],
+                |row| row.get(3),
+            )
+            .unwrap();
+        assert!(
+            prune_plan.contains("price_points_bucket_at"),
+            "prune should use the time index, got {prune_plan}"
+        );
 
         let journal: String = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
