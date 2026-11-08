@@ -212,6 +212,32 @@ export function drawPixelAvatar(canvas, seed, preferredColor) {
   ctx.fillRect(1, 1, 2, 1);
 }
 
+/**
+ * Client-side twin of the server-side loot-log filter in
+ * `Store::history_page` (`src/store.rs`): the search term matches the
+ * label or item id (case-insensitive substring, as SQLite `LIKE` does),
+ * `status` narrows to filled/failed, and `profit` narrows by profit sign.
+ * Empty criteria match everything. Used to keep the filtered loot log live:
+ * a socket entry that passes the active filter is prepended without
+ * waiting for a fresh `/api/history` page.
+ */
+export function matchesLootFilter(entry, { q = "", status = "", profit = "" } = {}) {
+  if (!entry || typeof entry !== "object") return false;
+  const term = String(q || "").trim().toLowerCase();
+  if (term) {
+    const haystacks = [entry.label, entry.itemId];
+    if (!haystacks.some((value) => String(value || "").toLowerCase().includes(term))) {
+      return false;
+    }
+  }
+  if (status === "filled" || status === "failed") {
+    if (entry.status !== status) return false;
+  }
+  if (profit === "positive") return Number(entry.profitRlt) > 0;
+  if (profit === "negative") return Number(entry.profitRlt) < 0;
+  return true;
+}
+
 export function mergeHistory(history, point, bucket, low, high, rawLow, rawHigh) {
   const next = Array.isArray(history) ? [...history] : [];
   const last = next[next.length - 1];
