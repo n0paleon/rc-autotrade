@@ -554,6 +554,11 @@ export function useWorker({ notify }) {
         case "latency":
           setSnapshot((previous) => (previous ? { ...previous, latency: data } : previous));
           break;
+        case "benchmark":
+          if (data) {
+            setSnapshot((previous) => (previous ? { ...previous, benchmark: data } : previous));
+          }
+          break;
         case "system":
           if (data) {
             setSnapshot((previous) => (previous ? { ...previous, system: data } : previous));
@@ -1154,6 +1159,14 @@ export function useWorker({ notify }) {
     return result;
   }, [request]);
 
+  const fetchBenchmark = useCallback(async () => {
+    const result = await request("/api/benchmark");
+    if (result?.benchmark) {
+      setSnapshot((previous) => (previous ? { ...previous, benchmark: result.benchmark } : previous));
+    }
+    return result;
+  }, [request]);
+
   const previewItem = useCallback(
     (itemId, itemType = "mutation_component") => {
       const params = new URLSearchParams({ itemId, itemType });
@@ -1193,6 +1206,7 @@ export function useWorker({ notify }) {
     refreshLatency,
     fetchLatency,
     fetchSystem,
+    fetchBenchmark,
     clearLogs,
     appendLog
   };

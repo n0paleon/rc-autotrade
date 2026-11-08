@@ -114,6 +114,8 @@ Rollercoin session — two of either will duplicate orders.
 | `GET /api/latency` | ✅ | four-channel snapshot |
 | `POST /api/latency/probe` | ✅ | on-demand warm probe; also broadcasts `latency` |
 | `GET /api/system` | ✅ | live sampler (CPU/RAM/load/loop lag/db files) |
+| `GET /api/benchmark` | ➕ | Rust-only: per-stage order pipeline stats (avg/p50/p95/jitter) over the last 25/50/200 timed orders, rebuilt from `orders.timings` |
+| `GET /api/benchmark/history` | ➕ | Rust-only: local-clock buckets (`?hours=1..168&bucket=5m..1d&stage=total&tzOffsetMs=`) with per-bucket avg/p95/jitter plus a range summary, for the expanded latency chart |
 | `GET /api/item-info` | ✅ | resolver with type fallbacks; updates the target label/rarity |
 | `POST /api/session/push`, `/refresh` | ✅ | bridge merge rules + coalesced refresh |
 | `WS /ws` (`rcw.v1`) | ✅ | token as 2nd subprotocol or `?token=`; `hello`, `snapshot`, `ping`/`pong`, `refresh`, broadcasts |
@@ -130,9 +132,9 @@ Bun worker.
    measures ~40 µs here, so synchronous writes stay until the frame path has a
    measured reason to defer them.
 3. **`runtime` is `null` until a target has a live frame or a cached snapshot,**
-   and `pending` is `[]` until an order is in flight. `latency`, `system` and
-   `keepalive` are always populated. The deck handles the nullables with
-   optional chaining (verified in the browser).
+   and `pending` is `[]` until an order is in flight. `latency`, `benchmark`,
+   `system` and `keepalive` are always populated. The deck handles the nullables
+   with optional chaining (verified in the browser).
 4. **No auth-failure rate limit yet.** The Bun worker returns 429 after 20 bad
    keys per IP per minute.
 5. **Logger timestamps are UTC `HH:MM:SS`;** the JS one uses local time.

@@ -264,6 +264,63 @@
     line-height: 1.25;
   }
 
+  /* Clickable telemetry counter beside the loot-log title: it opens the
+     monitor window, and the count is the benchmark's timed-order sample. */
+  .monitor-counter {
+    @apply inline-flex h-7 shrink-0 items-center gap-1.5 px-2;
+    border: 2px solid var(--color-line);
+    background: rgb(8 5 28 / 0.85);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--color-faint);
+    transition:
+      transform var(--motion-tap) var(--ease-pixel),
+      border-color var(--motion-ui) linear,
+      box-shadow var(--motion-tap) var(--ease-pixel);
+  }
+
+  .monitor-counter:hover {
+    border-color: color-mix(in srgb, var(--color-info) 70%, transparent);
+    color: var(--color-ink-dim);
+    box-shadow: 2px 2px 0 #05030f;
+  }
+
+  .monitor-counter:active {
+    transform: translateY(1px);
+    box-shadow: none;
+  }
+
+  .monitor-counter:focus-visible {
+    outline: 2px solid var(--color-gold);
+    outline-offset: 2px;
+  }
+
+  .monitor-counter-icon {
+    @apply inline-flex items-center;
+    color: var(--color-info);
+  }
+
+  .monitor-counter-value {
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--color-ink);
+  }
+
+  .monitor-counter-chevron {
+    @apply h-3 w-3 shrink-0;
+    color: var(--color-faint);
+    transition: color var(--motion-ui) linear;
+  }
+
+  .monitor-counter:hover .monitor-counter-chevron {
+    color: var(--color-info);
+  }
+
   /* ── controls ─────────────────────────────────────────────────── */
   .btn {
     @apply inline-flex h-9 shrink-0 select-none items-center justify-center gap-1.5 px-3 font-sans text-[12px] font-semibold uppercase text-ink-dim max-sm:h-10;
@@ -1128,8 +1185,10 @@
 
   .tab-rail {
     display: grid;
-    /* FEED / LINK / CONFIG / LATENCY / SYSTEM — one column per tab. */
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    /* One equal column per tab. `auto-flow` keeps the rail balanced when the
+       tab set changes (the monitor window no longer lives here). */
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
     gap: 2px;
     padding: 4px;
     border: 2px solid #05030f;

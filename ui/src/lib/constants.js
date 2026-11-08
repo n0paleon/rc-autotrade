@@ -55,7 +55,7 @@ export const LOOT_LOG_PAGE_SIZE = 50;
 /**
  * Control-socket telemetry cadence, mirrored from `TELEMETRY_INTERVAL_SECS` in
  * `src/constants.rs`. The worker pushes `gateway` (which carries `eventCount`),
- * `system` and `latency` together this often.
+ * `system`, `latency` and `benchmark` together this often.
  */
 export const TELEMETRY_PUSH_MS = 3000;
 

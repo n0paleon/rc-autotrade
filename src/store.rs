@@ -1094,6 +1094,75 @@ impl Store {
         true
     }
 
+    /// Newest completed orders with their timing marks, for the benchmark
+    /// window. Rows without a decodable `timings` object are skipped: they
+    /// predate the latency debugger and have nothing to aggregate.
+    pub fn benchmark_samples(&self, limit: usize) -> Vec<crate::benchmark::Sample> {
+        let limit = limit.clamp(1, 1_000) as i64;
+        let Ok(mut statement) = self.db.prepare(
+            "SELECT at, status, timings FROM orders
+             WHERE timings IS NOT NULL AND timings != ''
+             ORDER BY at DESC, id DESC LIMIT ?1",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = statement.query_map(params![limit], |row| {
+            let at: i64 = row.get(0)?;
+            let status: String = row.get(1)?;
+            let timings: Option<String> = row.get(2)?;
+            Ok((at, status, timings))
+        }) else {
+            return Vec::new();
+        };
+        rows.flatten()
+            .filter_map(|(at, status, text)| {
+                let timings = crate::timings::decode(text.as_deref())?;
+                Some(crate::benchmark::Sample {
+                    at,
+                    status,
+                    timings,
+                })
+            })
+            .collect()
+    }
+
+    /// Completed orders with timing marks inside a time range, newest first.
+    /// Used by the bucketed history chart; the range is inclusive.
+    pub fn benchmark_samples_between(
+        &self,
+        since: i64,
+        until: i64,
+        limit: usize,
+    ) -> Vec<crate::benchmark::Sample> {
+        let limit = limit.clamp(1, crate::benchmark::HISTORY_MAX_SAMPLES) as i64;
+        let Ok(mut statement) = self.db.prepare(
+            "SELECT at, status, timings FROM orders
+             WHERE at >= ?1 AND at <= ?2
+               AND timings IS NOT NULL AND timings != ''
+             ORDER BY at DESC, id DESC LIMIT ?3",
+        ) else {
+            return Vec::new();
+        };
+        let Ok(rows) = statement.query_map(params![since, until, limit], |row| {
+            let at: i64 = row.get(0)?;
+            let status: String = row.get(1)?;
+            let timings: Option<String> = row.get(2)?;
+            Ok((at, status, timings))
+        }) else {
+            return Vec::new();
+        };
+        rows.flatten()
+            .filter_map(|(at, status, text)| {
+                let timings = crate::timings::decode(text.as_deref())?;
+                Some(crate::benchmark::Sample {
+                    at,
+                    status,
+                    timings,
+                })
+            })
+            .collect()
+    }
+
     pub fn history_count(&self) -> i64 {
         self.db
             .query_row("SELECT COUNT(*) FROM orders", [], |row| row.get(0))
@@ -2340,6 +2409,56 @@ mod tests {
         let timings = row.timings.expect("timings");
         assert_eq!(timings.signal_at, Some(100.0));
         assert_eq!(timings.response_at, Some(250.0));
+    }
+
+    #[test]
+    fn benchmark_samples_are_newest_first_and_skip_untimed_rows() {
+        let mut store = store("benchmark");
+        let mut older = make_entry("o1", "item-1", "Hashboard", "filled", 1, 1_000);
+        older.timings =
+            crate::timings::sanitize(&serde_json::json!({ "signalAt": 100, "fillAt": 160 }));
+        store.add_history(older).unwrap();
+        let mut newer = make_entry("o2", "item-1", "Hashboard", "failed", 1, 2_000);
+        newer.timings =
+            crate::timings::sanitize(&serde_json::json!({ "signalAt": 100, "failedAt": 140 }));
+        store.add_history(newer).unwrap();
+        // Rows written before the latency debugger had no timings at all.
+        store
+            .add_history(make_entry("o3", "item-1", "Hashboard", "filled", 1, 3_000))
+            .unwrap();
+
+        let samples = store.benchmark_samples(10);
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[0].at, 2_000);
+        assert_eq!(samples[0].status, "failed");
+        assert_eq!(samples[1].at, 1_000);
+
+        // The limit applies to usable rows, not to the raw table tail.
+        let newest = store.benchmark_samples(1);
+        assert_eq!(newest.len(), 1);
+        assert_eq!(newest[0].at, 2_000);
+    }
+
+    #[test]
+    fn benchmark_history_query_respects_the_time_range() {
+        let mut store = store("benchmark-range");
+        for (id, at) in [("o1", 1_000), ("o2", 2_000), ("o3", 3_000)] {
+            let mut entry = make_entry(id, "item-1", "Hashboard", "filled", 1, at);
+            entry.timings = crate::timings::sanitize(&serde_json::json!({
+                "signalAt": 100,
+                "fillHandledAt": 200
+            }));
+            store.add_history(entry).unwrap();
+        }
+
+        let ranged = store.benchmark_samples_between(1_500, 3_500, 10);
+        assert_eq!(ranged.len(), 2);
+        assert_eq!(ranged[0].at, 3_000);
+        assert_eq!(ranged[1].at, 2_000);
+
+        let inclusive = store.benchmark_samples_between(2_000, 3_000, 10);
+        assert_eq!(inclusive.len(), 2);
+        assert!(store.benchmark_samples_between(3_001, 4_000, 10).is_empty());
     }
 
     #[test]

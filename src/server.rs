@@ -3,8 +3,9 @@
 //! Scope of this first slice: the routes the React deck needs to read and
 //! mutate state, the `rcw.v1` control socket, and static serving of `dist/`.
 //! Engine-backed endpoints (`/api/control` reconnect, `/api/latency`,
-//! `/api/system`, `/api/item-info`, backup, session refresh) answer 503 with an
-//! explicit "not ported yet" message until their modules land.
+//! `/api/system`, `/api/benchmark`, `/api/item-info`, backup, session refresh)
+//! answer 503 with an explicit "not ported yet" message until their modules
+//! land.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
@@ -28,6 +29,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::api::ApiClient;
+use crate::benchmark;
 use crate::config::Config;
 use crate::constants::{
     APP_NAME, APP_VERSION, EVENT_BUCKET_MS, EVENT_HISTORY_DAYS, EVENT_RETENTION_DAYS,
@@ -215,6 +217,54 @@ impl AppState {
             .collect()
     }
 
+    /// Rolling order-pipeline benchmark rebuilt from the loot log.
+    pub fn benchmark_snapshot(&self, store: &Store) -> Value {
+        let now = now_ms();
+        let samples = store.benchmark_samples(benchmark::CAPACITY);
+        let mut snapshot = benchmark::snapshot(&samples, now);
+        // The Loot Log counter wants the whole 30-minute window, not the last
+        // 200 orders, so it gets its own time-bounded query.
+        let recent_samples = store.benchmark_samples_between(
+            now - benchmark::RECENT_WINDOW_MS,
+            now,
+            benchmark::HISTORY_MAX_SAMPLES,
+        );
+        let mut recent = benchmark::recent(&recent_samples, now, benchmark::RECENT_WINDOW_MS);
+        // An idle market has no rows in the wall-clock window. Anchor the
+        // average to the newest order so the counter still reports the last 30
+        // minutes of activity instead of a permanent dash.
+        if recent["avg"].is_null() {
+            if let Some(last_at) = samples.first().map(|sample| sample.at) {
+                if last_at < now - benchmark::RECENT_WINDOW_MS {
+                    // The 200-row sample usually spans more than 30 minutes, so
+                    // the fallback window is already in memory. Only query the
+                    // log when a burst filled the whole sample.
+                    let covered = samples
+                        .last()
+                        .is_some_and(|oldest| oldest.at <= last_at - benchmark::RECENT_WINDOW_MS);
+                    let mut fallback = if covered {
+                        benchmark::recent(&samples, last_at, benchmark::RECENT_WINDOW_MS)
+                    } else {
+                        let fallback_samples = store.benchmark_samples_between(
+                            last_at - benchmark::RECENT_WINDOW_MS,
+                            last_at,
+                            benchmark::HISTORY_MAX_SAMPLES,
+                        );
+                        benchmark::recent(&fallback_samples, last_at, benchmark::RECENT_WINDOW_MS)
+                    };
+                    if !fallback["avg"].is_null() {
+                        if let Some(object) = fallback.as_object_mut() {
+                            object.insert("fallback".to_string(), Value::Bool(true));
+                        }
+                        recent = fallback;
+                    }
+                }
+            }
+        }
+        snapshot["recent"] = recent;
+        snapshot
+    }
+
     pub fn snapshot(&self, store: &Store, engine: &Engine) -> Value {
         let now = now_ms();
         let gateway = match self
@@ -261,6 +311,7 @@ impl AppState {
             "gateway": gateway,
             "session": store.session_status(),
             "latency": latency,
+            "benchmark": self.benchmark_snapshot(store),
             "keepalive": self
                 .keepalive_service()
                 .map(|service| service.stats_json())
@@ -1090,8 +1141,71 @@ async fn system_view(_auth: Auth, State(state): State<Arc<AppState>>) -> Respons
     Json(json!({ "ok": true, "system": system })).into_response()
 }
 
+async fn benchmark_view(_auth: Auth, State(state): State<Arc<AppState>>) -> Response {
+    let benchmark = {
+        let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
+        state.benchmark_snapshot(&store)
+    };
+    Json(json!({ "ok": true, "benchmark": benchmark })).into_response()
+}
+
+fn default_history_bucket(hours: i64) -> i64 {
+    if hours <= 1 {
+        5 * 60_000
+    } else if hours <= 6 {
+        15 * 60_000
+    } else if hours <= 24 {
+        60 * 60_000
+    } else {
+        6 * 60 * 60_000
+    }
+}
+
+async fn benchmark_history_view(
+    _auth: Auth,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let now = now_ms();
+    let hours = params
+        .get("hours")
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(24)
+        .clamp(1, benchmark::HISTORY_MAX_HOURS);
+    let bucket_ms = params
+        .get("bucket")
+        .and_then(|key| benchmark::bucket_ms_from_key(key))
+        .unwrap_or_else(|| default_history_bucket(hours));
+    let tz_offset_ms = params
+        .get("tzOffsetMs")
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or(0)
+        .clamp(-14 * 3_600_000, 14 * 3_600_000);
+    let stage = params
+        .get("stage")
+        .cloned()
+        .unwrap_or_else(|| "total".to_string());
+    let since = now - hours * 3_600_000;
+
+    // Decoding up to 20k timing rows is not frame-sized work; yield the reactor
+    // thread while SQLite and the aggregation run.
+    let history = crate::blocking::run({
+        let state = state.clone();
+        let stage = stage.clone();
+        move || {
+            let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
+            let samples =
+                store.benchmark_samples_between(since, now, benchmark::HISTORY_MAX_SAMPLES);
+            drop(store);
+            benchmark::history(&samples, since, now, bucket_ms, tz_offset_ms, &stage)
+        }
+    });
+
+    Json(json!({ "ok": true, "history": history })).into_response()
+}
+
 async fn delete_history(_auth: Auth, State(state): State<Arc<AppState>>) -> Response {
-    let (stats, report, configs, latency) = {
+    let (stats, report, configs, latency, benchmark) = {
         let mut store = state.store.lock().unwrap_or_else(|e| e.into_inner());
         store.reset_stats();
         let stats = store.state.stats;
@@ -1106,7 +1220,8 @@ async fn delete_history(_auth: Auth, State(state): State<Arc<AppState>>) -> Resp
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         tracker.reset();
         let latency = tracker.snapshot();
-        (stats, report, configs, latency)
+        let benchmark = state.benchmark_snapshot(&store);
+        (stats, report, configs, latency, benchmark)
     };
 
     state.logger.info(
@@ -1119,6 +1234,7 @@ async fn delete_history(_auth: Auth, State(state): State<Arc<AppState>>) -> Resp
         serde_json::to_value(report).unwrap_or(Value::Null),
     );
     state.broadcast("latency", latency);
+    state.broadcast("benchmark", benchmark);
     state.broadcast("configs", Value::Array(configs));
     state.broadcast("history-cleared", json!({}));
     Json(json!({ "ok": true, "stats": stats })).into_response()
@@ -1550,6 +1666,11 @@ fn latency_snapshot(state: &AppState) -> Value {
         .snapshot()
 }
 
+fn benchmark_snapshot(state: &AppState) -> Value {
+    let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
+    state.benchmark_snapshot(&store)
+}
+
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>, authorized: bool) {
     if !authorized {
         let mut socket = socket;
@@ -1571,7 +1692,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, authorized: bool
     let mut auth_rx = state.auth_epoch.subscribe();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
     heartbeat.tick().await; // the first tick is immediate
-    // Live counters belong to the socket, not to a global clock. All three
+    // Live counters belong to the socket, not to a global clock. All four
     // panels are pushed together on `TELEMETRY_INTERVAL_SECS`: pushing
     // `gateway` on every frame re-rendered the HUD continuously for no benefit.
     // At 3 s the `eventCount` readout moves faster than the upstream frame
@@ -1708,6 +1829,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, authorized: bool
                 if sender.send(Message::Text(latency.to_string().into())).await.is_err() {
                     break;
                 }
+                let benchmark = json!({ "type": "benchmark", "data": benchmark_snapshot(&state), "at": epoch_ms() });
+                if sender.send(Message::Text(benchmark.to_string().into())).await.is_err() {
+                    break;
+                }
             }
             _ = heartbeat.tick() => {
                 // Same 30 s liveness probe the Bun worker ran over every
@@ -1775,6 +1900,8 @@ pub fn router(state: Arc<AppState>, dist_dir: std::path::PathBuf) -> Router {
         .route("/api/latency", get(latency_view))
         .route("/api/latency/probe", post(latency_probe))
         .route("/api/system", get(system_view))
+        .route("/api/benchmark", get(benchmark_view))
+        .route("/api/benchmark/history", get(benchmark_history_view))
         .route("/api/item-info", get(item_info))
         .route("/api/session/push", post(push_session))
         .route("/api/session/refresh", post(refresh_session_endpoint))

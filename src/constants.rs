@@ -71,8 +71,9 @@ pub const EVENT_FLUSH_INTERVAL_MS: u64 = 10_000;
 pub const EVENT_SAMPLE_SIZE: usize = 60;
 
 /// Control-socket telemetry cadence. Every `TELEMETRY_INTERVAL_SECS` the
-/// socket pushes `gateway` (which carries `eventCount`), `system` and `latency`
-/// together. Pushing `gateway` per frame re-rendered the HUD for no benefit.
+/// socket pushes `gateway` (which carries `eventCount`), `system`, `latency`
+/// and `benchmark` together. Pushing `gateway` per frame re-rendered the HUD
+/// for no benefit.
 ///
 /// The deck mirrors this in `ui/src/lib/constants.js` (`TELEMETRY_PUSH_MS`):
 /// the `/s` readout decays after ~1.3× this window, so changing one without the
