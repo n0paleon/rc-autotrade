@@ -10,9 +10,10 @@
 //! * legacy `state.json` / `loot-log.json` import is not implemented; the Rust
 //!   worker targets the SQLite schema v7 that the JS worker already writes.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
@@ -169,6 +170,9 @@ pub struct Store {
     pub state: State,
     pub db: Connection,
     pub data_dir: PathBuf,
+    /// Held for the lifetime of the process so a second worker cannot open the
+    /// same data directory and duplicate orders.
+    _data_lock: std::fs::File,
     logger: Arc<Logger>,
     metrics: Arc<crate::db_metrics::DbMetrics>,
     /// Market frames counted per 5-minute bucket. The window covers
@@ -178,6 +182,13 @@ pub struct Store {
     /// Buckets changed since the last flush (absolute counts, not deltas).
     event_dirty: BTreeSet<i64>,
     event_pruned_at: i64,
+    /// Lowercase item id → position in `state.configs`. The engine resolves a
+    /// target on every frame, and the scan used to lowercase (and allocate for)
+    /// every configured item on every lookup.
+    config_index: HashMap<String, usize>,
+    /// Last time a swallowed write error was logged, so a failing disk cannot
+    /// turn into a log flood on the frame path.
+    last_write_error_at: AtomicI64,
 }
 
 /// Start of the 5-minute bucket that owns `at`.
@@ -188,21 +199,36 @@ pub fn event_bucket_at(at: i64) -> i64 {
 impl Store {
     /// Opens the database and hydrates the in-memory state.
     pub fn open(data_dir: PathBuf, logger: Arc<Logger>) -> Result<Self, String> {
+        let data_lock = db::lock_data_dir(&data_dir)?;
         let metrics = crate::db_metrics::DbMetrics::new(data_dir.clone());
         let conn = db::open(&data_dir, &logger, Some(metrics.clone()))?;
         let mut store = Self {
             state: State::fresh(),
             db: conn,
             data_dir,
-            logger,
+            _data_lock: data_lock,
+            logger: logger.clone(),
             metrics,
             event_points: BTreeMap::new(),
             event_dirty: BTreeSet::new(),
             event_pruned_at: now_ms(),
+            config_index: HashMap::new(),
+            last_write_error_at: AtomicI64::new(0),
         };
         store.ensure_rows()?;
         store.hydrate()?;
         store.hydrate_events();
+        // Reclaim anything older than the documented retention window. The API
+        // only ever serves the last `PRICE_HISTORY_DAYS`, so this is not visible
+        // in any chart; it just stops the table from growing across restarts.
+        match store.prune_price_history() {
+            Ok(removed) if removed > 0 => logger.info(
+                "store",
+                format!("pruned {removed} price point(s) older than {PRICE_RETENTION_DAYS}d"),
+            ),
+            Ok(_) => {}
+            Err(error) => logger.warn("store", error),
+        }
         Ok(store)
     }
 
@@ -354,7 +380,39 @@ impl Store {
 
         state.updated_at = now_ms();
         self.state = state;
+        self.reindex_configs();
         Ok(())
+    }
+
+    /// Rebuilds the id → position map. Called after any change to the target
+    /// list (add, edit, delete, bulk replace, reload).
+    fn reindex_configs(&mut self) {
+        self.config_index.clear();
+        for (index, config) in self.state.configs.iter().enumerate() {
+            self.config_index
+                .insert(config.item_id.to_ascii_lowercase(), index);
+        }
+    }
+
+    /// Logs a swallowed write error at most once a minute.
+    ///
+    /// The in-memory row stays authoritative, so a failed write is a durability
+    /// problem rather than a reason to fail the caller — but it must never be
+    /// silent. A full disk used to look exactly like a healthy worker.
+    fn report_write_error(&self, what: &str, error: &dyn std::fmt::Display) {
+        let now = now_ms();
+        let previous = self.last_write_error_at.load(Ordering::Relaxed);
+        if now - previous < 60_000 {
+            return;
+        }
+        if self
+            .last_write_error_at
+            .compare_exchange(previous, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        self.logger.warn("store", format!("{what}: {error}"));
     }
 
     fn read_targets(&self) -> Result<Vec<Target>, String> {
@@ -550,9 +608,14 @@ impl Store {
             target.created_at = Some(now);
             self.state.configs.push(target.clone());
         }
+        self.reindex_configs();
         // Best effort: the in-memory row is already authoritative for this call.
-        let _ = self.write_target(&target);
-        let _ = self.set_meta("updated_at", &now.to_string());
+        if let Err(error) = self.write_target(&target) {
+            self.report_write_error("could not save target", &error);
+        }
+        if let Err(error) = self.set_meta("updated_at", &now.to_string()) {
+            self.report_write_error("could not stamp updated_at", &error);
+        }
         target
     }
 
@@ -565,9 +628,13 @@ impl Store {
         if self.state.configs.len() == before {
             return false;
         }
-        let _ = self
+        self.reindex_configs();
+        if let Err(error) = self
             .db
-            .execute("DELETE FROM targets WHERE item_id = ?1", params![item_id]);
+            .execute("DELETE FROM targets WHERE item_id = ?1", params![item_id])
+        {
+            self.report_write_error("could not delete target", &error);
+        }
         true
     }
 
@@ -642,15 +709,25 @@ impl Store {
             .map_err(|e| format!("could not commit targets: {e}"))?;
 
         self.state.configs = stamped;
+        self.reindex_configs();
         Ok(())
     }
 
     pub fn find_config(&self, item_id: &str) -> Option<&Target> {
-        let key = item_id.to_ascii_lowercase();
+        // Hot path: the frame normaliser already lowercased the id, so this is
+        // one hash lookup with no allocation. The identity check keeps a stale
+        // index harmless; anything else (mixed case, unknown id) falls back to
+        // the case-insensitive scan.
+        if let Some(index) = self.config_index.get(item_id)
+            && let Some(config) = self.state.configs.get(*index)
+            && config.item_id.eq_ignore_ascii_case(item_id)
+        {
+            return Some(config);
+        }
         self.state
             .configs
             .iter()
-            .find(|config| config.item_id.to_ascii_lowercase() == key)
+            .find(|config| config.item_id.eq_ignore_ascii_case(item_id))
     }
 
     /// Writes a resolved `Rarity Name` label back to the target. Returns
@@ -682,7 +759,9 @@ impl Store {
         config.rarity_color = rarity_color.map(str::to_string);
         config.updated_at = Some(now_ms());
         let stamped = config.clone();
-        let _ = self.write_target(&stamped);
+        if let Err(error) = self.write_target(&stamped) {
+            self.report_write_error("could not save item info", &error);
+        }
         true
     }
 
@@ -704,7 +783,9 @@ impl Store {
         config.item_type = item_type.to_string();
         config.updated_at = Some(now_ms());
         let stamped = config.clone();
-        let _ = self.write_target(&stamped);
+        if let Err(error) = self.write_target(&stamped) {
+            self.report_write_error("could not save target item type", &error);
+        }
     }
 
     pub fn config_ids(&self) -> Vec<String> {
@@ -872,6 +953,17 @@ impl Store {
             .map_err(|e| format!("could not commit store: {e}"))?;
         self.set_meta("updated_at", &self.state.updated_at.to_string())?;
         Ok(())
+    }
+
+    /// Persists only the counters the order path mutates.
+    ///
+    /// `flush()` also rewrites every target row, so a single order used to cost
+    /// one upsert per configured item even though the target list only changes
+    /// through the API that already writes it.
+    pub fn flush_stats(&mut self) -> Result<(), String> {
+        self.state.updated_at = now_ms();
+        self.write_stats()
+            .map_err(|e| format!("could not write stats: {e}"))
     }
 
     // ── loot log ────────────────────────────────────────────────────────────
@@ -1526,6 +1618,14 @@ impl Store {
             .map_err(|e| format!("could not prune price history: {e}"))
     }
 
+    /// Non-blocking WAL checkpoint. `PASSIVE` never waits for readers and never
+    /// truncates the log from under a writer, so it is safe to run on a timer.
+    pub fn checkpoint_wal(&self) -> Result<(), String> {
+        self.db
+            .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |_row| Ok(()))
+            .map_err(|e| format!("could not checkpoint WAL: {e}"))
+    }
+
     // ── market-event activity ───────────────────────────────────────────────
 
     /// Counts one market frame into its 5-minute bucket. Stays in memory: the
@@ -1673,12 +1773,16 @@ impl Store {
         self.state.session.last_refresh_at = Some(now);
         self.state.session.refresh_count += 1;
         self.state.session.last_error = None;
-        let _ = self.persist_session();
+        if let Err(error) = self.persist_session() {
+            self.report_write_error("could not persist the refreshed session", &error);
+        }
     }
 
     pub fn mark_session_error(&mut self, message: &str) {
         self.state.session.last_error = Some(crate::redact::redact_secrets(message));
-        let _ = self.persist_session();
+        if let Err(error) = self.persist_session() {
+            self.report_write_error("could not persist the session error", &error);
+        }
     }
 
     pub fn session_status(&self) -> Value {
@@ -1735,9 +1839,15 @@ impl Store {
         };
         self.state.report_since = now;
         self.state.report.clear();
-        let _ = self.db.execute("DELETE FROM report_products", []);
-        let _ = self.write_stats();
-        let _ = self.set_meta("report_since", &now.to_string());
+        if let Err(error) = self.db.execute("DELETE FROM report_products", []) {
+            self.report_write_error("could not clear the profit report", &error);
+        }
+        if let Err(error) = self.write_stats() {
+            self.report_write_error("could not reset stats", &error);
+        }
+        if let Err(error) = self.set_meta("report_since", &now.to_string()) {
+            self.report_write_error("could not stamp report_since", &error);
+        }
     }
 
     pub fn close(&mut self) {
@@ -1881,6 +1991,32 @@ mod tests {
 
     /// The legacy columns are mirrors, not state: whatever mode is written must
     /// leave a pair of flags that agrees with it on disk.
+    #[test]
+    fn the_config_index_tracks_every_mutation() {
+        let mut store = store("config-index");
+        store.upsert_config(target("AAA111"), None);
+        store.upsert_config(target("bbb222"), None);
+
+        // Mixed case in the caller still resolves, without an allocation.
+        assert_eq!(store.find_config("aaa111").unwrap().item_id, "AAA111");
+        assert_eq!(store.find_config("BBB222").unwrap().item_id, "bbb222");
+        assert!(store.find_config("missing").is_none());
+
+        // An edit can change the stored case; the index must follow.
+        store.upsert_config(target("aaa111"), Some("AAA111"));
+        assert_eq!(store.find_config("aaa111").unwrap().item_id, "aaa111");
+
+        // Deleting shifts every later position.
+        assert!(store.remove_config("aaa111"));
+        assert!(store.find_config("aaa111").is_none());
+        assert!(store.find_config("bbb222").is_some());
+
+        // A bulk replace rewrites the whole set.
+        store.set_configs(vec![target("ccc333")]).unwrap();
+        assert!(store.find_config("bbb222").is_none());
+        assert!(store.find_config("ccc333").is_some());
+    }
+
     #[test]
     fn mode_and_the_legacy_mirror_columns_never_disagree() {
         let dir = temp_dir("mirror");
@@ -2031,6 +2167,25 @@ mod tests {
             vec![(1_700_000_060_000, 0.095)]
         );
         assert!(store.price_series("other-item", 0).is_empty());
+    }
+
+    #[test]
+    fn prunes_price_points_outside_the_retention_window() {
+        let store = store("prune-price");
+        let item_id = "6319f7baa8ce530569ed16b9";
+        let old = now_ms() - (PRICE_RETENTION_DAYS + 1) * 86_400_000;
+        let recent = now_ms() - 86_400_000;
+        store.record_price_point(item_id, old, 0.1, None).unwrap();
+        store
+            .record_price_point(item_id, recent, 0.2, None)
+            .unwrap();
+
+        assert_eq!(store.prune_price_history().unwrap(), 1);
+        let points = store.load_price_history(item_id, 10, 0);
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].bucket_at, recent);
+        // A passive checkpoint is always safe to run on a live database.
+        store.checkpoint_wal().unwrap();
     }
 
     #[test]

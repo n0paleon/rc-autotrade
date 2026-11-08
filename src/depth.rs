@@ -35,6 +35,17 @@ pub struct Fill {
     pub levels: usize,
 }
 
+/// Orders a ladder the way the model expects: cheapest first, deeper level
+/// first on ties.
+pub fn sort_levels(levels: &mut [Listing]) {
+    levels.sort_by(|a, b| {
+        a.price
+            .partial_cmp(&b.price)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.quantity.cmp(&a.quantity))
+    });
+}
+
 /// Estimates the average unit price for `qty` units from the visible ladder.
 ///
 /// Returns `None` when nothing could be filled, matching the JavaScript
@@ -42,19 +53,24 @@ pub struct Fill {
 pub fn estimate_fill_price(listings: &[Listing], rest: Option<Listing>, qty: i64) -> Option<Fill> {
     let mut levels: Vec<Listing> = listings.to_vec();
     // Same ordering as the JS: cheapest first, deeper level first on ties.
-    levels.sort_by(|a, b| {
-        a.price
-            .partial_cmp(&b.price)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(b.quantity.cmp(&a.quantity))
-    });
+    sort_levels(&mut levels);
+    estimate_fill_price_sorted(&levels, rest, qty)
+}
 
+/// The same estimate for a ladder the caller already sorted (the market
+/// normaliser sorts every frame). This avoids a second copy plus a second sort
+/// of the whole book on the frame path.
+pub fn estimate_fill_price_sorted(
+    sorted: &[Listing],
+    rest: Option<Listing>,
+    qty: i64,
+) -> Option<Fill> {
     let requested = qty.max(1);
     let mut remaining = requested;
     let mut cost = 0.0_f64;
     let mut filled: i64 = 0;
 
-    for level in &levels {
+    for level in sorted {
         if remaining <= 0 {
             break;
         }
@@ -85,7 +101,7 @@ pub fn estimate_fill_price(listings: &[Listing], rest: Option<Listing>, qty: i64
         requested,
         partial: remaining > 0,
         approx,
-        levels: levels.len(),
+        levels: sorted.len(),
     })
 }
 
@@ -128,5 +144,14 @@ mod tests {
     fn returns_none_without_usable_levels() {
         assert!(estimate_fill_price(&[], None, 10).is_none());
         assert!(estimate_fill_price(&[level(0.0, 5)], None, 1).is_none());
+    }
+
+    #[test]
+    fn the_sorted_variant_matches_the_sorting_entry_point() {
+        let mut sorted = vec![level(0.10, 9), level(0.01, 1)];
+        sort_levels(&mut sorted);
+        let via_sort = estimate_fill_price(&[level(0.10, 9), level(0.01, 1)], None, 10).unwrap();
+        let via_sorted = estimate_fill_price_sorted(&sorted, None, 10).unwrap();
+        assert_eq!(via_sort, via_sorted);
     }
 }

@@ -401,3 +401,62 @@ the Rust version has to fix the algorithm, not just change the language.
   place on first open, with `mode` backfilled from the old flags.
 - **PM2** runs `target/release/rollercoin-worker` directly
   (`interpreter: "none"`); no Bun/Node runtime is involved in production.
+
+---
+
+## 13. Optimisation pass
+
+Measured with `cargo run --release --example bench_frame`, same machine, full
+24 h history (the benchmark warms that up first):
+
+| Frame path | p50 burst | p50 steady |
+| --- | ---: | ---: |
+| Before | 18.4 µs | 28.7 µs |
+| After | **5.0 µs** | **13.3 µs** |
+
+What changed:
+
+- **The market tick no longer builds a JSON tree per frame.** The trend model is
+  serialised once per rebuild (every 10 s) and embedded as a `RawValue`; the tick
+  itself is a typed struct. Re-serialising the flattened `TrendSignal` per frame
+  measured at ~59% of the frame budget.
+- **A headless worker builds no payload at all.** `process_frame` tells the
+  engine whether a control socket is connected, and nothing is built when none
+  is.
+- **Market ticks are coalesced per item** before they reach the sockets
+  (`MARKET_BROADCAST_INTERVAL_MS`, 250 ms). Only the newest tick per target is
+  kept, so a busy book cannot flood the deck with hundreds of frames per second.
+- **Broadcasts are serialised once** into a shared `Bytes` envelope, instead of a
+  deep `Value` clone plus a `to_string` per receiver per event.
+- **`normalize_upstream_event` borrows the `data` object.** Cloning the listing
+  ladder cost 19.5 µs per frame on a 40-level book; borrowing costs 2.1 µs.
+- **`estimate_fill_price_sorted`** consumes the ladder the normaliser already
+  sorted instead of copying and sorting it a second time.
+- **`Store::find_config` is an index lookup** (lowercase id → position, with a
+  case-insensitive fallback). The old scan allocated a lowercase string per
+  configured target on every lookup.
+- **`flush_stats()`** persists only the counters an order changes; `flush()` used
+  to rewrite every target row on each order.
+
+Control plane and durability:
+
+- A socket that lags the broadcast channel receives `{"type":"resync"}` and
+  refreshes over HTTP. It no longer makes the server rebuild a full snapshot
+  (every target's 24 h history) for one slow client.
+- Backup, restore, the hourly price prune, the WAL checkpoint and the orphan
+  sweep run through `blocking::run`, which uses `block_in_place` on the
+  multi-threaded runtime so `VACUUM INTO` and large `DELETE`s do not park a
+  reactor thread. Current-thread runtimes (tests) run the closure inline.
+- The data directory is locked with an advisory file lock (`.worker.lock`). A
+  second worker now fails at boot with an explicit message instead of trading
+  against the same database (and duplicating orders).
+- `gateway.dropped` counts frames the core loop could not take because its queue
+  was full. Market frames may be dropped (the next tick supersedes them); fill
+  frames use `send().await` and are never dropped.
+- Store writes that used to be silently ignored (target upserts, session
+  persistence, the order counter) now log at most once a minute. A full disk
+  used to look exactly like a healthy worker.
+
+Still open (deliberately unchanged): per-request auth rate limiting, loot-log
+retention plus `COUNT(*)` caching for a very large `orders` table, and a release
+profile with LTO.

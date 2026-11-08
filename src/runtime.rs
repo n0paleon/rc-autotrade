@@ -8,6 +8,7 @@
 //! an `.await`. The engine's `handle_frame` runs synchronously inside the guard
 //! and returns the events to send afterwards.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -17,10 +18,11 @@ use tokio::task::JoinHandle;
 
 use crate::api::{PurchaseRequest, PurchaseResult};
 use crate::constants::{
-    EVENT_FLUSH_INTERVAL_MS, PRICE_SAMPLE_FEED_IDLE_MS, PRICE_SAMPLE_INTERVAL_MS,
+    EVENT_FLUSH_INTERVAL_MS, MARKET_BROADCAST_INTERVAL_MS, MARKET_COALESCE_MAX,
+    PRICE_SAMPLE_FEED_IDLE_MS, PRICE_SAMPLE_INTERVAL_MS,
 };
 use crate::dns_probe::{self, SocketMode};
-use crate::engine::{EngineEvent, OrderIntent, PurchaseOutcome};
+use crate::engine::{EngineEvent, MarketTick, OrderIntent, PurchaseOutcome};
 use crate::feed::FeedHandle;
 use crate::gateway::{self, GatewayConfig, GatewayEvent};
 use crate::keepalive::{KeepaliveConfig, KeepaliveService};
@@ -100,11 +102,22 @@ pub struct Worker {
     feed_task: JoinHandle<()>,
     ticker: JoinHandle<()>,
     sampler: JoinHandle<()>,
+    maintenance: JoinHandle<()>,
     stats_task: JoinHandle<()>,
     event_task: JoinHandle<()>,
+    market_task: JoinHandle<()>,
     keepalive_task: Option<JoinHandle<()>>,
     system_tasks: Vec<JoinHandle<()>>,
 }
+
+/// How often housekeeping runs (WAL checkpoint + orphan sweep). Price points
+/// are only pruned once an hour, but the sweep itself is cheap.
+const MAINTENANCE_INTERVAL_MS: u64 = 5 * 60_000;
+/// Same retention the boot-time prune uses; the API only serves 7 days.
+const PRICE_PRUNE_INTERVAL_MS: i64 = 3_600_000;
+/// A deleted target keeps its in-memory history for a week so deleting and
+/// re-adding it still shows the same chart. After that the runtime is released.
+const ORPHAN_RUNTIME_IDLE_MS: i64 = 7 * 86_400_000;
 
 /// Cadence of the background health sampler. Broadcasts live in the control
 /// socket now; this task only samples and logs health transitions so a
@@ -179,6 +192,19 @@ fn mock_items(state: &Arc<AppState>) -> Vec<MockItem> {
 impl Worker {
     /// Starts the feed, the engine loop and the 30 s session tick.
     pub fn start(state: Arc<AppState>) -> Self {
+        // Market ticks are coalesced per item before they reach the sockets.
+        // Created before the feed task so the very first frame has somewhere to
+        // go. The channel is bounded; a full queue falls back to a direct send.
+        let (market_tx, market_rx) = tokio::sync::mpsc::channel::<Box<MarketTick>>(1_024);
+        {
+            let mut slot = state
+                .market
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *slot = Some(market_tx);
+        }
+        let market_task = spawn_market_coalescer(state.clone(), market_rx);
+
         let credentials = {
             let state = state.clone();
             Arc::new(move || {
@@ -318,6 +344,71 @@ impl Worker {
             }
         });
 
+        // Housekeeping: keep the price table inside its documented retention,
+        // checkpoint the WAL so it cannot grow without bound, and release the
+        // runtime of targets that have been deleted for a while. All three are
+        // invisible to the deck: the served windows and payloads do not change.
+        let maintenance_state = state.clone();
+        let maintenance = tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_millis(MAINTENANCE_INTERVAL_MS));
+            interval.tick().await; // the first tick is immediate
+            let mut pruned_at = now_ms();
+            loop {
+                interval.tick().await;
+                let now = now_ms();
+
+                let checkpoint = crate::blocking::run(|| {
+                    let store = maintenance_state
+                        .store
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    store.checkpoint_wal()
+                });
+                if let Err(error) = checkpoint {
+                    maintenance_state
+                        .logger
+                        .warn("store", format!("WAL checkpoint failed: {error}"));
+                }
+
+                if now - pruned_at >= PRICE_PRUNE_INTERVAL_MS {
+                    pruned_at = now;
+                    let pruned = crate::blocking::run(|| {
+                        let store = maintenance_state
+                            .store
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        store.prune_price_history()
+                    });
+                    match pruned {
+                        Ok(removed) if removed > 0 => maintenance_state
+                            .logger
+                            .info("store", format!("pruned {removed} expired price point(s)")),
+                        Ok(_) => {}
+                        Err(error) => maintenance_state.logger.warn("store", error),
+                    }
+                }
+
+                let released = crate::blocking::run(|| {
+                    let store = maintenance_state
+                        .store
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let mut engine = maintenance_state
+                        .engine
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    engine.prune_orphan_runtimes(&store, now, ORPHAN_RUNTIME_IDLE_MS)
+                });
+                if released > 0 {
+                    maintenance_state.logger.info(
+                        "engine",
+                        format!("released {released} stale target runtime(s)"),
+                    );
+                }
+            }
+        });
+
         // Frame counts stay in memory; this task turns them into one SQLite
         // transaction every few seconds instead of a write per frame.
         let event_state = state.clone();
@@ -360,8 +451,10 @@ impl Worker {
             feed_task,
             ticker,
             sampler,
+            maintenance,
             stats_task,
             event_task,
+            market_task,
             keepalive_task,
             system_tasks,
         }
@@ -381,8 +474,10 @@ impl Worker {
         self.feed_task.abort();
         self.ticker.abort();
         self.sampler.abort();
+        self.maintenance.abort();
         self.stats_task.abort();
         self.event_task.abort();
+        self.market_task.abort();
     }
 }
 
@@ -401,6 +496,8 @@ fn process_frame(state: &Arc<AppState>, raw: Value, at: i64) {
             .engine
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // A headless worker (no deck connected) does not build market payloads.
+        engine.set_broadcast_enabled(state.has_control_clients());
         engine.handle_frame(&mut store, &raw, at, has_token)
     };
     state.last_frame_at.store(at, Ordering::Relaxed);
@@ -454,6 +551,7 @@ fn dispatch(state: &Arc<AppState>, events: Vec<EngineEvent>) {
     for event in events {
         match event {
             EngineEvent::Broadcast { kind, data } => state.broadcast(kind, data),
+            EngineEvent::Market(tick) => queue_market_tick(state, tick),
             EngineEvent::Submit(intent) => {
                 let state = state.clone();
                 tokio::spawn(async move {
@@ -461,6 +559,64 @@ fn dispatch(state: &Arc<AppState>, events: Vec<EngineEvent>) {
                 });
             }
         }
+    }
+}
+
+/// Hands a market tick to the coalescer, or sends it straight through when the
+/// queue is gone or full so a tick is never dropped on the floor.
+fn queue_market_tick(state: &Arc<AppState>, tick: Box<MarketTick>) {
+    let slot = state
+        .market
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(sender) = slot.as_ref() else {
+        drop(slot);
+        state.broadcast_serialized("market", tick.as_ref());
+        return;
+    };
+    match sender.try_send(tick) {
+        Ok(()) => {}
+        Err(error) => state.broadcast_serialized("market", error.into_inner().as_ref()),
+    }
+}
+
+/// Keeps only the newest tick per item and flushes them at
+/// [`MARKET_BROADCAST_INTERVAL_MS`]. A busy market frame for one target can
+/// arrive tens of times per second; the deck needs a handful.
+fn spawn_market_coalescer(
+    state: Arc<AppState>,
+    mut receiver: tokio::sync::mpsc::Receiver<Box<MarketTick>>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut pending: HashMap<String, Box<MarketTick>> = HashMap::new();
+        let mut interval =
+            tokio::time::interval(Duration::from_millis(MARKET_BROADCAST_INTERVAL_MS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await; // the first tick is immediate
+        loop {
+            tokio::select! {
+                incoming = receiver.recv() => {
+                    let Some(tick) = incoming else {
+                        break;
+                    };
+                    if pending.len() >= MARKET_COALESCE_MAX {
+                        flush_market_ticks(&state, &mut pending);
+                    }
+                    pending.insert(tick.item_id.clone(), tick);
+                }
+                _ = interval.tick() => flush_market_ticks(&state, &mut pending),
+            }
+        }
+        flush_market_ticks(&state, &mut pending);
+    })
+}
+
+fn flush_market_ticks(state: &Arc<AppState>, pending: &mut HashMap<String, Box<MarketTick>>) {
+    if pending.is_empty() {
+        return;
+    }
+    for (_, tick) in pending.drain() {
+        state.broadcast_serialized("market", tick.as_ref());
     }
 }
 

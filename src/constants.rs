@@ -79,6 +79,17 @@ pub const EVENT_SAMPLE_SIZE: usize = 60;
 /// other makes the rate flicker between pushes.
 pub const TELEMETRY_INTERVAL_SECS: u64 = 3;
 
+/// Market ticks are coalesced per item before they reach the control socket.
+/// The feed is change-driven and can emit many frames per second for one item;
+/// the deck only needs a handful. 250 ms keeps the live price/stock readout
+/// visually continuous while cutting the WebSocket traffic (and the per-socket
+/// serialisation) to at most four ticks per second per target.
+pub const MARKET_BROADCAST_INTERVAL_MS: u64 = 250;
+
+/// Hard cap on the coalescing buffer. Only reached with a pathological number
+/// of distinct targets; the flusher then drains early instead of growing.
+pub const MARKET_COALESCE_MAX: usize = 512;
+
 /// Runtime defaults, used when the database has no settings row yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DefaultSettings {

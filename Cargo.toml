@@ -15,8 +15,10 @@ native-tls = { version = "0.2.18", features = ["alpn"] }
 rand = "0.10.3"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "charset", "http2", "system-proxy", "rustls"] }
 rusqlite = { version = "0.41.1", features = ["bundled", "trace"] }
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+serde = { version = "1.0.229", features = ["derive", "rc"] }
+# `raw_value` lets the engine embed the pre-serialised trend payload in a market
+# tick without re-serialising a 34-field flattened struct on every frame.
+serde_json = { version = "1.0.154", features = ["raw_value"] }
 sha2 = "0.11.1"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "signal", "sync", "io-util"] }
 tokio-native-tls = "0.3.1"
@@ -24,3 +26,11 @@ tokio-tungstenite = { version = "0.30.0", features = ["native-tls"] }
 tower-http = { version = "0.7.1", features = ["fs", "cors"] }
 url = "2.5.8"
 uuid = { version = "1.29.0", features = ["v4"] }
+
+# The worker churns a lot of short-lived JSON/DB allocations across a
+# multi-threaded runtime. glibc malloc keeps those in per-thread arenas and
+# rarely returns them to the OS, which showed up as a steadily climbing RSS.
+# jemalloc (with background purging) keeps the same allocation semantics while
+# handing free pages back instead of growing forever.
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { version = "0.6", features = ["background_threads"] }

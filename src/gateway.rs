@@ -48,6 +48,10 @@ pub struct GatewayStats {
     pub reconnects: i64,
     pub event_count: i64,
     pub parse_errors: i64,
+    /// Frames the core loop could not take because its queue was full. Market
+    /// frames are superseded by the next tick, so dropping one is safe; a
+    /// non-zero counter still means the consumer is falling behind.
+    pub dropped: i64,
     pub cmd_counts: BTreeMap<String, i64>,
     pub last_ping_ms: Option<f64>,
 }
@@ -93,6 +97,7 @@ impl GatewayHandle {
             "reconnects": stats.reconnects,
             "eventCount": stats.event_count,
             "parseErrors": stats.parse_errors,
+            "dropped": stats.dropped,
             "commands": commands,
             "upstream": self.upstream,
             "uptimeMs": stats.connected_at.map(|at| now_ms() - at).unwrap_or(0),
@@ -177,6 +182,7 @@ fn status_payload(stats: &Arc<Mutex<GatewayStats>>, upstream: &str) -> Value {
         "reconnects": stats.reconnects,
         "eventCount": stats.event_count,
         "parseErrors": stats.parse_errors,
+        "dropped": stats.dropped,
         "upstream": upstream,
         "uptimeMs": stats.connected_at.map(|at| now_ms() - at).unwrap_or(0),
         "lastPingMs": stats.last_ping_ms,
@@ -363,15 +369,28 @@ async fn run(
                                             .and_then(Value::as_str)
                                             .unwrap_or("unknown")
                                             .to_string();
+                                        // A fill is the only durable record of
+                                        // what an order cost, so it is worth
+                                        // waiting for queue space. Market ticks
+                                        // are superseded by the next frame.
+                                        let is_fill = cmd.contains("fill");
                                         {
                                             let mut stats = stats.lock().unwrap_or_else(|e| e.into_inner());
                                             stats.event_count += 1;
                                             *stats.cmd_counts.entry(cmd).or_insert(0) += 1;
                                         }
-                                        let _ = events.try_send(GatewayEvent::Frame {
+                                        let event = GatewayEvent::Frame {
                                             raw: value,
                                             at: now_ms(),
-                                        });
+                                        };
+                                        if is_fill {
+                                            if events.send(event).await.is_err() {
+                                                break;
+                                            }
+                                        } else if events.try_send(event).is_err() {
+                                            let mut stats = stats.lock().unwrap_or_else(|e| e.into_inner());
+                                            stats.dropped += 1;
+                                        }
                                     }
                                     _ => {
                                         let mut stats = stats.lock().unwrap_or_else(|e| e.into_inner());

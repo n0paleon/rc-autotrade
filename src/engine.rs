@@ -12,16 +12,18 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
+use serde::Serialize;
+use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
 use crate::constants::{
     MARKET_SNAPSHOT_THROTTLE_MS, ORDER_STATUS_FAILED, ORDER_STATUS_FILLED, PRICE_HISTORY_LIMIT,
     PRICE_POINT_WRITE_INTERVAL_MS,
 };
-use crate::depth::{Fill, estimate_fill_price};
+use crate::depth::{Fill, estimate_fill_price_sorted};
 use crate::events::{Kind, UpstreamEvent, normalize_upstream_event};
 use crate::logger::Logger;
-use crate::model::{MarketSnapshot, OrderEntry, Target};
+use crate::model::{MarketSnapshot, Mode, OrderEntry, Target};
 use crate::rules::{Action, Plan, plan_order, round_price};
 use crate::store::{Store, now_ms};
 use crate::timings::Timings;
@@ -37,8 +39,44 @@ pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 /// Everything the engine wants the outside world to do, in order.
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
-    Broadcast { kind: &'static str, data: Value },
+    Broadcast {
+        kind: &'static str,
+        data: Value,
+    },
+    /// A market tick that has not been turned into a `Value` yet. The control
+    /// plane serialises it straight into the socket envelope, which avoids
+    /// building (and then walking) a JSON tree per frame.
+    Market(Box<MarketTick>),
     Submit(Box<OrderIntent>),
+}
+
+/// One market tick as the control socket receives it.
+///
+/// Built as a typed struct rather than a `json!` literal because the trend is
+/// pre-serialised once per model rebuild ([`RawValue`] is copied verbatim).
+/// Serialising the flattened 34-field `TrendSignal` on every frame measured at
+/// ~59% of the frame budget with nothing in return: the deck cannot show more
+/// than a few ticks per second anyway.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketTick {
+    pub item_id: String,
+    pub label: String,
+    pub price: f64,
+    pub stock: i64,
+    pub target_price: f64,
+    pub desired_qty: i64,
+    pub allowed_price_min: Option<f64>,
+    pub allowed_price_max: Option<f64>,
+    pub allowed_at: Option<i64>,
+    pub trend: Option<Arc<RawValue>>,
+    pub fill: Option<Fill>,
+    pub currency: String,
+    pub item_type: String,
+    pub bucket: i64,
+    pub hot: bool,
+    pub mode: Mode,
+    pub at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +146,10 @@ struct Runtime {
     fill_qty_for: i64,
     last_fill: Option<Fill>,
     trend: Option<TrendSignal>,
+    /// Serialised [`TrendSignal`], refreshed with the model (every
+    /// `TREND_REFRESH_MS`). Reusing it keeps the flattened trend out of the
+    /// per-frame serialisation path.
+    trend_json: Option<Arc<RawValue>>,
     trend_at: i64,
     trend_target: f64,
     persisted_at: i64,
@@ -145,6 +187,7 @@ impl Runtime {
             fill_qty_for: desired_qty,
             last_fill: None,
             trend: None,
+            trend_json: None,
             trend_at: 0,
             trend_target: 0.0,
             persisted_at: 0,
@@ -163,6 +206,15 @@ impl Runtime {
             last_order_at: 0,
             last_in_range_at: 0,
         }
+    }
+}
+
+/// Logs at most once a minute for one slot, so a persistent write failure on
+/// the frame path cannot flood the log.
+fn warn_throttled(logger: &Logger, slot: &mut i64, now: i64, scope: &str, message: String) {
+    if now.saturating_sub(*slot) >= 60_000 {
+        *slot = now;
+        logger.warn(scope, message);
     }
 }
 
@@ -203,6 +255,11 @@ pub struct Engine {
     last_order_at: i64,
     last_no_token_warn_at: i64,
     sample_error_at: i64,
+    /// Throttles the warnings for a failed stats/loot write.
+    last_flush_error_at: i64,
+    last_history_error_at: i64,
+    /// Set by the wiring from the number of connected control sockets.
+    broadcast_market: bool,
 }
 
 impl Engine {
@@ -217,7 +274,16 @@ impl Engine {
             last_order_at: 0,
             last_no_token_warn_at: 0,
             sample_error_at: 0,
+            last_flush_error_at: 0,
+            last_history_error_at: 0,
+            broadcast_market: true,
         }
+    }
+
+    /// Enables or disables market-tick publication. The wiring turns this off
+    /// while no control socket is connected so a headless worker stays cheap.
+    pub fn set_broadcast_enabled(&mut self, enabled: bool) {
+        self.broadcast_market = enabled;
     }
 
     fn now(&self) -> i64 {
@@ -285,15 +351,12 @@ impl Engine {
         let signal_at = received_at;
         let handle_at = now;
         let desired_qty = config.desired_qty;
+        let label = label_for(Some(&config), &config.item_id);
+        let currency = event.currency.as_deref().unwrap_or("RLT");
         let item_type = event
             .item_type
             .clone()
-            .or_else(|| {
-                store
-                    .find_config(item_id)
-                    .map(|config| config.item_type.clone())
-            })
-            .unwrap_or_else(|| "mutation_component".to_string());
+            .unwrap_or_else(|| config.item_type.clone());
 
         let allowed_min = event.allowed_price_min;
         let allowed_max = event.allowed_price_max;
@@ -310,10 +373,12 @@ impl Engine {
             price: rest.unit_price,
             quantity: rest.quantity,
         });
-        let fill = estimate_fill_price(&listings, rest, desired_qty);
+        // The normaliser already sorted the ladder cheapest-first, so the depth
+        // model can consume it directly instead of copying and sorting again.
+        let fill = estimate_fill_price_sorted(&listings, rest, desired_qty);
 
         let mut events = Vec::new();
-        let (trend, allowed_min, allowed_max, allowed_at) = {
+        let (trend_json, allowed_min, allowed_max, allowed_at) = {
             let runtime = self.runtime_for(&config.item_id, desired_qty);
             runtime.last_price = Some(best.unit_price);
             runtime.last_stock = Some(best.quantity);
@@ -378,9 +443,11 @@ impl Engine {
                 }
             }
 
-            let trend = Self::compute_trend(&config, runtime, now, false);
+            // Rebuilds the model only when it has expired; the serialised form
+            // is cached next to it, so the frame path only clones a string.
+            let _ = Self::compute_trend(&config, runtime, now, false);
             (
-                trend,
+                runtime.trend_json.clone(),
                 runtime.allowed_price_min,
                 runtime.allowed_price_max,
                 runtime.allowed_at,
@@ -423,28 +490,29 @@ impl Engine {
             plan
         };
 
-        events.push(EngineEvent::Broadcast {
-            kind: "market",
-            data: json!({
-                "itemId": config.item_id,
-                "label": label_for(Some(&config), &config.item_id),
-                "price": best.unit_price,
-                "stock": best.quantity,
-                "targetPrice": config.target_price,
-                "desiredQty": desired_qty,
-                "allowedPriceMin": allowed_min,
-                "allowedPriceMax": allowed_max,
-                "allowedAt": allowed_at,
-                "trend": serde_json::to_value(&trend).unwrap_or(Value::Null),
-                "fill": fill.map(|fill| serde_json::to_value(fill).unwrap_or(Value::Null)),
-                "currency": event.currency.clone().unwrap_or_else(|| "RLT".into()),
-                "itemType": item_type,
-                "bucket": bucket,
-                "hot": observed.action == Action::Buy,
-                "mode": settings.mode,
-                "at": now,
-            }),
-        });
+        // A headless worker (no control socket connected) must not pay to build
+        // a payload nobody reads; the wiring flips this off every frame.
+        if self.broadcast_market {
+            events.push(EngineEvent::Market(Box::new(MarketTick {
+                item_id: config.item_id.clone(),
+                label: label.clone(),
+                price: best.unit_price,
+                stock: best.quantity,
+                target_price: config.target_price,
+                desired_qty,
+                allowed_price_min: allowed_min,
+                allowed_price_max: allowed_max,
+                allowed_at,
+                trend: trend_json.clone(),
+                fill,
+                currency: currency.to_string(),
+                item_type: item_type.clone(),
+                bucket,
+                hot: observed.action == Action::Buy,
+                mode: settings.mode,
+                at: now,
+            })));
+        }
 
         if observed.action == Action::Buy {
             self.runtime_for(&config.item_id, desired_qty)
@@ -472,6 +540,20 @@ impl Engine {
             );
             return events;
         }
+        // Checked before the rate slot on purpose: a live worker without a
+        // session cannot place the order anyway, so spending its per-minute
+        // budget would only make the next frames report a misleading
+        // "order cap reached" instead of the real cause.
+        if settings.mode.submits() && !has_token {
+            if now - self.last_no_token_warn_at > 30_000 {
+                self.logger.warn(
+                    "engine",
+                    "signal found but no Rollercoin session is linked; open the Link tab",
+                );
+                self.last_no_token_warn_at = now;
+            }
+            return events;
+        }
         if !self.take_rate_slot(now, settings.max_orders_per_minute) {
             let should_log = {
                 let runtime = self.runtime_for(&config.item_id, desired_qty);
@@ -494,16 +576,6 @@ impl Engine {
             }
             return events;
         }
-        if settings.mode.submits() && !has_token {
-            if now - self.last_no_token_warn_at > 30_000 {
-                self.logger.warn(
-                    "engine",
-                    "signal found but no Rollercoin session is linked; open the Link tab",
-                );
-                self.last_no_token_warn_at = now;
-            }
-            return events;
-        }
 
         let qty = plan.qty.unwrap_or(1);
         let notional = plan
@@ -516,7 +588,6 @@ impl Engine {
         timings.order_at = Some(now as f64);
         timings.signal_cmd = Some(event.cmd.clone());
 
-        let label = label_for(Some(&config), &config.item_id);
         self.last_order_at = now;
         {
             let runtime = self.runtime_for(&config.item_id, desired_qty);
@@ -573,7 +644,17 @@ impl Engine {
         }
 
         store.state.stats.orders_sent += 1;
-        let _ = store.flush();
+        // Only the counters changed; rewriting the whole target list here made
+        // one order cost an upsert per configured item.
+        if let Err(error) = store.flush_stats() {
+            warn_throttled(
+                &self.logger,
+                &mut self.last_flush_error_at,
+                now,
+                "store",
+                format!("could not persist the order counter: {error}"),
+            );
+        }
         {
             let runtime = self.runtime_for(&config.item_id, desired_qty);
             runtime.inflight = true;
@@ -862,7 +943,15 @@ impl Engine {
             };
 
             let entry_id = entry.id.clone();
-            let _ = store.add_history(entry.clone());
+            if let Err(error) = store.add_history(entry.clone()) {
+                warn_throttled(
+                    &self.logger,
+                    &mut self.last_history_error_at,
+                    now,
+                    "store",
+                    format!("could not record fill {entry_id}: {error}"),
+                );
+            }
             if let Some(order_id) = &fill.order_id {
                 self.pending.remove(order_id);
             }
@@ -998,11 +1087,6 @@ impl Engine {
             .map(|point| now - point.t <= 30 * 60_000)
             .unwrap_or(false);
         let use_fill = fill_points.len() >= 12 && fill_span >= 30 * 60_000 && fill_fresh;
-        let series = if use_fill {
-            fill_points.clone()
-        } else {
-            runtime.history.clone()
-        };
 
         let book_qty = runtime.last_stock;
         let options = TrendOptions {
@@ -1019,9 +1103,21 @@ impl Engine {
                 approx: fill.approx,
             }),
         };
-
-        let signal = build_trend(&series, &options);
+        let signal = {
+            // Borrow the series instead of cloning up to 1440 points on every
+            // rebuild: the model only ever reads it, so the copy was pure churn.
+            let series: &[Point] = if use_fill {
+                &runtime.fill_history
+            } else {
+                &runtime.history
+            };
+            build_trend(series, &options)
+        };
         runtime.trend = Some(signal.clone());
+        runtime.trend_json = serde_json::to_string(&signal)
+            .ok()
+            .and_then(|text| RawValue::from_string(text).ok())
+            .map(Arc::from);
         runtime.trend_at = now;
         runtime.trend_target = target_price;
         Some(signal)
@@ -1231,7 +1327,15 @@ impl Engine {
             message: Some(reason.chars().take(160).collect()),
         };
 
-        let _ = store.add_history(entry.clone());
+        if let Err(error) = store.add_history(entry.clone()) {
+            warn_throttled(
+                &self.logger,
+                &mut self.last_history_error_at,
+                now,
+                "store",
+                format!("could not record the failed order: {error}"),
+            );
+        }
 
         vec![
             EngineEvent::Broadcast {
@@ -1407,6 +1511,25 @@ impl Engine {
         }
     }
 
+    /// Releases runtimes for targets that no longer exist and have not been
+    /// seen for `max_idle_ms`. A target that is deleted and re-added within that
+    /// window keeps its history, so the chart is unchanged.
+    pub fn prune_orphan_runtimes(&mut self, store: &Store, now: i64, max_idle_ms: i64) -> usize {
+        let before = self.runtime.len();
+        self.runtime.retain(|item_id, runtime| {
+            if store.find_config(item_id).is_some() {
+                return true;
+            }
+            let last_seen = runtime.seen_at.or(runtime.hydrated_at).unwrap_or(0);
+            let has_data = runtime.last_price.is_some()
+                || !runtime.history.is_empty()
+                || !runtime.fill_history.is_empty()
+                || runtime.trend.is_some();
+            has_data && now.saturating_sub(last_seen) <= max_idle_ms
+        });
+        before - self.runtime.len()
+    }
+
     pub fn refresh_trend(&mut self, store: &Store, item_id: &str) -> Option<TrendSignal> {
         let config = store.find_config(item_id)?.clone();
         let now = self.now();
@@ -1532,47 +1655,58 @@ impl Engine {
 
     pub fn runtime_snapshot(&self, store: &Store) -> Value {
         let mut out = serde_json::Map::new();
-        for (item_id, runtime) in &self.runtime {
-            let config = store.find_config(item_id);
-            let mut value = serde_json::Map::new();
-            value.insert("label".into(), json!(label_for(config, item_id)));
-            value.insert("lastPrice".into(), json!(runtime.last_price));
-            value.insert("lastStock".into(), json!(runtime.last_stock));
-            value.insert("lastSeenAt".into(), json!(runtime.last_seen_at));
-            value.insert("seenAt".into(), json!(runtime.seen_at));
-            value.insert("stale".into(), json!(runtime.stale));
-            value.insert("itemType".into(), json!(runtime.item_type));
-            value.insert("allowedPriceMin".into(), json!(runtime.allowed_price_min));
-            value.insert("allowedPriceMax".into(), json!(runtime.allowed_price_max));
-            value.insert("allowedAt".into(), json!(runtime.allowed_at));
-            value.insert(
-                "history".into(),
-                serde_json::to_value(&runtime.history).unwrap_or(Value::Null),
-            );
-            value.insert(
-                "lastFill".into(),
-                serde_json::to_value(runtime.last_fill).unwrap_or(Value::Null),
-            );
-            value.insert(
-                "trend".into(),
-                serde_json::to_value(&runtime.trend).unwrap_or(Value::Null),
-            );
-            value.insert("trendAt".into(), json!(runtime.trend_at));
-            value.insert("hydratedAt".into(), json!(runtime.hydrated_at));
-            value.insert("inflight".into(), json!(runtime.inflight));
-            value.insert("orders".into(), json!(runtime.orders));
-            value.insert("fills".into(), json!(runtime.fills));
-            value.insert("failures".into(), json!(runtime.failures));
-            value.insert("lastResult".into(), json!(runtime.last_result));
-            value.insert("failureStreak".into(), json!(runtime.failure_streak));
-            value.insert("blockedUntil".into(), json!(runtime.blocked_until));
-            value.insert("lastLogAt".into(), json!(runtime.last_log_at));
-            value.insert("lastOrderAt".into(), json!(runtime.last_order_at));
-            value.insert("lastInRangeAt".into(), json!(runtime.last_in_range_at));
-            out.insert(item_id.clone(), Value::Object(value));
+        // Only targets that still exist are exposed. Orphan runtimes are kept
+        // for a grace period (see `prune_orphan_runtimes`) but never serialized,
+        // so a long delete history no longer costs CPU on every snapshot.
+        for config in &store.state.configs {
+            let key = config.item_id.to_ascii_lowercase();
+            let Some(runtime) = self.runtime.get(&key) else {
+                continue;
+            };
+            let label = label_for(Some(config), &key);
+            out.insert(key, runtime_json(runtime, label));
         }
         Value::Object(out)
     }
+}
+
+fn runtime_json(runtime: &Runtime, label: String) -> Value {
+    let mut value = serde_json::Map::new();
+    value.insert("label".into(), json!(label));
+    value.insert("lastPrice".into(), json!(runtime.last_price));
+    value.insert("lastStock".into(), json!(runtime.last_stock));
+    value.insert("lastSeenAt".into(), json!(runtime.last_seen_at));
+    value.insert("seenAt".into(), json!(runtime.seen_at));
+    value.insert("stale".into(), json!(runtime.stale));
+    value.insert("itemType".into(), json!(runtime.item_type));
+    value.insert("allowedPriceMin".into(), json!(runtime.allowed_price_min));
+    value.insert("allowedPriceMax".into(), json!(runtime.allowed_price_max));
+    value.insert("allowedAt".into(), json!(runtime.allowed_at));
+    value.insert(
+        "history".into(),
+        serde_json::to_value(&runtime.history).unwrap_or(Value::Null),
+    );
+    value.insert(
+        "lastFill".into(),
+        serde_json::to_value(runtime.last_fill).unwrap_or(Value::Null),
+    );
+    value.insert(
+        "trend".into(),
+        serde_json::to_value(&runtime.trend).unwrap_or(Value::Null),
+    );
+    value.insert("trendAt".into(), json!(runtime.trend_at));
+    value.insert("hydratedAt".into(), json!(runtime.hydrated_at));
+    value.insert("inflight".into(), json!(runtime.inflight));
+    value.insert("orders".into(), json!(runtime.orders));
+    value.insert("fills".into(), json!(runtime.fills));
+    value.insert("failures".into(), json!(runtime.failures));
+    value.insert("lastResult".into(), json!(runtime.last_result));
+    value.insert("failureStreak".into(), json!(runtime.failure_streak));
+    value.insert("blockedUntil".into(), json!(runtime.blocked_until));
+    value.insert("lastLogAt".into(), json!(runtime.last_log_at));
+    value.insert("lastOrderAt".into(), json!(runtime.last_order_at));
+    value.insert("lastInRangeAt".into(), json!(runtime.last_in_range_at));
+    Value::Object(value)
 }
 
 struct FailureMeta {
@@ -1710,6 +1844,96 @@ mod tests {
             .collect()
     }
 
+    /// Market ticks, serialised the way the control plane ships them.
+    fn market_payloads(events: &[EngineEvent]) -> Vec<Value> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                EngineEvent::Market(tick) => serde_json::to_value(tick.as_ref()).ok(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn market_ticks_are_skipped_while_no_deck_is_connected() {
+        let mut h = harness();
+        h.engine.set_broadcast_enabled(false);
+        let events =
+            h.engine
+                .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_001, true);
+        assert!(
+            market_payloads(&events).is_empty(),
+            "a headless worker must not build market payloads"
+        );
+        // The order decision itself must be untouched.
+        assert_eq!(submissions(&events).len(), 1);
+
+        h.engine.set_broadcast_enabled(true);
+        let resumed =
+            h.engine
+                .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_002, true);
+        assert_eq!(market_payloads(&resumed).len(), 1);
+    }
+
+    #[test]
+    fn orphan_runtimes_are_hidden_and_released_after_the_grace_period() {
+        let mut h = harness();
+        {
+            let runtime = h.engine.runtime_for("deleted-item", 1);
+            runtime.seen_at = Some(1_000_000);
+            runtime.history.push(Point {
+                t: 1_000_000,
+                p: 0.5,
+            });
+        }
+        assert!(
+            h.engine
+                .runtime_snapshot(&h.store)
+                .get("deleted-item")
+                .is_none(),
+            "an orphan must never be serialized into a snapshot"
+        );
+
+        // Within the grace period the runtime is kept (delete + re-add shows
+        // the same chart), after it the entry is released.
+        assert_eq!(
+            h.engine.prune_orphan_runtimes(&h.store, 1_000_000, 60_000),
+            0
+        );
+        assert_eq!(
+            h.engine.prune_orphan_runtimes(&h.store, 1_200_000, 60_000),
+            1
+        );
+    }
+
+    #[test]
+    fn market_broadcast_keeps_its_wire_shape() {
+        let mut h = harness();
+        let events =
+            h.engine
+                .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_001, true);
+        let mut market = market_payloads(&events);
+        let market = market.remove(0);
+
+        assert_eq!(market["itemId"], "6319f7baa8ce530569ed16b9");
+        assert_eq!(market["currency"], "RLT");
+        assert_eq!(market["itemType"], "miner");
+        assert_eq!(market["stock"], 10);
+        assert_eq!(market["hot"], true);
+        assert_eq!(market["mode"], "live");
+        assert_eq!(market["bucket"], 960_000);
+        // The trend is embedded as JSON, not as a stringified payload. The
+        // pre-serialised `RawValue` must not survive `to_value` as a string.
+        assert!(
+            market["trend"].is_object(),
+            "trend must stay an object, got {:?}",
+            market["trend"]
+        );
+        assert!(market["trend"]["status"].is_string());
+        assert!(market["fill"].is_object(), "fill: {:?}", market["fill"]);
+    }
+
     #[test]
     fn submits_an_order_when_the_price_is_below_target() {
         let mut h = harness();
@@ -1727,12 +1951,8 @@ mod tests {
                 .get("6319f7baa8ce530569ed16b9")
                 .is_some()
         );
-        // A market broadcast must be emitted before the submit intent.
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, EngineEvent::Broadcast { kind: "market", .. }))
-        );
+        // A market tick must be emitted before the submit intent.
+        assert_eq!(market_payloads(&events).len(), 1);
     }
 
     #[test]
@@ -1748,11 +1968,7 @@ mod tests {
             h.engine
                 .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_001, true);
         assert!(submissions(&events).is_empty());
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, EngineEvent::Broadcast { kind: "market", .. }))
-        );
+        assert_eq!(market_payloads(&events).len(), 1);
         // No budget is spent while off: a later live order is not delayed.
         assert_eq!(h.engine.order_stamps_len(), 0);
     }
@@ -1795,10 +2011,11 @@ mod tests {
             h.engine
                 .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_002, true);
         assert!(submissions(&events).is_empty());
-        assert!(events.iter().any(|event| matches!(
-            event,
-            EngineEvent::Broadcast { kind: "market", data } if data["hot"] == true
-        )));
+        assert!(
+            market_payloads(&events)
+                .iter()
+                .any(|data| data["hot"] == true)
+        );
         assert_eq!(h.engine.order_stamps_len(), 0, "off spends no budget");
     }
 
@@ -1853,6 +2070,26 @@ mod tests {
         assert!(
             submissions(&live).is_empty(),
             "live must not submit without a linked session"
+        );
+    }
+
+    #[test]
+    fn live_without_a_session_does_not_spend_the_rate_budget() {
+        let mut h = harness();
+        h.store
+            .patch_settings(validation::SettingsPatch {
+                mode: Some(Mode::Live),
+                ..Default::default()
+            })
+            .unwrap();
+        let events =
+            h.engine
+                .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_001, false);
+        assert!(submissions(&events).is_empty());
+        assert_eq!(
+            h.engine.order_stamps_len(),
+            0,
+            "a missing session must not burn the per-minute budget"
         );
     }
 

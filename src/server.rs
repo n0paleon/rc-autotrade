@@ -11,7 +11,8 @@ use std::sync::atomic::{AtomicI64, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::body::Bytes;
+use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode, header};
@@ -20,6 +21,7 @@ use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
@@ -32,7 +34,7 @@ use crate::constants::{
     LOOT_LOG_MAX_PAGE_SIZE, LOOT_LOG_PAGE_SIZE, Limits, PRICE_HISTORY_DAYS, PRICE_RETENTION_DAYS,
     TELEMETRY_INTERVAL_SECS,
 };
-use crate::engine::Engine;
+use crate::engine::{Engine, MarketTick};
 use crate::feed::FeedHandle;
 use crate::item_info::ItemInfoService;
 use crate::keepalive::KeepaliveService;
@@ -62,12 +64,29 @@ pub struct AppState {
     /// it to tell a quiet item (frames still arriving for others) apart from a
     /// feed that is actually down.
     pub last_frame_at: AtomicI64,
-    pub hub: broadcast::Sender<Value>,
+    /// Every control-socket frame, already serialised into its envelope. The
+    /// buffer is shared (`Bytes`) so each socket clones a handle instead of
+    /// re-encoding the payload.
+    pub hub: broadcast::Sender<Bytes>,
+    /// Queue into the market coalescer. `None` before the worker starts.
+    pub market: Mutex<Option<tokio::sync::mpsc::Sender<Box<MarketTick>>>>,
     /// Bumped when the worker access key is rotated so open control sockets
     /// can be closed with code 4003 (the deck reconnects with the new key).
     pub auth_epoch: tokio::sync::watch::Sender<u64>,
     /// Coalesces concurrent session refreshes (feed 401 + scheduled tick).
     pub refresh_lock: tokio::sync::Mutex<()>,
+}
+
+/// One control-socket frame: `{"type": ..., "data": ..., "at": ...}`.
+///
+/// Serialising the envelope directly avoids building the payload string first
+/// and copying it into a second buffer on every broadcast.
+#[derive(Serialize)]
+struct Envelope<'a, T: ?Sized> {
+    #[serde(rename = "type")]
+    kind: &'a str,
+    data: &'a T,
+    at: i64,
 }
 
 impl AppState {
@@ -101,15 +120,31 @@ impl AppState {
             last_frame_at: AtomicI64::new(0),
             config,
             hub,
+            market: Mutex::new(None),
             auth_epoch,
             refresh_lock: tokio::sync::Mutex::new(()),
         };
         // Every log line also reaches connected decks, like `logger.setSink`.
         let sink_hub = state.hub.clone();
         logger.set_sink(Arc::new(move |entry| {
-            let _ = sink_hub.send(json!({ "type": "log", "data": entry, "at": now_ms() }));
+            if sink_hub.receiver_count() == 0 {
+                return;
+            }
+            let Ok(frame) = serde_json::to_string(&Envelope {
+                kind: "log",
+                data: &entry,
+                at: now_ms(),
+            }) else {
+                return;
+            };
+            let _ = sink_hub.send(Bytes::from(frame));
         }));
         state
+    }
+
+    /// True while at least one control socket is connected.
+    pub fn has_control_clients(&self) -> bool {
+        self.hub.receiver_count() > 0
     }
 
     pub fn set_port(&self, port: u16) {
@@ -133,14 +168,32 @@ impl AppState {
         }
     }
 
+    /// Serialises one envelope and hands the same buffer to every socket.
+    ///
+    /// Serialising per receiver meant a deep `Value` clone plus a `to_string`
+    /// per client per frame. With no socket connected nothing is built at all.
+    pub fn broadcast_serialized<T: Serialize + ?Sized>(&self, kind: &str, data: &T) {
+        if self.hub.receiver_count() == 0 {
+            return;
+        }
+        let Ok(frame) = serde_json::to_string(&Envelope {
+            kind,
+            data,
+            at: now_ms(),
+        }) else {
+            return;
+        };
+        let _ = self.hub.send(Bytes::from(frame));
+    }
+
+    /// Convenience wrapper for callers that already hold a `Value`.
     pub fn broadcast(&self, kind: &str, data: Value) {
-        let _ = self
-            .hub
-            .send(json!({ "type": kind, "data": data, "at": now_ms() }));
+        self.broadcast_serialized(kind, &data);
     }
 
     pub fn configs_view(&self, store: &Store, engine: &Engine) -> Vec<Value> {
-        let runtime = engine.runtime_snapshot(store);
+        let mut runtime = engine.runtime_snapshot(store);
+        let mut runtime_entries = runtime.as_object_mut();
         store
             .state
             .configs
@@ -149,10 +202,13 @@ impl AppState {
                 let mut value = serde_json::to_value(config).unwrap_or(Value::Null);
                 if let Some(object) = value.as_object_mut() {
                     let key = config.item_id.to_ascii_lowercase();
-                    object.insert(
-                        "runtime".to_string(),
-                        runtime.get(&key).cloned().unwrap_or(Value::Null),
-                    );
+                    // Move the entry out of the temporary map instead of
+                    // cloning the whole history for every target on each view.
+                    let entry = runtime_entries
+                        .as_mut()
+                        .and_then(|entries| entries.remove(&key))
+                        .unwrap_or(Value::Null);
+                    object.insert("runtime".to_string(), entry);
                 }
                 value
             })
@@ -761,8 +817,12 @@ async fn history(
         before_id: params.get("beforeId").cloned().unwrap_or_default(),
     };
 
-    let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
-    match store.history_page(query) {
+    // Even an unfiltered page runs a COUNT(*) over the whole log.
+    let page = crate::blocking::run(|| {
+        let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
+        store.history_page(query)
+    });
+    match page {
         Ok(page) => Json(json!({
             "ok": true,
             "entries": page.entries,
@@ -1055,14 +1115,19 @@ async fn get_backup(
                 .get("credentials")
                 .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
                 .unwrap_or(false);
-            let payload = {
+            // Building the export walks every row and encodes a large JSON
+            // document; keep it off the reactor thread.
+            let built = crate::blocking::run(|| {
                 let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
-                match crate::backup::build_backup(&store, include_credentials, now) {
-                    Ok(payload) => payload,
-                    Err(message) => return error_body(StatusCode::INTERNAL_SERVER_ERROR, &message),
+                crate::backup::build_backup(&store, include_credentials, now)
+                    .map(|payload| serde_json::to_vec(&payload).unwrap_or_default())
+            });
+            let body = match built {
+                Ok(body) => body,
+                Err(message) => {
+                    return error_body(StatusCode::INTERNAL_SERVER_ERROR, &message);
                 }
             };
-            let body = serde_json::to_vec(&payload).unwrap_or_default();
             attachment(
                 axum::body::Body::from(body),
                 "application/json; charset=utf-8",
@@ -1070,11 +1135,15 @@ async fn get_backup(
             )
         }
         "sqlite" | "db" => {
-            let path = {
+            // `VACUUM INTO` copies the whole database and can take a while.
+            let snapshot = crate::blocking::run(|| {
                 let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
-                match crate::backup::create_database_snapshot(&store, "export", now) {
-                    Ok(path) => path,
-                    Err(message) => return error_body(StatusCode::INTERNAL_SERVER_ERROR, &message),
+                crate::backup::create_database_snapshot(&store, "export", now)
+            });
+            let path = match snapshot {
+                Ok(path) => path,
+                Err(message) => {
+                    return error_body(StatusCode::INTERNAL_SERVER_ERROR, &message);
                 }
             };
             let bytes = match tokio::fs::read(&path).await {
@@ -1155,23 +1224,27 @@ async fn post_backup(
         .map(|flag| !matches!(flag.to_ascii_lowercase().as_str(), "0" | "false" | "no"))
         .unwrap_or(true);
 
-    let (previous_token, restored) = {
+    // A restore rewrites every table (and writes a safety snapshot first), so
+    // it runs on a blocking-friendly path instead of parking a tokio worker.
+    let restored = crate::blocking::run(|| {
         let mut store = state.store.lock().unwrap_or_else(|e| e.into_inner());
         let previous_token = store.state.session.access_token.clone();
-        match crate::backup::restore_backup(&mut store, &value, restore_credentials, true, now) {
-            Ok(result) => (previous_token, result),
-            Err(message) => {
-                state
-                    .logger
-                    .error("backup", format!("restore failed: {message}"));
-                return error_body(StatusCode::INTERNAL_SERVER_ERROR, &message);
-            }
+        crate::backup::restore_backup(&mut store, &value, restore_credentials, true, now)
+            .map(|result| (previous_token, result))
+    });
+    let (previous_token, restored) = match restored {
+        Ok(restored) => restored,
+        Err(message) => {
+            state
+                .logger
+                .error("backup", format!("restore failed: {message}"));
+            return error_body(StatusCode::INTERNAL_SERVER_ERROR, &message);
         }
     };
 
     // The restore replaced every target and the market cache, so the engine's
     // live copy of that world is no longer valid.
-    {
+    crate::blocking::run(|| {
         let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
         let mut engine = state.engine.lock().unwrap_or_else(|e| e.into_inner());
         engine.reset_market_state();
@@ -1179,7 +1252,7 @@ async fn post_backup(
         for target in store.state.configs.clone() {
             engine.refresh_trend(&store, &target.item_id);
         }
-    }
+    });
     state.wake_keepalive("backup restored");
     state.logger.info(
         "backup",
@@ -1205,11 +1278,11 @@ async fn post_backup(
     }
 
     state.broadcast("history-cleared", json!({}));
-    let snapshot = {
+    let snapshot = crate::blocking::run(|| {
         let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
         let engine = state.engine.lock().unwrap_or_else(|e| e.into_inner());
         state.snapshot(&store, &engine)
-    };
+    });
     state.broadcast("snapshot", snapshot);
 
     Json(json!({
@@ -1565,21 +1638,29 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, authorized: bool
             }
             update = updates.recv() => {
                 match update {
-                    Ok(value) => {
-                        if sender.send(Message::Text(value.to_string().into())).await.is_err() {
+                    Ok(payload) => {
+                        // The envelope was serialised once by `broadcast`; this
+                        // is a handle clone, not a re-encoding of the payload.
+                        let Ok(text) = Utf8Bytes::try_from(payload) else {
+                            continue;
+                        };
+                        if sender.send(Message::Text(text)).await.is_err() {
                             break;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        // The deck must not silently miss a batch and keep
-                        // rendering stale counters until the next page load.
+                        // Rebuilding a full snapshot for one slow socket walked
+                        // every target's 24 h history. Ask that deck to refresh
+                        // over HTTP instead; its state is event-driven anyway.
                         state.logger.debug(
                             "socket",
-                            format!("control socket lagged by {skipped} frame(s); sending a fresh snapshot"),
+                            format!("control socket lagged by {skipped} frame(s); requesting a resync"),
                         );
-                        let snapshot = current_snapshot(&state);
-                        let frame = json!({ "type": "snapshot", "data": snapshot, "at": epoch_ms() });
-                        if sender.send(Message::Text(frame.to_string().into())).await.is_err() {
+                        let frame = format!(
+                            r#"{{"type":"resync","data":{{"reason":"lag","skipped":{skipped}}},"at":{}}}"#,
+                            epoch_ms()
+                        );
+                        if sender.send(Message::Text(frame.into())).await.is_err() {
                             break;
                         }
                     }
@@ -1719,6 +1800,20 @@ async fn security_headers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_control_envelope_keeps_its_wire_shape() {
+        let frame = serde_json::to_string(&Envelope {
+            kind: "market",
+            data: &json!({ "itemId": "abc", "hot": true }),
+            at: 42,
+        })
+        .unwrap();
+        assert_eq!(
+            frame,
+            r#"{"type":"market","data":{"hot":true,"itemId":"abc"},"at":42}"#
+        );
+    }
 
     #[test]
     fn extracts_the_host_from_the_upstream_url() {

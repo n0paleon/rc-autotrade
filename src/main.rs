@@ -21,6 +21,14 @@ use rollercoin_worker::server::AppState;
 use rollercoin_worker::store::Store;
 use rollercoin_worker::system::SystemMonitor;
 
+/// jemalloc replaces glibc malloc so freed pages go back to the OS. glibc's
+/// per-thread arenas only ever grow to their high-water mark, which is what made
+/// the worker's RSS climb for hours under a busy market feed. A global allocator
+/// is process-wide and does not change any payload or behaviour.
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 const WORKER_HEADER: &str = r#"
   ______               ____  ____
  /_  __/_  __ ______  / __ \/ ____|
