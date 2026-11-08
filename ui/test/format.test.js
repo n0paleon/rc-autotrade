@@ -9,6 +9,7 @@ import {
   itemTypeOf,
   ITEM_TYPE_ORDER,
   marketplaceUrl,
+  matchesLootFilter,
   mergeHistory,
   runtimeHot,
   thresholdClass,
@@ -125,4 +126,43 @@ test("mergeHistory carries the live minute bands and never narrows them", () => 
   assert.deepEqual(widened, [
     { t: 60_000, p: 0.14, l: 0.11, h: 0.14, rl: 0.10, rh: 0.14 }
   ]);
+});
+
+test("matchesLootFilter mirrors the server-side /api/history filter rules", () => {
+  const filled = { label: "ASIC Miner X9", itemId: "abc123", status: "filled", profitRlt: 0.5 };
+  const failed = { label: "ASIC Miner X9", itemId: "abc123", status: "failed", profitRlt: 0 };
+  const loss = { label: "Fan Kit", itemId: "def456", status: "filled", profitRlt: -0.25 };
+
+  // Empty criteria match everything.
+  assert.equal(matchesLootFilter(filled, {}), true);
+  assert.equal(matchesLootFilter(failed, { q: "", status: "", profit: "" }), true);
+
+  // Search matches label or item id, case-insensitively.
+  assert.equal(matchesLootFilter(filled, { q: "miner" }), true);
+  assert.equal(matchesLootFilter(filled, { q: "ABC123" }), true);
+  assert.equal(matchesLootFilter(filled, { q: "  asic " }), true);
+  assert.equal(matchesLootFilter(filled, { q: "fan" }), false);
+  assert.equal(matchesLootFilter(filled, { q: "   " }), true);
+
+  // Status narrows to filled/failed; unknown values match everything.
+  assert.equal(matchesLootFilter(filled, { status: "filled" }), true);
+  assert.equal(matchesLootFilter(filled, { status: "failed" }), false);
+  assert.equal(matchesLootFilter(failed, { status: "failed" }), true);
+  assert.equal(matchesLootFilter(filled, { status: "all" }), true);
+
+  // Profit narrows by sign; zero is neither positive nor negative.
+  assert.equal(matchesLootFilter(filled, { profit: "positive" }), true);
+  assert.equal(matchesLootFilter(loss, { profit: "positive" }), false);
+  assert.equal(matchesLootFilter(loss, { profit: "negative" }), true);
+  assert.equal(matchesLootFilter(filled, { profit: "negative" }), false);
+  assert.equal(matchesLootFilter(failed, { profit: "positive" }), false);
+  assert.equal(matchesLootFilter(failed, { profit: "negative" }), false);
+
+  // Criteria combine.
+  assert.equal(matchesLootFilter(filled, { q: "miner", status: "filled", profit: "positive" }), true);
+  assert.equal(matchesLootFilter(loss, { q: "miner", status: "filled", profit: "positive" }), false);
+
+  // Non-entries never match.
+  assert.equal(matchesLootFilter(null, {}), false);
+  assert.equal(matchesLootFilter(undefined, { status: "filled" }), false);
 });

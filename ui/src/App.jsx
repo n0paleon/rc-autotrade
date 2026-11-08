@@ -31,6 +31,7 @@ import {
   ITEM_TYPE_ORDER,
   lastText,
   marketplaceUrl,
+  matchesLootFilter,
   relTime,
   runtimeHot,
   shortId,
@@ -1344,6 +1345,9 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
 
   // Keep the counter in sync with the worker (new fills bump it; a reset
   // drops it to zero and clears whatever was loaded, search included).
+  // While filtered, `total` is the filtered match count: unfiltered bumps
+  // are handled by the live-prepend effect above, so only a reset to zero
+  // needs the clear here.
   useEffect(() => {
     const nextTotal = Number(historyTotal);
     if (!Number.isFinite(nextTotal)) return;
@@ -1368,13 +1372,24 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
   }, [historyTotal, filtered]);
 
   // Live socket entries are prepended so the newest loot stays on screen even
-  // while older pages are loaded below it.
+  // while older pages are loaded below it. While a filter/search is active
+  // only entries that pass the filter are prepended (mirroring the server
+  // query), and the match count grows with each prepend — otherwise the
+  // filtered view would freeze until the user re-ran the search.
   useEffect(() => {
     const list = Array.isArray(history) ? history : [];
     if (list.length === 0) return;
-    const fresh = filtered
-      ? []
-      : list.filter((entry) => entry && !idsRef.current.has(entry.id));
+    const fresh = list.filter(
+      (entry) =>
+        entry &&
+        !idsRef.current.has(entry.id) &&
+        (!filtered ||
+          matchesLootFilter(entry, {
+            q: query,
+            status: statusFilter,
+            profit: profitFilter
+          }))
+    );
     for (const entry of fresh) idsRef.current.add(entry.id);
     const latestById = new Map(list.filter(Boolean).map((entry) => [entry.id, entry]));
     setEntries((previous) => {
@@ -1384,7 +1399,10 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
       });
       return [...fresh, ...updated].slice(0, LOOT_MAX_ROWS);
     });
-  }, [history, filtered]);
+    if (filtered && fresh.length > 0) {
+      setTotal((previous) => previous + fresh.length);
+    }
+  }, [history, filtered, query, statusFilter, profitFilter]);
 
   // Server-side search/filter over the whole permanent log (product name / item
   // id, status, profit sign). Runs whenever the debounced search text or either
