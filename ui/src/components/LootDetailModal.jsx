@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+
 import { ModalShell } from "./ModalShell.jsx";
 import {
   fixedPrice,
@@ -224,7 +226,42 @@ function buildStages(t) {
   return stages.map((stage) => ({ ...stage, ms: delta(stage.from, stage.to) }));
 }
 
-export function LootDetailModal({ entry, onClose }) {
+export function LootDetailModal({ entry: summary, onClose, request }) {
+  const [detail, setDetail] = useState(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [detailError, setDetailError] = useState(false);
+
+  // Lists only carry the columns a row renders. A live order event still
+  // arrives with its frames inline, so only fetch when they are missing.
+  useEffect(() => {
+    setDetail(null);
+    setDetailError(false);
+    if (!request || !summary?.id || summary.rawEvents) {
+      setLoadingDetail(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setLoadingDetail(true);
+    request(`/api/history/${encodeURIComponent(summary.id)}`)
+      .then((result) => {
+        if (!cancelled) setDetail(result?.entry || null);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDetail(null);
+          setDetailError(true);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingDetail(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [summary?.id, summary?.rawEvents, request]);
+
+  const entry =
+    detail && detail.id === summary.id ? { ...summary, ...detail } : summary;
   const t = entry.timings || null;
   const signalAt = mark(t, "signalAt");
   const sendAt = mark(t, "sendAt");
@@ -463,6 +500,17 @@ export function LootDetailModal({ entry, onClose }) {
                 as legacy.
               </p>
             </>
+          ) : loadingDetail ? (
+            <div className="mt-3 border-2 border-line/60 bg-night-900/50 px-3 py-3">
+              <p className="text-[13px] text-muted">Loading latency marks…</p>
+            </div>
+          ) : detailError ? (
+            <div className="mt-3 border-2 border-line/60 bg-night-900/50 px-3 py-3">
+              <p className="text-[13px] text-muted">
+                Could not load this entry&apos;s telemetry from the worker. Reopen the row to
+                retry.
+              </p>
+            </div>
           ) : (
             <div className="mt-3 border-2 border-line/60 bg-night-900/50 px-3 py-3">
               <p className="text-[13px] text-muted">
@@ -486,18 +534,26 @@ export function LootDetailModal({ entry, onClose }) {
             label="Price change event"
             payload={rawEvents?.priceEvent}
             missingText={
-              rawEvents
-                ? "No price change event was attached to this loot entry."
-                : "Raw event capture was not available when this loot entry was recorded."
+              loadingDetail
+                ? "Loading raw event payloads…"
+                : detailError
+                  ? "Could not load the raw event payloads."
+                  : rawEvents
+                    ? "No price change event was attached to this loot entry."
+                    : "Raw event capture was not available when this loot entry was recorded."
             }
           />
           <RawEventPayload
             label="Order result event"
             payload={rawEvents?.resultEvent}
             missingText={
-              rawEvents
-                ? "No order result event was received for this loot entry."
-                : "Raw event capture was not available when this loot entry was recorded."
+              loadingDetail
+                ? "Loading raw event payloads…"
+                : detailError
+                  ? "Could not load the raw event payloads."
+                  : rawEvents
+                    ? "No order result event was received for this loot entry."
+                    : "Raw event capture was not available when this loot entry was recorded."
             }
           />
         </div>

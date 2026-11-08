@@ -289,6 +289,35 @@ pub struct OrderEntry {
     pub message: Option<String>,
 }
 
+impl OrderEntry {
+    /// Clones the list shape, dropping the heavy frames.
+    ///
+    /// `raw_events` can hold two 256 KB snapshots, and the SQLite profile timer
+    /// counts the Rust-side JSON decode as statement time. Lists therefore keep
+    /// only the columns a row renders; the modal asks for one entry at a time.
+    /// The clone is field-by-field so the payloads are never deep-copied.
+    pub fn lite(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            order_id: self.order_id.clone(),
+            item_id: self.item_id.clone(),
+            label: self.label.clone(),
+            qty: self.qty,
+            unit_price: self.unit_price,
+            total_price: self.total_price,
+            target_price: self.target_price,
+            profit_rlt: self.profit_rlt,
+            status: self.status.clone(),
+            at: self.at,
+            latency_ms: self.latency_ms,
+            timings: None,
+            raw_events: None,
+            note: self.note.clone(),
+            message: self.message.clone(),
+        }
+    }
+}
+
 /// Aggregate kept in `report_products`; survives history rotation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]

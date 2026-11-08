@@ -1629,7 +1629,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request }) {
       </div>
     </section>
     {latestDetail ? (
-      <LootDetailModal entry={latestDetail} onClose={() => setDetail(null)} />
+      <LootDetailModal entry={latestDetail} onClose={() => setDetail(null)} request={request} />
     ) : null}
     </>
   );
