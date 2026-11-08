@@ -1858,6 +1858,12 @@ impl Store {
         };
         self.state.report_since = now;
         self.state.report.clear();
+        // The loot log lives in `orders`; dropping the rows is what actually
+        // makes the reset stick after the next history fetch or restart.
+        self.state.history.clear();
+        if let Err(error) = self.db.execute("DELETE FROM orders", []) {
+            self.report_write_error("could not clear the loot log", &error);
+        }
         if let Err(error) = self.db.execute("DELETE FROM report_products", []) {
             self.report_write_error("could not clear the profit report", &error);
         }
@@ -2113,6 +2119,45 @@ mod tests {
         assert_eq!(report.items.len(), 1);
         assert_eq!(report.items[0].qty, 2);
         assert!((report.items[0].spent_rlt - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn reset_stats_wipes_the_loot_log_and_profit_report() {
+        let dir = temp_dir("reset-stats");
+        let logger = Arc::new(Logger::new("error"));
+        {
+            let mut store = Store::open(dir.clone(), logger.clone()).unwrap();
+            let at = now_ms();
+            let mut filled = make_entry("o1", "item-1", "Hashboard", "filled", 2, at);
+            filled.total_price = 0.2;
+            filled.profit_rlt = 0.05;
+            store.add_history(filled).unwrap();
+            store
+                .add_history(make_entry("o2", "item-1", "Hashboard", "failed", 0, at + 1))
+                .unwrap();
+            assert_eq!(store.history_count(), 2);
+            assert_eq!(store.report_view().totals.fills, 1);
+
+            store.reset_stats();
+
+            assert!(store.state.history.is_empty());
+            assert_eq!(store.history_count(), 0);
+            assert_eq!(
+                store.history_page(HistoryQuery::default()).unwrap().total,
+                0
+            );
+            assert!(store.state.report.is_empty());
+            assert_eq!(store.state.stats.filled, 0);
+            assert_eq!(store.state.stats.orders_sent, 0);
+            store.close();
+        }
+
+        // The reset must survive a restart, not just the in-memory snapshot.
+        let reopened = Store::open(dir.clone(), logger).unwrap();
+        assert_eq!(reopened.history_count(), 0);
+        assert!(reopened.state.history.is_empty());
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

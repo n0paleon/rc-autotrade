@@ -259,6 +259,67 @@ async fn order_detail_loads_the_payloads_the_list_omits() {
 }
 
 #[tokio::test]
+async fn deleting_history_wipes_the_loot_log() {
+    let dir = temp_dir();
+    let upstream_calls = Arc::new(Mutex::new(0));
+    let upstream = spawn_upstream(upstream_calls).await;
+
+    {
+        let logger = Arc::new(Logger::new("error"));
+        let mut store = Store::open(dir.clone(), logger).expect("store");
+        store
+            .add_history(rollercoin_worker::store::make_entry(
+                "order-reset",
+                ITEM_ID,
+                "Hashboard",
+                "filled",
+                1,
+                now_ms(),
+            ))
+            .expect("seed row");
+    }
+
+    let base = spawn_worker(dir.clone(), upstream).await;
+    let client = reqwest::Client::new();
+
+    let before: Value = client
+        .get(format!("{base}/api/history?limit=10"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(before["total"], 1);
+
+    let reset = client
+        .delete(format!("{base}/api/history"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reset.status(), 200);
+    let reset_body: Value = reset.json().await.unwrap();
+    assert_eq!(reset_body["ok"], true);
+    assert_eq!(reset_body["stats"]["filled"], 0);
+
+    let after: Value = client
+        .get(format!("{base}/api/history?limit=10"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(after["total"], 0, "the loot log must stay wiped");
+    assert!(after["entries"].as_array().unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn price_history_requires_an_item_and_clamps_the_window() {
     let dir = temp_dir();
     let upstream_calls = Arc::new(Mutex::new(0));

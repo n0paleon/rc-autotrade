@@ -100,7 +100,7 @@ Rollercoin session — two of either will duplicate orders.
 | `POST /api/control` | ✅ | `off`/`shadow`/`live` (legacy `pause`/`resume`/`toggle` aliases) and `reconnect` |
 | `GET /api/history` | ✅ | cursor + offset + `q`/`status` filters; rows omit the two JSON payloads |
 | `GET /api/history/:id` | ➕ | Rust-only: `timings` + `rawEvents` for one row (the detail modal) |
-| `DELETE /api/history` | ✅ | resets stats, engine counters and latency samples |
+| `DELETE /api/history` | ✅ | wipes the loot log + profit report and resets stats, engine counters and latency samples |
 | `GET /api/report` | ✅ | same derived columns |
 | `GET /api/events` | ➕ | Rust-only: market-frame counts per 5-minute bucket for `?days=1..7`; the deck sums them into the chart timeframe in local time |
 | `GET /api/price-history` | ➕ | Rust-only: raw 1-minute closes for one `itemId` over `?days=1..7`; the deck buckets them in local time and merges the live 24h window |
