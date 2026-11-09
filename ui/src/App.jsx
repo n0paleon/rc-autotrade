@@ -1034,18 +1034,18 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, statusFilter,
         </div>
       )}
       {filtered.length > 0 ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t-2 border-line px-4 py-2.5">
-          <span className="font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t-2 border-line bg-night-900/70 px-4 py-3">
+          <span className="font-mono text-[12px] font-semibold uppercase tracking-[0.08em] text-ink-dim">
             Showing {formatInt(visible.length)} of {formatInt(filtered.length)}
           </span>
           {hidden > 0 ? (
             <button
-              className="btn btn-ghost btn-sm"
+              className="btn btn-signal btn-sm font-bold"
               type="button"
               onClick={() => setLimit((value) => value + (compact ? TARGET_BATCH_MOBILE : TARGET_BATCH_DESKTOP))}
             >
               Show {formatInt(Math.min(hidden, compact ? TARGET_BATCH_MOBILE : TARGET_BATCH_DESKTOP))} more
-              <Icon name="i-arrow-down" className="h-3 w-3" />
+              <Icon name="i-arrow-down" className="h-3.5 w-3.5" />
             </button>
           ) : null}
         </div>
@@ -1719,8 +1719,8 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
           ) : null}
         </>
       )}
-      <div className="flex shrink-0 items-center justify-between gap-2 border-t-2 border-line px-3 py-2">
-        <span className="min-w-0 truncate font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-t-2 border-line bg-night-900/70 px-3 py-3">
+        <span className="min-w-0 truncate font-mono text-[12px] font-semibold uppercase tracking-[0.08em] text-ink-dim">
           {filtered
             ? `${formatInt(shown)} match${shown === 1 ? "" : "es"}`
             : trimmed
@@ -1735,7 +1735,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
           ) : null}
           {hasMore ? (
             <button
-              className="btn btn-ghost btn-sm"
+              className="btn btn-signal btn-sm font-bold"
               type="button"
               onClick={loadOlder}
               disabled={loading}
