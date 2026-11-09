@@ -383,6 +383,8 @@ pub struct SettingsPatch {
     pub max_orders_per_minute: Option<i64>,
     pub mode: Option<Mode>,
     pub auto_refresh: Option<bool>,
+    pub max_fill_retries: Option<i64>,
+    pub retry_delay_ms: Option<i64>,
 }
 
 impl SettingsPatch {
@@ -492,6 +494,20 @@ pub fn validate_settings(input: &Value) -> Result<SettingsPatch, FieldErrors> {
                 "autoRefresh",
                 "autoRefresh must be true or false.".to_string(),
             ),
+        }
+    }
+
+    if let Some(raw) = source.get("maxFillRetries") {
+        match to_number(raw) {
+            Some(value) if value.fract() == 0.0 && (Limits::FILL_RETRIES_MIN as f64..=Limits::FILL_RETRIES_MAX as f64).contains(&value) => patch.max_fill_retries = Some(value as i64),
+            _ => merge_error(&mut errors, "maxFillRetries", format!("Max fill retries must be a whole number between {} and {}.", Limits::FILL_RETRIES_MIN, Limits::FILL_RETRIES_MAX)),
+        }
+    }
+
+    if let Some(raw) = source.get("retryDelayMs") {
+        match to_number(raw) {
+            Some(value) if value.fract() == 0.0 && (Limits::RETRY_DELAY_MIN as f64..=Limits::RETRY_DELAY_MAX as f64).contains(&value) => patch.retry_delay_ms = Some(value as i64),
+            _ => merge_error(&mut errors, "retryDelayMs", format!("Retry delay must be a whole number between {} and {} ms.", Limits::RETRY_DELAY_MIN, Limits::RETRY_DELAY_MAX)),
         }
     }
 

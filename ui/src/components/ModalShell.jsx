@@ -9,6 +9,35 @@ export function Icon({ name, className = "h-4 w-4 shrink-0" }) {
   );
 }
 
+/** Circular (i) button that opens a ModalShell explanation. Event stops
+ *  propagation so it never triggers an enclosing <label> or toggle. */
+export function InfoButton({ title, body }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        className="icon-btn info-btn h-5 w-5 shrink-0"
+        aria-label={title ? `About ${title}` : "More info"}
+        title={title || "More info"}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(true);
+        }}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <Icon name="i-info" className="h-4 w-4" />
+      </button>
+      {open ? (
+        <ModalShell title={title || "Info"} onClose={() => setOpen(false)} small>
+          <p className="p-4 text-[13px] leading-relaxed text-ink-dim">{body}</p>
+        </ModalShell>
+      ) : null}
+    </>
+  );
+}
+
 export function useModalClose() {
   const closeRef = useRef(() => {});
   const close = useCallback(() => closeRef.current?.(), []);

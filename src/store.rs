@@ -247,15 +247,17 @@ impl Store {
         self.db
             .execute(
                 "INSERT OR IGNORE INTO settings
-                 (id, delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused, mode)
-                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+                 (id, delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused, mode, max_fill_retries, retry_delay_ms)
+                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     defaults.delay_per_order,
                     defaults.max_orders_per_minute,
                     dry_run as i64,
                     defaults.auto_refresh as i64,
                     paused as i64,
-                    defaults.mode.as_str()
+                    defaults.mode.as_str(),
+                    defaults.max_fill_retries,
+                    defaults.retry_delay_ms
                 ],
             )
             .map_err(|e| format!("could not seed settings: {e}"))?;
@@ -300,7 +302,7 @@ impl Store {
         let settings_row = self
             .db
             .query_row(
-                "SELECT delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused, mode
+                "SELECT delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused, mode, max_fill_retries, retry_delay_ms
                  FROM settings WHERE id = 1",
                 [],
                 |row| {
@@ -315,6 +317,8 @@ impl Store {
                         mode: Mode::parse(&mode)
                             .unwrap_or_else(|| Mode::from_legacy(dry_run != 0, paused != 0)),
                         auto_refresh: row.get(3)?,
+                        max_fill_retries: { let v: Option<i64> = row.get(6)?; v.unwrap_or(2) },
+                        retry_delay_ms: { let v: Option<i64> = row.get(7)?; v.unwrap_or(1000) },
                     })
                 },
             )
@@ -589,6 +593,12 @@ impl Store {
         if let Some(value) = patch.auto_refresh {
             settings.auto_refresh = value;
         }
+        if let Some(value) = patch.max_fill_retries {
+            settings.max_fill_retries = value;
+        }
+        if let Some(value) = patch.retry_delay_ms {
+            settings.retry_delay_ms = value;
+        }
         self.state.settings = settings;
         self.write_settings()
             .map_err(|e| format!("could not persist settings: {e}"))
@@ -805,14 +815,16 @@ impl Store {
         let (dry_run, paused) = settings.legacy_flags();
         self.db.execute(
             "UPDATE settings SET delay_per_order = ?1, max_orders_per_minute = ?2,
-                    dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6 WHERE id = 1",
+                    dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6, max_fill_retries = ?7, retry_delay_ms = ?8 WHERE id = 1",
             params![
                 settings.delay_per_order,
                 settings.max_orders_per_minute,
                 dry_run as i64,
                 settings.auto_refresh as i64,
                 paused as i64,
-                settings.mode.as_str()
+                settings.mode.as_str(),
+                settings.max_fill_retries,
+                settings.retry_delay_ms
             ],
         )?;
         Ok(())
@@ -891,14 +903,16 @@ impl Store {
         let (dry_run, paused) = settings.legacy_flags();
         tx.execute(
             "UPDATE settings SET delay_per_order = ?1, max_orders_per_minute = ?2,
-                    dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6 WHERE id = 1",
+                    dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6, max_fill_retries = ?7, retry_delay_ms = ?8 WHERE id = 1",
             params![
                 settings.delay_per_order,
                 settings.max_orders_per_minute,
                 dry_run as i64,
                 settings.auto_refresh as i64,
                 paused as i64,
-                settings.mode.as_str()
+                settings.mode.as_str(),
+                settings.max_fill_retries,
+                settings.retry_delay_ms
             ],
         )
         .map_err(|e| format!("could not write settings: {e}"))?;

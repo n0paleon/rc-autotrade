@@ -645,6 +645,12 @@ pub fn parse_backup(raw: &Value, now: i64) -> ParseOutcome {
             if let Some(value) = patch.auto_refresh {
                 settings.auto_refresh = value;
             }
+            if let Some(value) = patch.max_fill_retries {
+                settings.max_fill_retries = value;
+            }
+            if let Some(value) = patch.retry_delay_ms {
+                settings.retry_delay_ms = value;
+            }
         }
         Err(_) => {
             warnings
@@ -937,14 +943,16 @@ pub fn restore_backup(
     let (dry_run, paused) = settings.legacy_flags();
     tx.execute(
         "UPDATE settings SET delay_per_order = ?1, max_orders_per_minute = ?2,
-                dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6 WHERE id = 1",
+                dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6, max_fill_retries = ?7, retry_delay_ms = ?8 WHERE id = 1",
         params![
             settings.delay_per_order,
             settings.max_orders_per_minute,
             dry_run as i64,
             settings.auto_refresh as i64,
             paused as i64,
-            settings.mode.as_str()
+            settings.mode.as_str(),
+            settings.max_fill_retries,
+            settings.retry_delay_ms
         ],
     )
     .map_err(|error| format!("could not restore settings: {error}"))?;

@@ -12,7 +12,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
   delayPerOrder: 200,
   maxOrdersPerMinute: 60,
   mode: "live",
-  autoRefresh: true
+  autoRefresh: true,
+  maxFillRetries: 2,
+  retryDelayMs: 1000
 });
 
 /**
@@ -79,6 +81,10 @@ export const LIMITS = Object.freeze({
   delayMax: 60_000,
   ordersPerMinuteMin: 1,
   ordersPerMinuteMax: 600,
+  fillRetriesMin: 0,
+  fillRetriesMax: 10,
+  retryDelayMin: 200,
+  retryDelayMax: 60_000,
   labelMax: 48,
   configsMax: 100,
   bodyBytes: 256 * 1024,

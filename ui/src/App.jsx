@@ -1,6 +1,6 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import TrendPanel, { TrendChip } from "./components/TrendPanel.jsx";
-import { Icon } from "./components/ModalShell.jsx";
+import { Icon, InfoButton } from "./components/ModalShell.jsx";
 import { MonitorWindow } from "./components/MonitorWindow.jsx";
 import { BackupModal } from "./components/BackupModal.jsx";
 import { LootDetailModal } from "./components/LootDetailModal.jsx";
@@ -2021,6 +2021,8 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
   const mode = modeOf(settings);
   const [delay, setDelay] = useState(String(settings.delayPerOrder ?? 200));
   const [maxOrders, setMaxOrders] = useState(String(settings.maxOrdersPerMinute ?? 60));
+  const [maxRetries, setMaxRetries] = useState(String(settings.maxFillRetries ?? 2));
+  const [retryDelay, setRetryDelay] = useState(String(settings.retryDelayMs ?? 1000));
   const [saving, setSaving] = useState(false);
   const [modesBusy, setModesBusy] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
@@ -2029,6 +2031,10 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
     setDelay(String(settings.delayPerOrder ?? 200));
     setMaxOrders(String(settings.maxOrdersPerMinute ?? 60));
   }, [settings.delayPerOrder, settings.maxOrdersPerMinute]);
+  useEffect(() => {
+    setMaxRetries(String(settings.maxFillRetries ?? 2));
+    setRetryDelay(String(settings.retryDelayMs ?? 1000));
+  }, [settings.maxFillRetries, settings.retryDelayMs]);
 
   const changeMode = async (next) => {
     if (next === mode) return;
@@ -2046,7 +2052,9 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
     try {
       await worker.saveSettings({
         delayPerOrder: Number(delay),
-        maxOrdersPerMinute: Number(maxOrders)
+        maxOrdersPerMinute: Number(maxOrders),
+        maxFillRetries: Number(maxRetries),
+        retryDelayMs: Number(retryDelay)
       });
       notify("info", "CONFIG UPDATED", "Worker settings applied.");
     } catch (error) {
@@ -2085,6 +2093,22 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
               <span>Max orders / min</span>
               <input className="input" type="number" inputMode="numeric" step="1" min="1" max="600" value={maxOrders} onChange={(event) => setMaxOrders(event.target.value)} />
               <small>Hard burst protection.</small>
+            </label>
+            <label className="field">
+              <span className="flex items-center justify-between gap-1">
+                Fill retries
+                <InfoButton
+                  title="Fill retries"
+                  body="0 means retry is off. When a fill fails (no items obtained) but the price is still IN RANGE, the worker retries this many times before counting the signal as missed. One loot-log row per signal — stats count it once, no matter how many attempts it took."
+                />
+              </span>
+              <input className="input" type="number" inputMode="numeric" step="1" min="0" max="10" value={maxRetries} onChange={(event) => setMaxRetries(event.target.value)} />
+              <small>0 = retry off. 2 = up to 3 attempts per signal.</small>
+            </label>
+            <label className="field">
+              <span>Retry delay (ms)</span>
+              <input className="input" type="number" inputMode="numeric" step="100" min="200" max="60000" value={retryDelay} onChange={(event) => setRetryDelay(event.target.value)} />
+              <small>Minimum gap between attempts, measured from the failure.</small>
             </label>
           </div>
           <button className="btn btn-primary btn-sm btn-block" type="submit" disabled={saving} data-busy={saving ? "true" : undefined} aria-busy={saving}>

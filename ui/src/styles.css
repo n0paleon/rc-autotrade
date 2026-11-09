@@ -484,6 +484,16 @@
     color: var(--color-danger);
   }
 
+  .info-btn {
+    @apply h-5 w-5;
+    color: var(--color-faint);
+  }
+
+  .info-btn:hover {
+    color: var(--color-gold);
+    border-color: color-mix(in srgb, var(--color-gold) 45%, transparent);
+  }
+
   .input {
     @apply w-full resize-none px-3 py-2 font-sans text-[14px] font-normal text-ink max-sm:text-base;
     min-height: 38px;
@@ -774,6 +784,7 @@
     @apply flex cursor-pointer items-center justify-between gap-4 px-3 py-2.5;
     border: 2px solid var(--color-line);
     background: rgb(8 6 23 / 0.55);
+    min-width: 0;
     transition:
       border-color var(--motion-ui) linear,
       background-color var(--motion-ui) linear;
@@ -785,9 +796,11 @@
   }
 
   .toggle-row > span:first-child {
-    @apply text-[14px] font-medium text-ink-dim;
+    @apply min-w-0 text-[14px] font-medium text-ink-dim;
+    line-height: 1.4;
   }
 
+  .toggle-row > span:first-child > small,
   .toggle-row small {
     @apply mt-0.5 block text-[13px] leading-snug text-faint;
   }

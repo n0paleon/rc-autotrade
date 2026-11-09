@@ -346,7 +346,36 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
               {entry.orderId || "—"}
             </p>
           </div>
+          <div>
+            <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Attempts</p>
+            <p className="text-ink-dim">
+              {t?.attemptNo ? `${t.attemptNo}${t.attemptMarks?.length ? ` of ${t.attemptMarks.length} shown` : ""}` : "—"}
+              {t?.retryOf ? ` · retry ${String(t.retryOf).slice(0, 8)}` : ""}
+            </p>
+          </div>
         </div>
+
+        {t?.attemptMarks?.length > 1 ? (
+          <div className="border-2 border-line/70 bg-night-950/40 px-3 py-2">
+            <p className="font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-faint">
+              Retry chain ({t.attemptMarks.length} attempts)
+            </p>
+            <ul className="mt-1.5 space-y-1 font-mono text-[12px] text-ink-dim">
+              {t.attemptMarks.map((mark, index) => (
+                <li key={index} className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="tabular-nums">
+                    #{mark.n ?? index + 1} · {mark.orderId ? `order ${String(mark.orderId).slice(0, 12)}` : "no order"} · {mark.status || "pending"}
+                    {mark.reason ? ` — ${mark.reason}` : ""}
+                  </span>
+                  <span className="tabular-nums text-faint">
+                    {mark.signalAt ? clockMs(mark.signalAt) : "—"}
+                    {mark.failedAt ? ` → ${clockMs(mark.failedAt)}` : mark.fillAt ? ` → ${clockMs(mark.fillAt)}` : ""}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
 
         {entry.status === "failed" ? (
           <div className="border-2 border-danger/50 bg-danger/10 px-3 py-2">

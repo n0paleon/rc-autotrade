@@ -134,12 +134,14 @@ impl Mode {
 /// Runtime settings. `mode` is the only trading switch; the old `dryRun` and
 /// `paused` keys are still accepted on input, echoed on output, and mirrored
 /// into the two legacy columns so a pre-v8 reader still sees sane flags.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Settings {
     pub delay_per_order: i64,
     pub max_orders_per_minute: i64,
     pub mode: Mode,
     pub auto_refresh: bool,
+    pub max_fill_retries: i64,
+    pub retry_delay_ms: i64,
 }
 
 impl Default for Settings {
@@ -150,6 +152,8 @@ impl Default for Settings {
             max_orders_per_minute: defaults.max_orders_per_minute,
             mode: Mode::default(),
             auto_refresh: defaults.auto_refresh,
+            max_fill_retries: defaults.max_fill_retries,
+            retry_delay_ms: defaults.retry_delay_ms,
         }
     }
 }
@@ -169,11 +173,13 @@ impl Serialize for Settings {
     {
         use serde::ser::SerializeMap;
         let (dry_run, paused) = self.legacy_flags();
-        let mut map = serializer.serialize_map(Some(6))?;
+        let mut map = serializer.serialize_map(Some(8))?;
         map.serialize_entry("delayPerOrder", &self.delay_per_order)?;
         map.serialize_entry("maxOrdersPerMinute", &self.max_orders_per_minute)?;
         map.serialize_entry("mode", &self.mode)?;
         map.serialize_entry("autoRefresh", &self.auto_refresh)?;
+        map.serialize_entry("maxFillRetries", &self.max_fill_retries)?;
+        map.serialize_entry("retryDelayMs", &self.retry_delay_ms)?;
         // Read-only mirrors: they keep an older deck or backup reader working
         // and are ignored whenever `mode` is present.
         map.serialize_entry("dryRun", &dry_run)?;
@@ -200,6 +206,17 @@ impl<'de> Deserialize<'de> for Settings {
             paused: Option<bool>,
             #[serde(default = "default_true")]
             auto_refresh: bool,
+            #[serde(default = "default_fill_retries")]
+            max_fill_retries: i64,
+            #[serde(default = "default_retry_delay")]
+            retry_delay_ms: i64,
+        }
+
+        fn default_fill_retries() -> i64 {
+            crate::constants::DEFAULT_SETTINGS.max_fill_retries
+        }
+        fn default_retry_delay() -> i64 {
+            crate::constants::DEFAULT_SETTINGS.retry_delay_ms
         }
 
         let wire = Wire::deserialize(deserializer)?;
@@ -217,6 +234,8 @@ impl<'de> Deserialize<'de> for Settings {
             max_orders_per_minute: wire.max_orders_per_minute,
             mode: wire.mode.unwrap_or(mode),
             auto_refresh: wire.auto_refresh,
+            max_fill_retries: wire.max_fill_retries,
+            retry_delay_ms: wire.retry_delay_ms,
         })
     }
 }
@@ -446,6 +465,8 @@ mod tests {
         assert_eq!(json["maxOrdersPerMinute"], 60);
         assert_eq!(json["mode"], "live");
         assert_eq!(json["autoRefresh"], true);
+        assert_eq!(json["maxFillRetries"], 2);
+        assert_eq!(json["retryDelayMs"], 1000);
         // Legacy mirrors, read-only for the deck but present for old readers.
         assert_eq!(json["dryRun"], false);
         assert_eq!(json["paused"], false);

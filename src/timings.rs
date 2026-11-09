@@ -22,7 +22,57 @@ const TIME_KEYS: [&str; 11] = [
 ];
 
 fn version() -> u8 {
-    1
+    2
+}
+
+/// One attempt inside a retry chain. The pipih fields in `Timings` describe
+/// attempt #1 (signal) and the last attempt (fill/failed), so the latency
+/// debugger keeps working; this array carries every attempt in between for
+/// auditing. `status` is one of `filled`, `fill-failed`, `rejected` or
+/// `http-pending`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptMark {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub n: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub order_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub signal_at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub send_at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub response_at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub complete_at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub accepted_at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub fill_at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub failed_at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reason: Option<String>,
+}
+
+impl AttemptMark {
+    pub fn from_timings(n: u8, t: &Timings, order_id: Option<String>, status: &str, reason: Option<String>) -> Self {
+        Self {
+            n: Some(n),
+            order_id,
+            signal_at: t.signal_at,
+            send_at: t.send_at,
+            response_at: t.response_at,
+            complete_at: t.complete_at,
+            accepted_at: t.accepted_at,
+            fill_at: t.fill_at,
+            failed_at: t.failed_at,
+            status: Some(status.to_string()),
+            reason,
+        }
+    }
 }
 
 fn round_ms(value: f64) -> f64 {
@@ -111,6 +161,16 @@ pub struct Timings {
         default
     )]
     pub socket_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub attempt_no: Option<u8>,
+    #[serde(rename = "retryOf", skip_serializing_if = "Option::is_none", default)]
+    pub retry_of: Option<String>,
+    #[serde(rename = "retryReason", skip_serializing_if = "Option::is_none", default)]
+    pub retry_reason: Option<String>,
+    #[serde(rename = "retryBudgetLeft", skip_serializing_if = "Option::is_none", default)]
+    pub retry_budget_left: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub attempt_marks: Option<Vec<AttemptMark>>,
 }
 
 fn number(raw: &Value, key: &str) -> Option<f64> {
@@ -151,7 +211,7 @@ pub fn sanitize(raw: &Value) -> Option<Timings> {
     }
 
     let mut out = Timings {
-        v: 1,
+        v: 2,
         ..Default::default()
     };
 
@@ -174,6 +234,36 @@ pub fn sanitize(raw: &Value) -> Option<Timings> {
     out.attempts = number(raw, "attempts")
         .filter(|v| *v > 0.0)
         .map(|v| (v.trunc() as u8).min(10));
+    out.attempt_no = number(raw, "attemptNo")
+        .filter(|v| *v > 0.0)
+        .map(|v| (v.trunc() as u8).min(11));
+    out.retry_budget_left = number(raw, "retryBudgetLeft")
+        .filter(|v| *v >= 0.0)
+        .map(|v| (v.trunc() as u8).min(10));
+    out.retry_of = trimmed(raw, "retryOf", 128);
+    out.retry_reason = trimmed(raw, "retryReason", 32);
+    if let Some(marks) = raw.get("attemptMarks").and_then(Value::as_array) {
+        let parsed: Vec<AttemptMark> = marks
+            .iter()
+            .filter_map(|mark| {
+                let a = AttemptMark {
+                    n: number(mark, "n").filter(|v| *v > 0.0).map(|v| v.trunc() as u8),
+                    order_id: trimmed(mark, "orderId", 128),
+                    signal_at: number(mark, "signalAt").filter(|v| *v > 0.0).map(round_ms),
+                    send_at: number(mark, "sendAt").filter(|v| *v > 0.0).map(round_ms),
+                    response_at: number(mark, "responseAt").filter(|v| *v > 0.0).map(round_ms),
+                    complete_at: number(mark, "completeAt").filter(|v| *v > 0.0).map(round_ms),
+                    accepted_at: number(mark, "acceptedAt").filter(|v| *v > 0.0).map(round_ms),
+                    fill_at: number(mark, "fillAt").filter(|v| *v > 0.0).map(round_ms),
+                    failed_at: number(mark, "failedAt").filter(|v| *v > 0.0).map(round_ms),
+                    status: trimmed(mark, "status", 32),
+                    reason: trimmed(mark, "reason", 160),
+                };
+                if a.status.is_some() || a.signal_at.is_some() { Some(a) } else { None }
+            })
+            .collect();
+        if !parsed.is_empty() { out.attempt_marks = Some(parsed); }
+    }
     if raw.get("unauthorized").and_then(Value::as_bool) == Some(true) {
         out.unauthorized = Some(true);
     }
@@ -223,7 +313,7 @@ mod tests {
             "junk": "ignored"
         });
         let timings = sanitize(&raw).unwrap();
-        assert_eq!(timings.v, 1);
+        assert_eq!(timings.v, 2);
         assert_eq!(timings.signal_at, Some(1_700_000_000_123.0));
         assert_eq!(timings.send_at, Some(1_700_000_000_125.5));
         assert_eq!(timings.attempts, Some(2));

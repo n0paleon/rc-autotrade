@@ -26,15 +26,33 @@ use crate::logger::Logger;
 use crate::model::{MarketSnapshot, Mode, OrderEntry, PriceBand, Target};
 use crate::rules::{Action, Plan, plan_order, round_price};
 use crate::store::{Store, now_ms};
-use crate::timings::Timings;
+use crate::timings::{AttemptMark, Timings};
 use crate::trend::{FillRef, Point, TrendOptions, TrendSignal, build_trend};
 
 const PENDING_TIMEOUT_MS: i64 = 120_000;
 const MAX_UNMATCHED_RESULTS: usize = 128;
 const SCAN_LOG_INTERVAL_MS: i64 = 12_000;
 const TREND_REFRESH_MS: i64 = 10_000;
+const RETRY_CHAIN_MAX_LIFETIME_MS: i64 = 120_000;
 
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
+
+fn settings_can_retry(store: &Store) -> bool {
+    store.state.settings.max_fill_retries > 0
+}
+
+fn retry_budget(store: &Store) -> u8 {
+    store.state.settings.max_fill_retries.max(0).min(10) as u8
+}
+
+fn rand_chain_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+#[inline]
+fn chain_key(item_id: &str) -> String {
+    item_id.to_ascii_lowercase()
+}
 
 /// Everything the engine wants the outside world to do, in order.
 #[derive(Debug, Clone)]
@@ -103,6 +121,9 @@ pub struct OrderIntent {
     pub at: i64,
     pub timings: Timings,
     pub raw_price_event: Value,
+    pub retry_group: Option<String>,
+    pub retry_marks: Option<Vec<AttemptMark>>,
+    pub retry_attempt: u8,
 }
 
 /// Result of the purchase call, fed back by the wiring.
@@ -133,6 +154,12 @@ struct PendingOrder {
     at: i64,
     timings: Timings,
     raw_price_event: Value,
+    // Fill-retry chain: group id of the first order, plus the marks collected
+    // so far. `None` when the chain abandoned (no loot row yet — the row is
+    // written only when the chain finally fills or exhausts its budget).
+    retry_group: Option<String>,
+    retry_marks: Option<Vec<AttemptMark>>,
+    retry_attempts: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +168,33 @@ struct BufferedResult {
     raw: Value,
     received_at: i64,
     buffered_at: i64,
+}
+
+/// One signal's fill-retry chain. Created when an attempt's fill fails and
+/// budget remains; the next still-IN-RANGE market frame (after the retry delay
+/// from `last_failed_at`) becomes the next attempt. Only the final outcome is
+/// written to the loot log, so `stats.failed` counts lost opportunities, not
+/// attempts. Dies when the chain fills, is exhausted, or the market gate
+/// closes (price out of range, block, cooldown / rate cap) — whichever comes
+/// first — which makes the chain fail exactly once and never hang.
+#[derive(Debug, Clone)]
+struct PendingRetry {
+    item_id: String,
+    group_id: String,
+    label: String,
+    qty: i64,
+    unit_price: f64,
+    target_price: f64,
+    item_type: String,
+    first_signal_at: f64,
+    first_signal_cmd: Option<String>,
+    first_at: i64,
+    attempts: u8,
+    marks: Vec<AttemptMark>,
+    last_failed_at: i64,
+    raw_price_event: Value,
+    raw_result_event: Option<Value>,
+    last_failed_order_id: Option<String>,
 }
 
 /// Micro-RLT key used to group equal prices without comparing floats.
@@ -405,6 +459,7 @@ pub struct Engine {
     last_history_error_at: i64,
     /// Set by the wiring from the number of connected control sockets.
     broadcast_market: bool,
+    pending_retry: HashMap<String, PendingRetry>,
 }
 
 impl Engine {
@@ -422,6 +477,7 @@ impl Engine {
             last_flush_error_at: 0,
             last_history_error_at: 0,
             broadcast_market: true,
+            pending_retry: HashMap::new(),
         }
     }
 
@@ -737,6 +793,37 @@ impl Engine {
         self.log_scan(&config, best.unit_price, best.quantity, &observed, now);
 
         if !hot {
+            // A pending retry whose market gate has closed is terminal: record
+            // the chain's single failure and drop it, so it never hangs and
+            // never resumes later at a worse price.
+            if let Some(retry) = self.pending_retry.remove(&config.item_id.to_ascii_lowercase()) {
+                let mut timings = Timings::default();
+                timings.v = 2;
+                timings.signal_at = Some(retry.first_signal_at);
+                timings.signal_cmd = retry.first_signal_cmd.clone();
+                timings.failed_at = Some(now as f64);
+                timings.attempt_marks = Some(retry.marks.clone());
+                timings.retry_of = Some(retry.group_id.clone());
+                timings.attempt_no = Some(retry.attempts);
+                timings.retry_budget_left = Some(0);
+                let reason = format!("no items obtained (market left range, {} attempted)", retry.attempts);
+                events.extend(self.record_failure(
+                    store,
+                    FailureMeta {
+                        item_id: retry.item_id.clone(),
+                        label: retry.label.clone(),
+                        qty: retry.qty,
+                        unit_price: retry.unit_price,
+                        target_price: retry.target_price,
+                        at: retry.first_at,
+                        timings: Some(timings),
+                        raw_price_event: Some(retry.raw_price_event.clone()),
+                        raw_result_event: retry.raw_result_event.clone(),
+                    },
+                    &reason,
+                    retry.last_failed_order_id.clone(),
+                ));
+            }
             return events;
         }
         if blocked || self.runtime_for(&config.item_id, desired_qty).inflight {
@@ -792,16 +879,45 @@ impl Engine {
             return events;
         }
 
+        // Fill-retry: a chain that is still IN RANGE consumes this frame as
+        // its next attempt once the retry delay has elapsed since the failure.
+        // HTTP-rejected retries never reach here: `on_purchase_result` applies
+        // exponential backoff (`blocked_until`) which gates above.
+        let retry_key = config.item_id.to_ascii_lowercase();
+        let chain = self.pending_retry.get(&retry_key).cloned();
+        if let Some(ref chain) = chain {
+            if now.saturating_sub(chain.last_failed_at) < settings.retry_delay_ms {
+                self.logger.debug(
+                    "engine",
+                    format!("{} fill-retry waiting (attempt {} delayed)", chain.label, chain.attempts + 1),
+                );
+                return events;
+            }
+        }
+
         let qty = plan.qty.unwrap_or(1);
         let notional = plan
             .notional
             .unwrap_or_else(|| round_price(best.unit_price * qty as f64));
         let mut timings = Timings::default();
-        timings.v = 1;
+        timings.v = 2;
         timings.signal_at = Some(signal_at as f64);
         timings.handle_at = Some(handle_at as f64);
         timings.order_at = Some(now as f64);
         timings.signal_cmd = Some(event.cmd.clone());
+
+        let retry_info = if let Some(chain) = chain {
+            timings.attempt_no = Some(chain.attempts + 1);
+            timings.retry_of = Some(chain.group_id.clone());
+            timings.retry_reason = Some("fill-failed".to_string());
+            let total = 1 + settings.max_fill_retries.max(0) as u8;
+            timings.retry_budget_left = Some(total.saturating_sub(chain.attempts + 1));
+            timings.attempt_marks = Some(chain.marks.clone());
+            Some((chain.group_id.clone(), chain.attempts + 1, chain.marks.clone()))
+        } else {
+            timings.attempt_no = Some(1);
+            None
+        };
 
         self.last_order_at = now;
         {
@@ -823,6 +939,9 @@ impl Engine {
             at: now,
             timings,
             raw_price_event: raw.clone(),
+            retry_group: retry_info.as_ref().map(|(id, _, _)| id.clone()),
+            retry_marks: retry_info.as_ref().map(|(_, _, marks)| marks.clone()),
+            retry_attempt: retry_info.as_ref().map(|(_, n, _)| *n).unwrap_or(1),
         };
 
         if !settings.mode.submits() {
@@ -955,6 +1074,9 @@ impl Engine {
                     at: intent.at,
                     timings: timings.clone(),
                     raw_price_event: intent.raw_price_event.clone(),
+                    retry_group: intent.retry_group.clone(),
+                    retry_marks: intent.retry_marks.clone(),
+                    retry_attempts: intent.retry_attempt,
                 },
             );
 
@@ -1031,22 +1153,57 @@ impl Engine {
                     streak
                 ),
             );
-            events.extend(self.record_failure(
-                store,
-                FailureMeta {
-                    item_id: intent.item_id.clone(),
-                    label: intent.label.clone(),
-                    qty: intent.qty,
-                    unit_price: intent.unit_price,
-                    target_price: intent.target_price,
-                    at: intent.at,
-                    timings: Some(timings.clone()),
-                    raw_price_event: Some(intent.raw_price_event.clone()),
-                    raw_result_event: None,
-                },
-                &reason,
-                outcome.order_id.clone(),
-            ));
+            // An HTTP rejection (429 / transport etc.) on a retry attempt
+            // closes the whole chain as its single final failure, because the
+            // backoff above is the correct handling for this class — it never
+            // becomes another fill-retry attempt.
+            if intent.retry_group.is_some() {
+                if let Some(chain) = self.pending_retry.remove(&chain_key(&intent.item_id)) {
+                    let _ = chain;
+                }
+                let mut chain_timings = timings.clone();
+                if let Some(marks) = intent.retry_marks.clone() {
+                    let mut all = marks;
+                    all.push(AttemptMark::from_timings(intent.retry_attempt, &timings, outcome.order_id.clone(), "rejected", Some(reason.clone())));
+                    chain_timings.attempt_marks = Some(all);
+                    chain_timings.retry_of = intent.retry_group.clone();
+                    chain_timings.attempt_no = Some(intent.retry_attempt);
+                    chain_timings.retry_budget_left = Some(0);
+                }
+                events.extend(self.record_failure(
+                    store,
+                    FailureMeta {
+                        item_id: intent.item_id.clone(),
+                        label: intent.label.clone(),
+                        qty: intent.qty,
+                        unit_price: intent.unit_price,
+                        target_price: intent.target_price,
+                        at: intent.at,
+                        timings: Some(chain_timings),
+                        raw_price_event: Some(intent.raw_price_event.clone()),
+                        raw_result_event: None,
+                    },
+                    &reason,
+                    outcome.order_id.clone(),
+                ));
+            } else {
+                events.extend(self.record_failure(
+                    store,
+                    FailureMeta {
+                        item_id: intent.item_id.clone(),
+                        label: intent.label.clone(),
+                        qty: intent.qty,
+                        unit_price: intent.unit_price,
+                        target_price: intent.target_price,
+                        at: intent.at,
+                        timings: Some(timings.clone()),
+                        raw_price_event: Some(intent.raw_price_event.clone()),
+                        raw_result_event: None,
+                    },
+                    &reason,
+                    outcome.order_id.clone(),
+                ));
+            }
             events.push(EngineEvent::Broadcast {
                 kind: "order",
                 data: json!({
@@ -1131,6 +1288,29 @@ impl Engine {
             let reference = target_price.unwrap_or(unit_price);
             let profit = round_price((reference - unit_price) * fill.count as f64);
 
+            // Finalise a retry chain that just succeeded: the marks from the
+            // failed attempts are folded into the final loot row so the chain
+            // reads as one filled signal with N attempts, not N separate rows.
+            let mut merged_timings = fill_timings.clone();
+            let mut attempts_note: Option<String> = None;
+            if let Some(group_id) = pending_meta.retry_group.clone() {
+                let mut marks = pending_meta.retry_marks.clone().unwrap_or_default();
+                marks.push(AttemptMark::from_timings(
+                    pending_meta.retry_attempts,
+                    &fill_timings,
+                    fill.order_id.clone(),
+                    "filled",
+                    None,
+                ));
+                if marks.len() > 1 {
+                    attempts_note = Some(format!("filled after {} attempts", marks.len()));
+                }
+                merged_timings.attempt_marks = Some(marks);
+                merged_timings.retry_of = Some(group_id.clone());
+                merged_timings.attempt_no = Some(pending_meta.retry_attempts);
+                self.pending_retry.remove(&item_id.to_ascii_lowercase());
+            }
+
             {
                 let stats = &mut store.state.stats;
                 stats.filled += 1;
@@ -1156,13 +1336,13 @@ impl Engine {
                 status: "filled".to_string(),
                 at: now,
                 latency_ms: Some(now - pending_meta.at),
-                timings: Some(fill_timings),
+                timings: Some(merged_timings),
                 raw_events: crate::raw_events::sanitize(&json!({
                     "priceEvent": pending_meta.raw_price_event,
                     "resultEvent": raw,
                 })),
-                note: None,
-                message: Some("-".to_string()),
+                note: attempts_note.clone(),
+                message: Some(attempts_note.unwrap_or_else(|| "-".to_string())),
             };
 
             let entry_id = entry.id.clone();
@@ -1228,6 +1408,84 @@ impl Engine {
             if let Some(order_id) = &fill.order_id {
                 self.pending.remove(order_id);
             }
+
+            let mut mark = AttemptMark::from_timings(
+                pending_meta.retry_attempts,
+                &fill_timings,
+                fill.order_id.clone(),
+                "fill-failed",
+                Some("no items obtained".to_string()),
+            );
+            mark.failed_at = Some(fill_at as f64);
+
+            let can_retry = settings_can_retry(store) && pending_meta.retry_attempts <= retry_budget(store);
+            if can_retry {
+                // Budget remains: keep the chain open, record nothing final.
+                let group_id = pending_meta.retry_group.clone().unwrap_or_else(|| {
+                    rand_chain_id()
+                });
+                let mut marks = pending_meta.retry_marks.clone().unwrap_or_default();
+                marks.push(mark);
+                let prev_attempts = marks.len() as u8;
+                self.logger.debug(
+                    "fill",
+                    format!("RETRY armed {label} (attempt {}/{}): {} still IN RANGE",
+                        prev_attempts + 1, retry_budget(store) + 1, label),
+                );
+                // Update the chain state; the next IN RANGE frame (after
+                // retryDelayMs from this failure) becomes the next attempt.
+                // The group id is derived from the first order id so the loot
+                // row ties back to the opening attempt.
+                self.pending_retry.insert(
+                    item_id.to_ascii_lowercase(),
+                    PendingRetry {
+                        item_id: item_id.clone(),
+                        group_id: group_id.clone(),
+                        label: label.clone(),
+                        qty: pending_meta.qty,
+                        unit_price: pending_meta.unit_price,
+                        target_price: target_price.unwrap_or(pending_meta.target_price),
+                        item_type: pending_meta.item_type.clone(),
+                        first_signal_at: fill_timings.signal_at.unwrap_or(pending_meta.at as f64),
+                        first_signal_cmd: fill_timings.signal_cmd.clone(),
+                        first_at: pending_meta.at,
+                        attempts: prev_attempts,
+                        marks,
+                        last_failed_at: now,
+                        raw_price_event: pending_meta.raw_price_event.clone(),
+                        raw_result_event: Some(raw.clone()),
+                        last_failed_order_id: fill.order_id.clone(),
+                    },
+                );
+                events.push(EngineEvent::Broadcast {
+                    kind: "order",
+                    data: json!({
+                        "phase": "retry-armed",
+                        "itemId": item_id,
+                        "label": label,
+                        "attempt": prev_attempts,
+                        "budgetLeft": retry_budget(store).saturating_sub(prev_attempts.saturating_sub(1)),
+                        "at": now,
+                    }),
+                });
+                return events;
+            }
+
+            // Budget exhausted (or retry disabled): the chain's single final
+            // failure. Merge every attempt mark so the loot row shows the whole
+            // chain, and count `stats.failed` exactly once.
+            let mut final_timings = fill_timings.clone();
+            let mut total_attempts = pending_meta.retry_attempts;
+            if pending_meta.retry_group.is_some() {
+                let mut marks = pending_meta.retry_marks.clone().unwrap_or_default();
+                marks.push(mark);
+                total_attempts = marks.len() as u8;
+                final_timings.attempt_marks = Some(marks);
+                final_timings.retry_of = pending_meta.retry_group.clone();
+                final_timings.attempt_no = Some(total_attempts);
+                final_timings.retry_budget_left = Some(0);
+                self.pending_retry.remove(&item_id.to_ascii_lowercase());
+            }
             self.logger.warn(
                 "fill",
                 format!(
@@ -1235,6 +1493,11 @@ impl Engine {
                     fill.order_id.clone().unwrap_or_else(|| "?".into())
                 ),
             );
+            let reason = if total_attempts > 1 {
+                format!("no items obtained (after {} attempts)", total_attempts)
+            } else {
+                "no items obtained".to_string()
+            };
             events.extend(self.record_failure(
                 store,
                 FailureMeta {
@@ -1248,11 +1511,11 @@ impl Engine {
                     unit_price: pending_meta.unit_price,
                     target_price: target_price.unwrap_or(pending_meta.target_price),
                     at: pending_meta.at,
-                    timings: Some(fill_timings),
+                    timings: Some(final_timings),
                     raw_price_event: Some(pending_meta.raw_price_event.clone()),
                     raw_result_event: Some(raw.clone()),
                 },
-                "no items obtained",
+                &reason,
                 fill.order_id.clone(),
             ));
             events.push(EngineEvent::Broadcast {
@@ -1262,7 +1525,8 @@ impl Engine {
                     "itemId": item_id,
                     "label": label,
                     "orderId": fill.order_id,
-                    "reason": "no items obtained",
+                    "reason": reason,
+                    "attempts": total_attempts,
                     "at": now,
                 }),
             });
@@ -1820,7 +2084,41 @@ impl Engine {
                 format!("no confirmation for {order_id} after 120s; releasing it"),
             );
         }
+        // Abandon a retry chain whose market gate went quiet for a very long
+        // time. The next IN RANGE frame normally closes it (see `handle_market`),
+        // but a silent item must not pin a chain forever — and must not resume
+        // minutes later at a stale price.
+        let expired_chains: Vec<String> = self
+            .pending_retry
+            .iter()
+            .filter(|(_, chain)| now - chain.first_at > RETRY_CHAIN_MAX_LIFETIME_MS)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in expired_chains {
+            if let Some(chain) = self.pending_retry.remove(&key) {
+                self.logger.debug(
+                    "fill",
+                    format!("retry chain expired for {} ({} attempted)", chain.label, chain.attempts),
+                );
+            }
+        }
         self.prune_unmatched(now);
+    }
+
+    pub fn pending_retry_snapshot(&self) -> Vec<Value> {
+        self.pending_retry
+            .values()
+            .map(|chain| {
+                json!({
+                    "itemId": chain.item_id,
+                    "groupId": chain.group_id,
+                    "label": chain.label,
+                    "attempts": chain.attempts,
+                    "firstAt": chain.first_at,
+                    "lastFailedAt": chain.last_failed_at,
+                })
+            })
+            .collect()
     }
 
     pub fn pending_snapshot(&self) -> Vec<Value> {
@@ -2575,6 +2873,14 @@ mod tests {
     #[test]
     fn no_items_failure_keeps_the_attempted_order_details() {
         let mut h = harness();
+        // Retry is controlled by maxFillRetries alone: 0 means one attempt,
+        // which asserts the pre-retry path (single failure, no chain).
+        h.store
+            .patch_settings(validation::SettingsPatch {
+                max_fill_retries: Some(0),
+                ..Default::default()
+            })
+            .unwrap();
         let events =
             h.engine
                 .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_001, true);

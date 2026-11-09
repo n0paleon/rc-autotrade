@@ -101,12 +101,14 @@ pub const MARKET_BROADCAST_INTERVAL_MS: u64 = 250;
 pub const MARKET_COALESCE_MAX: usize = 512;
 
 /// Runtime defaults, used when the database has no settings row yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DefaultSettings {
     pub delay_per_order: i64,
     pub max_orders_per_minute: i64,
     pub mode: Mode,
     pub auto_refresh: bool,
+    pub max_fill_retries: i64,
+    pub retry_delay_ms: i64,
 }
 
 pub const DEFAULT_SETTINGS: DefaultSettings = DefaultSettings {
@@ -114,6 +116,8 @@ pub const DEFAULT_SETTINGS: DefaultSettings = DefaultSettings {
     max_orders_per_minute: 60,
     mode: Mode::Live,
     auto_refresh: true,
+    max_fill_retries: 2,
+    retry_delay_ms: 1_000,
 };
 
 pub struct Limits;
@@ -126,6 +130,10 @@ impl Limits {
     pub const DELAY_MAX: i64 = 60_000;
     pub const ORDERS_PER_MINUTE_MIN: i64 = 1;
     pub const ORDERS_PER_MINUTE_MAX: i64 = 600;
+    pub const FILL_RETRIES_MIN: i64 = 0;
+    pub const FILL_RETRIES_MAX: i64 = 10;
+    pub const RETRY_DELAY_MIN: i64 = 200;
+    pub const RETRY_DELAY_MAX: i64 = 60_000;
     pub const LABEL_MAX: usize = 48;
     pub const CONFIGS_MAX: usize = 100;
     pub const BODY_BYTES: usize = 256 * 1024;

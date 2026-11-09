@@ -49,7 +49,9 @@ CREATE TABLE IF NOT EXISTS settings (
   paused                INTEGER NOT NULL DEFAULT 0,
   -- Added in schema v8: the only field that decides behaviour. The two columns
   -- above are kept in sync as mirrors for pre-v8 readers.
-  mode                  TEXT NOT NULL DEFAULT 'live'
+  mode                  TEXT NOT NULL DEFAULT 'live',
+  max_fill_retries      INTEGER NOT NULL DEFAULT 2,
+  retry_delay_ms        INTEGER NOT NULL DEFAULT 1000
 );
 CREATE TABLE IF NOT EXISTS targets (
   item_id              TEXT PRIMARY KEY,
@@ -237,6 +239,11 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
              paused  = CASE mode WHEN '{MODE_OFF}' THEN 1 ELSE 0 END
          WHERE id = 1"
     ))?;
+    // Fill-retry columns. `fill_retry_enabled` was removed when the toggle
+    // proved redundant with `max_fill_retries = 0`; if a database still has it,
+    // the value is simply ignored by all readers.
+    add_column_if_missing(conn, "settings", "max_fill_retries", "INTEGER NOT NULL DEFAULT 2")?;
+    add_column_if_missing(conn, "settings", "retry_delay_ms", "INTEGER NOT NULL DEFAULT 1000")?;
     Ok(())
 }
 
