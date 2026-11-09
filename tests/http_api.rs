@@ -320,6 +320,9 @@ async fn benchmark_requires_the_key_and_aggregates_seeded_timings() {
     assert_eq!(benchmark["windows"]["25"]["stages"]["total"]["avg"], 210.0);
     // The monotonic TTFB wins over the wall-clock send→response delta.
     assert_eq!(benchmark["windows"]["25"]["stages"]["ttfb"]["avg"], 70.0);
+    // Fill wait starts at that same TTFB boundary (1013 + 70), not at the
+    // wall-clock response mark (1093).
+    assert_eq!(benchmark["windows"]["25"]["stages"]["fillWait"]["avg"], 117.0);
     assert_eq!(benchmark["recent"]["count"], rollercoin_worker::benchmark::RECENT_ORDERS);
     assert_eq!(benchmark["recent"]["orders"], 1);
     assert_eq!(benchmark["recent"]["avg"], 210.0);

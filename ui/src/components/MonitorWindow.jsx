@@ -180,7 +180,7 @@ const BENCHMARK_STAGES = [
   { key: "ttfb", label: "Purchase → TTFB", hint: "Dispatch until the first response byte; retry excluded" },
   { key: "body", label: "Body parsed", hint: "First byte until the response body is read and parsed" },
   { key: "settle", label: "Result handled", hint: "HTTP result until accepted or rejected" },
-  { key: "fillWait", label: "TTFB → fill", hint: "First byte until the fulfillment frame; body, acceptance and matching included" },
+  { key: "fillWait", label: "TTFB → fill", hint: "Purchase request TTFB until the fulfillment frame; body, acceptance and matching included" },
   { key: "fillHandle", label: "Fill handled", hint: "Fulfillment frame until the loot row is written" },
   { key: "total", label: "Signal → done", hint: "Whole pipeline, from the signal to the final mark" }
 ];

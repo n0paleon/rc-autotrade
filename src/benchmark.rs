@@ -84,7 +84,7 @@ enum Phase {
     Body,
     /// HTTP result → accepted or rejected.
     Settle,
-    /// TTFB → marketplace fulfillment frame.
+    /// Purchase request TTFB → marketplace fulfillment frame.
     FillWait,
     /// Fulfillment frame → loot row written.
     FillHandle,
@@ -144,7 +144,7 @@ impl Phase {
                 timings.complete_at,
                 timings.accepted_at.or(timings.failed_at),
             ),
-            Phase::FillWait => delta(timings.response_at, timings.fill_at),
+            Phase::FillWait => delta(timings.ttfb_at(), timings.fill_at),
             Phase::FillHandle => delta(timings.fill_at, timings.fill_handled_at),
             Phase::Total => delta(
                 timings.signal_at,
@@ -497,9 +497,37 @@ mod tests {
         assert_eq!(Phase::Ttfb.measure(&t), Some(79.5));
         assert_eq!(Phase::Body.measure(&t), Some(2.0));
         assert_eq!(Phase::Settle.measure(&t), Some(1.0));
-        assert_eq!(Phase::FillWait.measure(&t), Some(27.0));
+        // The fill wait starts at the monotonic TTFB boundary (1013 + 79.5),
+        // not at the wall-clock response mark (1093).
+        assert_eq!(Phase::FillWait.measure(&t), Some(27.5));
         assert_eq!(Phase::FillHandle.measure(&t), Some(1.0));
         assert_eq!(Phase::Total.measure(&t), Some(121.0));
+    }
+
+    #[test]
+    fn fill_wait_is_anchored_to_the_purchase_request_ttfb() {
+        let t = timings(json!({
+            "sendAt": 1_000,
+            "responseAt": 1_120,
+            "ttfbMs": 100.0,
+            "fillAt": 1_300
+        }));
+        assert_eq!(Phase::FillWait.measure(&t), Some(200.0));
+    }
+
+    #[test]
+    fn fill_wait_keeps_the_retry_response_anchor() {
+        // A 401 retry stores the retry's TTFB while sendAt stays on the first
+        // dispatch, so sendAt + ttfbMs is not the boundary the retry responded
+        // at. The retry's own response mark is.
+        let t = timings(json!({
+            "sendAt": 1_000,
+            "responseAt": 1_200,
+            "ttfbMs": 80.0,
+            "attempts": 2,
+            "fillAt": 1_300
+        }));
+        assert_eq!(Phase::FillWait.measure(&t), Some(100.0));
     }
 
     #[test]
@@ -518,6 +546,15 @@ mod tests {
         assert_eq!(Phase::Delivery.measure(&t), None);
         assert_eq!(Phase::FillWait.measure(&t), None);
         assert_eq!(Phase::Total.measure(&t), None);
+    }
+
+    #[test]
+    fn fill_wait_without_a_ttfb_sample_uses_the_response_mark() {
+        let t = timings(json!({
+            "responseAt": 1_100,
+            "fillAt": 1_180
+        }));
+        assert_eq!(Phase::FillWait.measure(&t), Some(80.0));
     }
 
     #[test]
