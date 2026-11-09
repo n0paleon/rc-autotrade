@@ -322,6 +322,20 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
             <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Got</p>
             <p className="text-ink-dim">{formatInt(entry.qty)}</p>
           </div>
+          <div
+            title={
+              entry.stockAtTrigger == null
+                ? "Not recorded (this loot entry predates stock capture)"
+                : entry.stockAtTrigger !== (entry.requestedQty ?? entry.qty)
+                  ? `Ready ${formatInt(entry.stockAtTrigger)} differs from sent ${formatInt(entry.requestedQty ?? entry.qty)}`
+                  : "Stock available when the signal triggered this order"
+            }
+          >
+            <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Ready</p>
+            <p className={`font-bold ${entry.stockAtTrigger != null && entry.stockAtTrigger !== (entry.requestedQty ?? entry.qty) ? "text-warn" : "text-ink-dim"}`}>
+              {entry.stockAtTrigger == null ? "—" : formatInt(entry.stockAtTrigger)}
+            </p>
+          </div>
           <div>
             <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Unit</p>
             <p className="text-ink-dim">{fixedPrice(entry.unitPrice)} RLT</p>

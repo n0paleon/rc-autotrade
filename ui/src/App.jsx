@@ -1609,8 +1609,11 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
                 <div className="min-w-0">
                   <p className="truncate text-[13px] text-ink-dim">{entry.label || shortId(entry.itemId)}</p>
                   <p className="mt-0.5 font-mono text-[13px] uppercase tracking-[0.08em] text-faint">
-                    {formatTime(entry.at)} · sent {formatInt(entry.requestedQty ?? entry.qty)} · got{" "}
-                    {formatInt(entry.qty)} × {fixedPrice(entry.unitPrice)} RLT
+                    {formatTime(entry.at)} · sent {formatInt(entry.requestedQty ?? entry.qty)} · ready{" "}
+                    <span className={entry.stockAtTrigger != null && entry.stockAtTrigger !== (entry.requestedQty ?? entry.qty) ? "font-bold text-warn" : undefined}>
+                      {entry.stockAtTrigger == null ? "—" : formatInt(entry.stockAtTrigger)}
+                    </span>{" "}
+                    · got {formatInt(entry.qty)} × {fixedPrice(entry.unitPrice)} RLT
                   </p>
                   <p className="mt-0.5 font-mono text-[13px] text-muted">
                     Target {entry.targetPrice > 0 ? fixedPrice(entry.targetPrice) : "—"}
@@ -1641,6 +1644,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
                   <th scope="col" className="px-4 py-2 font-medium">Time</th>
                   <th scope="col" className="px-3 py-2 font-medium">Item</th>
                   <th scope="col" className="px-3 py-2 font-medium" title="Quantity requested (sent to order)">Sent</th>
+                  <th scope="col" className="px-3 py-2 font-medium" title="Stock available when the signal triggered this order">Ready</th>
                   <th scope="col" className="px-3 py-2 font-medium" title="Quantity actually obtained">Got</th>
                   <th scope="col" className="px-3 py-2 font-medium">Unit</th>
                   <th scope="col" className="px-3 py-2 font-medium">Total</th>
@@ -1671,6 +1675,18 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
                     <td className="whitespace-nowrap px-4 py-2 text-faint">{formatTime(entry.at)}</td>
                     <td className="max-w-[180px] truncate px-3 py-2 text-ink-dim">{entry.label || shortId(entry.itemId)}</td>
                     <td className="px-3 py-2 text-ink-dim">{formatInt(entry.requestedQty ?? entry.qty)}</td>
+                    <td
+                      className={`px-3 py-2 ${entry.stockAtTrigger != null && entry.stockAtTrigger !== (entry.requestedQty ?? entry.qty) ? "font-bold text-warn" : "text-ink-dim"}`}
+                      title={
+                        entry.stockAtTrigger == null
+                          ? "Not recorded (this loot entry predates stock capture)"
+                          : entry.stockAtTrigger !== (entry.requestedQty ?? entry.qty)
+                            ? `Ready ${formatInt(entry.stockAtTrigger)} differs from sent ${formatInt(entry.requestedQty ?? entry.qty)}`
+                            : "Stock available when the signal triggered"
+                      }
+                    >
+                      {entry.stockAtTrigger == null ? "—" : formatInt(entry.stockAtTrigger)}
+                    </td>
                     <td className="px-3 py-2 text-ink-dim">{formatInt(entry.qty)}</td>
                     <td className="px-3 py-2 text-ink-dim">{fixedPrice(entry.unitPrice)}</td>
                     <td className="px-3 py-2 text-ink-dim">{fixedPrice(entry.totalPrice)}</td>
@@ -2009,7 +2025,7 @@ function LinkPanel({ snapshot, worker, notify, onEditSession, onBridge, onClearS
         </label>
         <p className="flex items-start gap-1.5 text-[13px] leading-snug text-faint">
           <Icon name="i-alert" className="mt-0.5 h-3 w-3 text-warn/80" />
-          <span>Tokens are stored in <code className="text-ink-dim">data/state.json</code> with owner-only permissions.</span>
+          <span>Tokens are stored in <code className="text-ink-dim">data/rollercoin.db</code> with owner-only permissions.</span>
         </p>
       </div>
     </section>
