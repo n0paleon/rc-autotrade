@@ -265,13 +265,22 @@ pub struct OrderEntry {
     pub item_id: String,
     #[serde(default)]
     pub label: String,
+    /// Quantity actually obtained, straight from the fulfillment result event
+    /// (`fill.count`). 0 for failed orders.
     #[serde(default)]
     pub qty: i64,
     /// Quantity the order was placed for. `qty` was historically used for both
     /// meanings, so a partial fill overwrote how many were actually sent.
-    /// Legacy rows decode as `qty` when this is absent.
+    /// Legacy rows decode as `qty` when this is absent — except failed rows,
+    /// where the attempted count is unrecoverable once `qty` is the
+    /// fulfillment count, so they fall back to 0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_qty: Option<i64>,
+    /// Stock available when the order signal triggered (the market frame that
+    /// produced the intent). Rows written before this column existed keep
+    /// NULL and the UI renders "—".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stock_at_trigger: Option<i64>,
     #[serde(default)]
     pub unit_price: f64,
     #[serde(default)]
@@ -309,6 +318,7 @@ impl OrderEntry {
             label: self.label.clone(),
             qty: self.qty,
             requested_qty: self.requested_qty,
+            stock_at_trigger: self.stock_at_trigger,
             unit_price: self.unit_price,
             total_price: self.total_price,
             target_price: self.target_price,

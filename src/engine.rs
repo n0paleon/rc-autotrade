@@ -95,6 +95,10 @@ pub struct OrderIntent {
     pub item_type: String,
     pub label: String,
     pub qty: i64,
+    /// Stock available when the signal triggered (the market frame that
+    /// produced this intent). Carried into the loot row as
+    /// `OrderEntry::stock_at_trigger` on both the filled and failed paths.
+    pub stock_at_trigger: Option<i64>,
     pub unit_price_raw: f64,
     pub unit_price: f64,
     pub target_price: f64,
@@ -128,6 +132,7 @@ struct PendingOrder {
     item_type: String,
     label: String,
     qty: i64,
+    stock_at_trigger: Option<i64>,
     unit_price: f64,
     target_price: f64,
     at: i64,
@@ -815,6 +820,7 @@ impl Engine {
             item_type,
             label: label.clone(),
             qty,
+            stock_at_trigger: Some(best.quantity),
             unit_price_raw: best.price_raw,
             unit_price: best.unit_price,
             target_price: config.target_price,
@@ -950,6 +956,7 @@ impl Engine {
                     item_type: intent.item_type.clone(),
                     label: intent.label.clone(),
                     qty: intent.qty,
+                    stock_at_trigger: intent.stock_at_trigger,
                     unit_price: intent.unit_price,
                     target_price: intent.target_price,
                     at: intent.at,
@@ -1037,6 +1044,9 @@ impl Engine {
                     item_id: intent.item_id.clone(),
                     label: intent.label.clone(),
                     qty: intent.qty,
+                    // Rejected purchase: no fulfillment event, so Got is 0.
+                    got_qty: 0,
+                    stock_at_trigger: intent.stock_at_trigger,
                     unit_price: intent.unit_price,
                     target_price: intent.target_price,
                     at: intent.at,
@@ -1149,6 +1159,7 @@ impl Engine {
                 label: label.clone(),
                 qty: fill.count,
                 requested_qty: Some(pending_meta.qty),
+                stock_at_trigger: pending_meta.stock_at_trigger,
                 unit_price: round_price(unit_price),
                 total_price: round_price(total_price),
                 target_price: reference,
@@ -1245,6 +1256,10 @@ impl Engine {
                     // show what we tried to buy and how long it took, exactly
                     // like `failureMeta = pendingMeta` in the Bun engine.
                     qty: pending_meta.qty,
+                    // Got comes straight from the event: fill.count is 0 on
+                    // this branch (checked above).
+                    got_qty: fill.count,
+                    stock_at_trigger: pending_meta.stock_at_trigger,
                     unit_price: pending_meta.unit_price,
                     target_price: target_price.unwrap_or(pending_meta.target_price),
                     at: pending_meta.at,
@@ -1569,10 +1584,12 @@ impl Engine {
             order_id,
             item_id: meta.item_id.clone(),
             label: meta.label.clone(),
-            // Failures obtained nothing: `qty` keeps the attempted count for
-            // back-compat, while `requested_qty` makes that meaning explicit.
-            qty: meta.qty,
+            // Failures: `qty` is the count from the fulfillment result event
+            // (`fill.count`, carried in `meta.got_qty`), while `requested_qty`
+            // keeps the attempted count for the loot log's Sent column.
+            qty: meta.got_qty,
             requested_qty: Some(meta.qty),
+            stock_at_trigger: meta.stock_at_trigger,
             unit_price: meta.unit_price,
             total_price: 0.0,
             target_price: meta.target_price,
@@ -2046,6 +2063,11 @@ struct FailureMeta {
     item_id: String,
     label: String,
     qty: i64,
+    /// Count from the fulfillment result event (`fill.count`). This is what's
+    /// recorded as `OrderEntry::qty` (Got). For a rejected purchase there is
+    /// no result event, so it stays 0.
+    got_qty: i64,
+    stock_at_trigger: Option<i64>,
     unit_price: f64,
     target_price: f64,
     at: i64,
@@ -2606,7 +2628,9 @@ mod tests {
 
         let entry = h.store.state.history.first().expect("failure row");
         assert_eq!(entry.status, "failed");
-        assert_eq!(entry.qty, intent.qty);
+        // Got = fulfillment count (0 for failed); Sent keeps the attempted qty.
+        assert_eq!(entry.qty, 0);
+        assert_eq!(entry.requested_qty, Some(intent.qty));
         assert!((entry.unit_price - intent.unit_price).abs() < 1e-12);
         assert!((entry.target_price - intent.target_price).abs() < 1e-12);
         // `latencyMs` spans dispatch → result, not the instant the failure row

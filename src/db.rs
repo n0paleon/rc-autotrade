@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS orders (
   label        TEXT NOT NULL DEFAULT '',
   qty          INTEGER NOT NULL DEFAULT 0,
   requested_qty INTEGER,
+  stock_at_trigger INTEGER,
   unit_price   REAL NOT NULL DEFAULT 0,
   total_price  REAL NOT NULL DEFAULT 0,
   target_price REAL NOT NULL DEFAULT 0,
@@ -200,11 +201,20 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     // filled rows only recorded the fill count in `qty`, so the sent quantity
     // is unrecoverable there; those rows keep NULL and the UI falls back to
     // `qty`. Failed rows already stored the attempted quantity in `qty` and
-    // obtained nothing, so they can be backfilled exactly.
+    // obtained nothing, so they can be backfilled exactly: preserve `qty`
+    // into `requested_qty`, then zero `qty` because the fulfillment result
+    // event count for a failure is 0.
     add_column_if_missing(conn, "orders", "requested_qty", "INTEGER")?;
+    // Stock available when the signal triggered. Rows written before this
+    // column existed keep NULL and the loot log renders "—".
+    add_column_if_missing(conn, "orders", "stock_at_trigger", "INTEGER")?;
     conn.execute_batch(
         "UPDATE orders SET requested_qty = qty WHERE requested_qty IS NULL AND status = 'failed'",
     )?;
+    // Correct the legacy double-meaning: old failed rows stored the attempted
+    // count in qty. That count now lives in requested_qty, so zero qty for
+    // failed rows to match the fulfillment event count (0 obtained).
+    conn.execute_batch("UPDATE orders SET qty = 0 WHERE status = 'failed'")?;
 
     // The auto-target feature is gone; drop its columns if a legacy DB has them.
     for column in ["auto_target", "auto_target_margin_pct"] {
@@ -444,7 +454,7 @@ mod tests {
         let order_plan: String = conn
             .query_row(
                 "EXPLAIN QUERY PLAN
-                 SELECT id, order_id, item_id, label, qty, unit_price, total_price,
+                 SELECT id, order_id, item_id, label, qty, requested_qty, stock_at_trigger, unit_price, total_price,
                         target_price, profit_rlt, status, at, latency_ms, note, message
                  FROM orders ORDER BY at DESC, id DESC LIMIT 50",
                 [],
