@@ -283,11 +283,22 @@ After `plan_order()` returns a `buy` plan, `src/engine.rs` still applies runtime
 
 - `inflight` blocks a target that already has an order in progress.
 - `blocked_until` blocks a target after a rejected purchase. Backoff starts at 5 seconds, then 10, 20, and 40 seconds.
-- `delayPerOrder` applies a global cooldown between orders.
+- `delayPerOrder` applies a global cooldown between orders. A locally fired follow-up for a partial fill skips it.
 - `maxOrdersPerMinute` caps the number of orders per minute.
 - A Rollercoin token must be available in `live` mode. `shadow` needs no session.
 
 These gates never change the quantity. `plan_order()` remains the only component that decides it.
+
+#### Local rearm after a partial fill
+
+A fill frame reports how much of an order was actually matched. On a partial fill the worker no longer waits for the next `marketplace_orders_update` frame to advertise the leftover stock: it fires the remainder of the same intent from the fill handler.
+
+- It buys `min(unfilled, stockAtTrigger - got)` units, so it can neither exceed what the intent still wanted nor assume a restock nobody observed.
+- It reuses the normal planner, so `targetPrice`, `minAcceptableQty` and `allowPartialOrder` still apply. A remainder below `minAcceptableQty` is left alone.
+- It skips the `delayPerOrder` cooldown because it completes an order that is already in flight, but it still consumes a rate slot and obeys `inflight`, `blocked_until` and the session gate.
+- A rejected follow-up is recorded as a failed order but does **not** trip the backoff, so a wrong guess costs one attempt instead of freezing the target for up to a minute.
+
+Because market frames are not versioned, a frame generated before the purchase was applied can still arrive afterwards with the old, deeper book. For `RECONCILE_WINDOW_MS` (1.5 s) after a fill the worker therefore treats its local remainder as a floor: a frame may lower it but never raise it. The frame gets authority back as soon as the window closes, its best price moves to another level, it shows a fuller level than the one that was bought from, it shows at most the floor, or its `totalCount` has dropped by at least what was bought. Each tick carries both numbers — `stock` is the raw upstream depth, `effectiveStock` is what the decision used, and `reconciling` marks the window — while the snapshot persists the raw value.
 
 ### Trading modes
 

@@ -168,10 +168,10 @@ Bun worker.
 
 ## 6. Verification during the port
 
-- `cargo test`: **144 tests** (136 unit + 4 HTTP + 3 end-to-end + 1 pool). Rules, depth,
+- `cargo test`: **234 tests** (216 unit + 12 HTTP + 3 end-to-end + 3 pool). Rules, depth,
   timings, raw events, redaction, validation, config, logger, DB schema, store
   round-trips/paging/timings merge, server helpers, **trend parity fixtures**,
-  events normalisation, nine engine scenarios, six API-client scenarios against
+  events normalisation, thirty-nine engine scenarios, six API-client scenarios against
   a mock upstream, the session freshness rules plus five bridge-merge cases,
   six latency-tracker cases, five keepalive cases (200, 429 suspend, transport
   backoff, real-traffic skip, disabled), eight system-monitor cases, four
@@ -521,3 +521,69 @@ Price history:
 Still open (deliberately unchanged): per-request auth rate limiting, loot-log
 retention plus `COUNT(*)` caching for a very large `orders` table, and a release
 profile with LTO.
+
+## 14. Partial fills and local reconciliation
+
+The feed is the slow part of a trade, so waiting for it twice is expensive: an
+order that fills partially leaves stock behind, and the old engine only bought
+that leftover when the *next* `marketplace_orders_update` frame re-advertised it
+— one extra WS hop after the fill.
+
+**Local rearm.** `handle_fill` now fires the remainder itself
+(`rearm_after_partial_fill`). The quantity is bounded by two numbers: the
+intent's own unfilled remainder (`qty - got`) and the book seen at trigger minus
+what the fill took (`stockAtTrigger - got`), so a deep book cannot make the
+follow-up over-buy and a follow-up never assumes an unobserved restock. It goes
+through `plan_order` like any other order, so the price ceiling, the minimum and
+`allowPartialOrder` still decide. `place_order` was extracted from
+`handle_market` so the follow-up cannot skip a gate: it only opts out of
+`delayPerOrder` (it completes an order that is already in flight) and still pays
+a rate slot. A rejected follow-up is recorded but does not trip the backoff,
+because a wrong guess about the remainder is an expected outcome and the backoff
+would freeze the target for far longer than the frame wait it replaced.
+
+**Reconciliation.** Frames carry no `updatedAt` and no sequence number (verified
+against the raw frames in `orders.raw_events`), so a snapshot generated before
+our purchase was applied can arrive after it and still show the pre-purchase
+depth. Trusting it would resurrect stock that is already gone. `Runtime::reconcile`
+therefore holds a floor for `RECONCILE_WINDOW_MS` (1.5 s) after a fill:
+
+- a frame may lower the decision stock but never raise it above the floor;
+- every order placed while the window is open consumes from the floor, so a
+  stale frame cannot re-order units a follow-up already committed;
+- the window closes early — and the frame wins — when its best price moved to a
+  different level, when it shows a *fuller* best level than the one that was
+  bought from (a pre-purchase snapshot cannot contain new listings), when it
+  shows at most the floor, or when its `totalCount` dropped by at least what was
+  bought;
+- on expiry the frame wins again, so a genuine restock is invisible for at most
+  the window.
+
+The price and depth proofs matter: without them a full fill of a whole level
+(floor 0) would blind the engine to a genuinely cheaper listing that appears on
+the very next frame. Only a frame at the *same* level and the *same* depth as the
+pre-purchase book is indistinguishable from a stale one, and that case waits out
+the window.
+
+The two concepts are kept apart on purpose: `Runtime::last_stock` stays the raw
+upstream number and feeds the snapshot and the trend's book size, while the
+decision path uses `effective_stock`. Each market tick carries both (`stock`,
+`effectiveStock`) plus a `reconciling` flag, and `runtime.reconcile` is exposed
+in the runtime snapshot for debugging. Nothing about the window is persisted: it
+is a within-process view that a restart simply drops.
+
+Covered by `engine::tests::a_partial_fill_rearms_the_remainder_without_waiting_for_a_frame`,
+`a_stale_frame_cannot_resurrect_stock_a_fill_already_consumed`,
+`a_frame_that_shows_at_most_the_floor_closes_the_window_early`,
+`an_expired_window_lets_the_frame_win_again`,
+`a_frame_whose_total_count_dropped_closes_the_window`,
+`a_frame_fuller_than_the_book_we_bought_from_is_trusted`,
+`a_moved_best_price_closes_the_window`,
+`a_stale_frame_at_the_cleared_level_stays_clamped_after_a_full_fill`,
+`a_fill_that_beats_the_http_response_still_rearms`,
+`an_optimistic_follow_up_rejection_does_not_back_off_the_target`,
+`a_follow_up_never_doubles_a_deep_book`,
+`a_follow_up_respects_the_current_target_price`,
+`a_remainder_below_the_minimum_is_not_chased`,
+`off_mode_stops_the_local_rearm`, `a_follow_up_needs_a_linked_session` and
+`a_duplicate_fill_cannot_rearm_twice`.
