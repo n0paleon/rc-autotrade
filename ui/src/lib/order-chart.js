@@ -36,7 +36,7 @@ export const ORDER_STAGES = Object.freeze([
   { key: "total", label: "End-to-end" },
   { key: "submit", label: "Submit" },
   { key: "ttfb", label: "TTFB" },
-  { key: "fillWait", label: "Await fill" }
+  { key: "fillWait", label: "TTFB → fill" }
 ]);
 
 const TICK_STEPS = Object.freeze([

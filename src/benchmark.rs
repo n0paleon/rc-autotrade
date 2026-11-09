@@ -84,7 +84,7 @@ enum Phase {
     Body,
     /// HTTP result → accepted or rejected.
     Settle,
-    /// Accepted order → marketplace fulfillment frame.
+    /// TTFB → marketplace fulfillment frame.
     FillWait,
     /// Fulfillment frame → loot row written.
     FillHandle,
@@ -144,7 +144,7 @@ impl Phase {
                 timings.complete_at,
                 timings.accepted_at.or(timings.failed_at),
             ),
-            Phase::FillWait => delta(timings.accepted_at, timings.fill_at),
+            Phase::FillWait => delta(timings.response_at, timings.fill_at),
             Phase::FillHandle => delta(timings.fill_at, timings.fill_handled_at),
             Phase::Total => delta(
                 timings.signal_at,
@@ -497,7 +497,7 @@ mod tests {
         assert_eq!(Phase::Ttfb.measure(&t), Some(79.5));
         assert_eq!(Phase::Body.measure(&t), Some(2.0));
         assert_eq!(Phase::Settle.measure(&t), Some(1.0));
-        assert_eq!(Phase::FillWait.measure(&t), Some(24.0));
+        assert_eq!(Phase::FillWait.measure(&t), Some(27.0));
         assert_eq!(Phase::FillHandle.measure(&t), Some(1.0));
         assert_eq!(Phase::Total.measure(&t), Some(121.0));
     }
@@ -539,7 +539,7 @@ mod tests {
             sample(
                 3_000,
                 "filled",
-                json!({ "signalAt": 1_000, "acceptedAt": 1_040, "fillAt": 1_050, "fillHandledAt": 1_060 }),
+                json!({ "signalAt": 1_000, "responseAt": 1_010, "acceptedAt": 1_040, "fillAt": 1_050, "fillHandledAt": 1_060 }),
             ),
             sample(
                 2_000,
@@ -549,7 +549,7 @@ mod tests {
             sample(
                 1_000,
                 "filled",
-                json!({ "signalAt": 1_000, "acceptedAt": 1_190, "fillAt": 1_200, "fillHandledAt": 1_210 }),
+                json!({ "signalAt": 1_000, "responseAt": 1_050, "acceptedAt": 1_190, "fillAt": 1_200, "fillHandledAt": 1_210 }),
             ),
         ];
         let value = snapshot(&samples, 4_000);
