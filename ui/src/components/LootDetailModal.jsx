@@ -399,9 +399,9 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
                   tone="text-gold"
                 />
                 <Metric
-                  label="Signal → response complete"
-                  value={delta(signalAt, completeAt)}
-                  hint="Until the response body is read and parsed"
+                  label="Purchase TTFB → Event Result Order"
+                  value={delta(responseAt, fillAt)}
+                  hint="From the first byte (TTFB) until the order result event frame arrives; body, acceptance and matching included"
                   tone="text-warn"
                 />
                 <Metric
