@@ -50,7 +50,7 @@ fn rustls_config() -> Arc<rustls::ClientConfig> {
 
 #[tokio::main]
 async fn main() {
-    rustls::crypto::ring::default_provider()
+    rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .ok();
     let ws = url::Url::parse(WS_URL).expect("valid ws url");
