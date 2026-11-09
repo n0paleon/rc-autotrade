@@ -4,7 +4,7 @@
 //! backoff, pings every 25 s, parses every text frame and pushes
 //! [`GatewayEvent`]s to the core loop. It never blocks the decision path.
 //!
-//! TLS uses native-tls (OpenSSL), the stack proven by `examples/diagnose_ws`.
+//! TLS uses rustls (same stack as the `reqwest` HTTP client in `api.rs`),
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -224,11 +224,31 @@ fn build_request(
 }
 
 fn connector() -> Option<Connector> {
-    native_tls::TlsConnector::builder()
-        .request_alpns(&["http/1.1"])
-        .build()
-        .ok()
-        .map(Connector::NativeTls)
+    ensure_crypto_provider();
+    static CONFIG: std::sync::OnceLock<Arc<rustls::ClientConfig>> = std::sync::OnceLock::new();
+    let config = CONFIG
+        .get_or_init(|| {
+            let rustls_native_certs::CertificateResult { certs, .. } =
+                rustls_native_certs::load_native_certs();
+            let mut root_store = rustls::RootCertStore::empty();
+            root_store.add_parsable_certificates(certs);
+            let mut config = rustls::ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
+            // WebSocket upgrade is HTTP/1.1; mirror the ALPN the previous
+            // native-tls connector requested.
+            config.alpn_protocols = vec![b"http/1.1".to_vec()];
+            Arc::new(config)
+        })
+        .clone();
+    Some(Connector::Rustls(config))
+}
+
+fn ensure_crypto_provider() {
+    static PROVIDER: std::sync::Once = std::sync::Once::new();
+    PROVIDER.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
 }
 
 async fn run(
