@@ -188,9 +188,9 @@ function buildStages(t) {
       },
       {
         key: "fill-wait",
-        label: "Await fulfillment event",
-        hint: "Rollercoin marketplace matching until its result event arrives",
-        from: acceptedAt,
+        label: "TTFB → fulfillment event",
+        hint: "First response byte until the fulfillment result frame arrives; includes body parsing, engine acceptance and marketplace matching",
+        from: mark(t, "responseAt"),
         to: fillAt,
         color: STAGE_COLORS[0]
       },
