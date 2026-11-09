@@ -534,7 +534,7 @@ export function useWorker({ notify }) {
               "LOOT SECURED",
               `${data.label || "ITEM"} ×${formatInt(data.qty)} · ${formatSignedRlt(data.profitRlt)} RLT`
             );
-            sound.play("fill");
+            sound.playProfit(data.profitRlt);
           } else if (data.phase === "failed") {
             notifyRef.current?.(
               "error",
