@@ -695,6 +695,24 @@
     color: var(--type-color, var(--color-muted));
   }
 
+  /* A data-quality marker, not a target state: the Book figure on the card is
+     the market's number, while decisions use a local floor for a short window
+     after a fill. The dashed edge marks it as provisional rather than a value
+     the card is asserting. */
+  .recon-chip {
+    @apply inline-flex items-center px-1.5 py-0.5 font-mono text-[12px] font-semibold uppercase tracking-[0.08em];
+    border: 1px dashed color-mix(in srgb, var(--color-warn) 80%, #05030f);
+    background: color-mix(in srgb, var(--color-warn) 14%, transparent);
+    color: var(--color-warn);
+    animation: chip-pop var(--motion-state) var(--ease-pixel-3);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .recon-chip {
+      animation: none;
+    }
+  }
+
   .type-filter[data-type="all"] {
     --type-color: var(--color-gold);
   }

@@ -33,7 +33,9 @@ import {
   marketplaceUrl,
   matchesLootFilter,
   relTime,
+  runtimeEffectiveStock,
   runtimeHot,
+  runtimeReconciling,
   shortId,
   stateLabel,
   successStats,
@@ -570,6 +572,8 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
   const label = config.label || runtime.label || `ITEM ${shortId(config.itemId)}`;
   const itemType = itemTypeOf(config);
   const hot = runtimeHot(config);
+  const reconciling = runtimeReconciling(config);
+  const effectiveStock = runtimeEffectiveStock(config);
   const rate = stats.rate;
   const rangeMin = Number.isFinite(runtime.allowedPriceMin) ? trimPrice(runtime.allowedPriceMin) : null;
   const rangeMax = Number.isFinite(runtime.allowedPriceMax) ? trimPrice(runtime.allowedPriceMax) : null;
@@ -639,6 +643,18 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
               <code>{shortId(config.itemId)}</code>
               <Icon name="i-copy" className="h-3 w-3" />
             </button>
+            {reconciling ? (
+              <span
+                className="recon-chip shrink-0"
+                title={
+                  Number.isFinite(runtime.lastStock) && effectiveStock !== null
+                    ? `Reconciling a recent fill: the market still shows ${formatInt(runtime.lastStock)}, but orders use the local remainder (${formatInt(effectiveStock)}) until the window closes.`
+                    : "Reconciling a recent fill: orders do not trust the market stock until the window closes."
+                }
+              >
+                RECON
+              </span>
+            ) : null}
           </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2">

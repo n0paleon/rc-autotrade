@@ -117,6 +117,33 @@ export function runtimeHot(config) {
       runtime.lastStock >= config.minAcceptableQty
   );
 }
+
+/**
+ * True while the worker is reconciling a fill it has just booked.
+ *
+ * Market frames carry no version, so for a short window after a fill the stock
+ * in a frame may still be the pre-purchase book. The worker keeps a local floor
+ * for decisions in that window and marks the tick `reconciling`; a hydrated
+ * snapshot carries the window deadline instead, which expires on its own even
+ * if the item never sends another frame.
+ */
+export function runtimeReconciling(config) {
+  const runtime = config?.runtime || {};
+  if (runtime.reconciling === true) return true;
+  const until = Number(runtime.reconcile?.until);
+  return Number.isFinite(until) && until > Date.now();
+}
+
+/**
+ * Stock the worker is allowed to order against: the frame's own depth, or the
+ * local floor while a fill is being reconciled.
+ */
+export function runtimeEffectiveStock(config) {
+  const runtime = config?.runtime || {};
+  if (Number.isFinite(runtime.effectiveStock)) return runtime.effectiveStock;
+  const floor = Number(runtime.reconcile?.floor);
+  return Number.isFinite(floor) ? floor : null;
+}
 export function cardState(config) {
   if (!config.active) return "off";
   const runtime = config.runtime || {};

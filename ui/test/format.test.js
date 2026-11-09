@@ -11,7 +11,9 @@ import {
   marketplaceUrl,
   matchesLootFilter,
   mergeHistory,
+  runtimeEffectiveStock,
   runtimeHot,
+  runtimeReconciling,
   thresholdClass,
   utilizationClass
 } from "../src/lib/format.js";
@@ -50,6 +52,30 @@ test("runtimeHot compares the market price against the saved target", () => {
   assert.equal(runtimeHot({ ...config, runtime: { ...config.runtime, lastPrice: 0.11 } }), false);
   assert.equal(runtimeHot({ ...config, active: false }), false);
   assert.equal(runtimeHot({ ...config, runtime: { ...config.runtime, lastStock: 0 } }), false);
+});
+
+test("runtimeReconciling reads the tick flag and the snapshot deadline", () => {
+  assert.equal(runtimeReconciling({ runtime: { reconciling: true } }), true);
+  assert.equal(runtimeReconciling({ runtime: { reconciling: false } }), false);
+  assert.equal(runtimeReconciling({}), false);
+  // A hydrated snapshot carries the window deadline instead of the flag, and it
+  // must expire on its own so a quiet feed cannot leave the badge on forever.
+  assert.equal(
+    runtimeReconciling({ runtime: { reconcile: { until: Date.now() + 60_000 } } }),
+    true
+  );
+  assert.equal(
+    runtimeReconciling({ runtime: { reconcile: { until: Date.now() - 1 } } }),
+    false
+  );
+});
+
+test("runtimeEffectiveStock prefers the tick over the snapshot floor", () => {
+  assert.equal(runtimeEffectiveStock({ runtime: { effectiveStock: 1 } }), 1);
+  assert.equal(runtimeEffectiveStock({ runtime: { effectiveStock: 0 } }), 0);
+  assert.equal(runtimeEffectiveStock({ runtime: { reconcile: { floor: 4 } } }), 4);
+  assert.equal(runtimeEffectiveStock({ runtime: {} }), null);
+  assert.equal(runtimeEffectiveStock({}), null);
 });
 
 test("builds the Rollercoin marketplace URL for an item", () => {
