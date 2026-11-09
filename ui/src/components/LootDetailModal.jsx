@@ -9,6 +9,7 @@ import {
   formatTime,
   shortId
 } from "../lib/format.js";
+import { ttfbAt } from "../lib/timings.js";
 
 const STAGE_COLORS = [
   "bg-info",
@@ -175,6 +176,7 @@ function buildStages(t) {
   const fillAt = mark(t, "fillAt");
   const fillHandledAt = mark(t, "fillHandledAt");
   const failedAt = mark(t, "failedAt");
+  const ttfbAnchor = ttfbAt(t);
 
   if (acceptedAt != null) {
     stages.push(
@@ -189,8 +191,8 @@ function buildStages(t) {
       {
         key: "fill-wait",
         label: "TTFB → fulfillment event",
-        hint: "First response byte until the fulfillment result frame arrives; includes body parsing, engine acceptance and marketplace matching",
-        from: mark(t, "responseAt"),
+        hint: "Purchase request TTFB until the fulfillment result frame arrives; includes body parsing, engine acceptance and marketplace matching",
+        from: ttfbAnchor,
         to: fillAt,
         color: STAGE_COLORS[0]
       },
@@ -259,6 +261,7 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
   const responseAt = mark(t, "responseAt");
   const completeAt = mark(t, "completeAt");
   const fillAt = mark(t, "fillAt");
+  const ttfbAnchor = ttfbAt(t);
   const fillHandledAt = mark(t, "fillHandledAt");
   const failedAt = mark(t, "failedAt");
   const rawEvents = entry.rawEvents || null;
@@ -394,14 +397,14 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
                 />
                 <Metric
                   label="Signal → first byte"
-                  value={delta(signalAt, responseAt)}
+                  value={delta(signalAt, ttfbAnchor)}
                   hint="Time To First Byte plus everything before dispatch on this order"
                   tone="text-gold"
                 />
                 <Metric
-                  label="Purchase TTFB → Event Result Order"
-                  value={delta(responseAt, fillAt)}
-                  hint="From the first byte (TTFB) until the order result event frame arrives; body, acceptance and matching included"
+                  label="Purchase TTFB → fulfillment event"
+                  value={delta(ttfbAnchor, fillAt)}
+                  hint="From the purchase request's TTFB mark (first response byte) until the order result event frame arrives; body, acceptance and matching included"
                   tone="text-warn"
                 />
                 <Metric
@@ -505,9 +508,10 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
                 the first response byte arrives. For an HTTP response that first byte is the
                 response head, so the TTFB tile and the TTFB stage describe the same instant;
                 the tile prints the monotonic per-attempt value, while the stage measures it on
-                the wall-clock timeline. The body read and JSON parse are charged to the next
-                stage. The Connection tile explains why TTFB varies: a pooled KEEP-ALIVE socket
-                skips DNS, TCP and TLS, while NEW pays for all three.
+                the wall-clock timeline. The fill wait is anchored to that same monotonic TTFB
+                mark, never to the completed response. The body read and JSON parse are charged
+                to the next stage. The Connection tile explains why TTFB varies: a pooled
+                KEEP-ALIVE socket skips DNS, TCP and TLS, while NEW pays for all three.
               </p>
             </>
           ) : loadingDetail ? (

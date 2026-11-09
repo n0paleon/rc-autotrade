@@ -269,7 +269,11 @@ Bun worker.
   `ttfbMs` is per attempt: on a 401 refresh + retry the first dispatch still
   anchors the span (so the refresh is visible) while the retry supplies the
   stored TTFB. A transport error records no TTFB rather than a fast 0 ms.
-  Mock runs have no HTTP exchange, so they fall back to the completion mark.
+  The fulfillment wait is anchored to that TTFB mark (`sendAt + ttfbMs`), not
+  to the completed response: body parsing, acceptance and marketplace matching
+  are all inside the wait. Retry and legacy rows without a usable TTFB sample
+  fall back to `responseAt`. Mock runs have no HTTP exchange, so they fall back
+  to the completion mark.
 - Connection classification still uses the recording resolver on the shared
   `reqwest` client: hyper only resolves a name when it opens a connection, so
   `socketMode = "new"` means this purchase paid DNS + TCP + TLS, while

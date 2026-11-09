@@ -128,6 +128,24 @@ fn trimmed(raw: &Value, key: &str, max: usize) -> Option<String> {
 }
 
 impl Timings {
+    /// Wall-clock instant of the purchase request's first response byte.
+    ///
+    /// `ttfb_ms` is measured monotonically from dispatch, so `send_at + ttfb_ms`
+    /// is the TTFB boundary the latency tile reports. A 401 refresh keeps
+    /// `send_at` on the first dispatch while `ttfb_ms` belongs to the retried
+    /// request, so those rows fall back to the retry's own `response_at`. Rows
+    /// without a TTFB sample use the same fallback.
+    pub fn ttfb_at(&self) -> Option<f64> {
+        if self.attempts.unwrap_or(1) <= 1 {
+            if let (Some(send_at), Some(ttfb_ms)) = (self.send_at, self.ttfb_ms) {
+                if ttfb_ms >= 0.0 {
+                    return Some(send_at + ttfb_ms);
+                }
+            }
+        }
+        self.response_at
+    }
+
     pub fn has_time(&self) -> bool {
         self.signal_at.is_some()
             || self.handle_at.is_some()
