@@ -314,13 +314,13 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
         </div>
 
         <div className="grid grid-cols-2 gap-x-4 gap-y-2 border-2 border-line/70 bg-night-950/40 px-3 py-3 font-mono text-[12px] sm:grid-cols-3">
-          <div>
-            <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Qty</p>
-            <p className="text-ink-dim">{formatInt(entry.qty)}</p>
-          </div>
-          <div>
+          <div title="Quantity requested (sent to order)">
             <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Sent</p>
             <p className="text-ink-dim">{formatInt(entry.requestedQty ?? entry.qty)}</p>
+          </div>
+          <div title="Quantity actually obtained">
+            <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Got</p>
+            <p className="text-ink-dim">{formatInt(entry.qty)}</p>
           </div>
           <div>
             <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Unit</p>

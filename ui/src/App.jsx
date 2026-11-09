@@ -1640,7 +1640,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
                 <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
                   <th scope="col" className="px-4 py-2 font-medium">Time</th>
                   <th scope="col" className="px-3 py-2 font-medium">Item</th>
-                  <th scope="col" className="px-3 py-2 font-medium">Qty</th>
+                  <th scope="col" className="px-3 py-2 font-medium" title="Quantity requested (sent to order)">Sent</th>
                   <th scope="col" className="px-3 py-2 font-medium" title="Quantity actually obtained">Got</th>
                   <th scope="col" className="px-3 py-2 font-medium">Unit</th>
                   <th scope="col" className="px-3 py-2 font-medium">Total</th>
@@ -1670,8 +1670,8 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
                   >
                     <td className="whitespace-nowrap px-4 py-2 text-faint">{formatTime(entry.at)}</td>
                     <td className="max-w-[180px] truncate px-3 py-2 text-ink-dim">{entry.label || shortId(entry.itemId)}</td>
-                    <td className="px-3 py-2 text-ink-dim">{formatInt(entry.qty)}</td>
                     <td className="px-3 py-2 text-ink-dim">{formatInt(entry.requestedQty ?? entry.qty)}</td>
+                    <td className="px-3 py-2 text-ink-dim">{formatInt(entry.qty)}</td>
                     <td className="px-3 py-2 text-ink-dim">{fixedPrice(entry.unitPrice)}</td>
                     <td className="px-3 py-2 text-ink-dim">{fixedPrice(entry.totalPrice)}</td>
                     <td
