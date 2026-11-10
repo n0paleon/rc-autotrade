@@ -3,7 +3,8 @@ let context = null;
 
 /** Profit clip URLs, keyed by the profit tier they play for. */
 export const PROFIT_CLIPS = Object.freeze({
-  loss: "https://storage.n0pal.net/artifacts/u_oepgi4ep3v-som_matricula-464025.mp3",
+  loss: "https://storage.n0pal.net/artifacts/u_8g40a9z0la-fail-234710.mp3",
+  small: "https://storage.n0pal.net/artifacts/u_oepgi4ep3v-som_matricula-464025.mp3",
   good: "https://storage.n0pal.net/artifacts/freesound_community-goodresult-82807.mp3",
   winning: "https://storage.n0pal.net/artifacts/pw23check-winning-218995.mp3"
 });
@@ -16,17 +17,21 @@ export const PROFIT_CLIP_WINNING_RLT = 3;
 const players = new Map();
 
 /**
- * Picks the clip for a fill profit: a loss clip for strictly negative profit,
- * a victory clip from 1 RLT up, or null when the fill keeps the synthesized
- * fill chirp (profit from 0 up to just under 1 RLT).
+ * Picks the clip for a fill profit:
+ *  * strictly negative profit      -> "loss"
+ *  * exactly zero profit           -> null (silent)
+ *  * positive profit under 1 RLT   -> "small"
+ *  * 1 RLT up to just under 3 RLT  -> "good"
+ *  * 3 RLT and above               -> "winning"
+ * Non-finite input is silent as well.
  */
 export function profitClip(profitRlt) {
   const profit = Number(profitRlt);
-  if (!Number.isFinite(profit)) return null;
+  if (!Number.isFinite(profit) || profit === 0) return null;
   if (profit < 0) return "loss";
   if (profit >= PROFIT_CLIP_WINNING_RLT) return "winning";
   if (profit >= PROFIT_CLIP_MIN_RLT) return "good";
-  return null;
+  return "small";
 }
 
 function player(kind) {
@@ -47,6 +52,7 @@ function prime() {
   if (!enabled) return;
   try {
     player("loss");
+    player("small");
     player("good");
     player("winning");
   } catch {
@@ -103,38 +109,29 @@ export const sound = {
   prime,
   /**
    * Plays the clip that matches a fill's profit: the "loss" clip for negative
-   * profit, the "good" clip for 1–3 RLT, the "winning" clip for 3+ RLT, and the
-   * synth fill chirp from 0 up to just under 1 RLT.
+   * profit, the "small" clip for positive profit under 1 RLT, the "good" clip
+   * for 1–3 RLT, and the "winning" clip for 3+ RLT. A profit of exactly zero
+   * stays silent, as does any non-numeric value.
    */
   playProfit(profitRlt) {
     if (!enabled) return;
     const kind = profitClip(profitRlt);
-    if (!kind) {
-      sound.play("fill");
-      return;
-    }
+    if (!kind) return;
     try {
       const audio = player(kind);
-      if (!audio) {
-        sound.play("fill");
-        return;
-      }
+      if (!audio) return;
       audio.currentTime = 0;
       const played = audio.play();
       if (played && typeof played.catch === "function") {
-        played.catch(() => sound.play("fill"));
+        played.catch(() => {});
       }
     } catch {
-      sound.play("fill");
+      /* audio is optional */
     }
   },
   play(kind) {
     if (!enabled) return;
-    if (kind === "fill") {
-      tone(880, 0.05, 0);
-      tone(1174, 0.05, 0.06);
-      tone(1568, 0.09, 0.12);
-    } else if (kind === "connect") {
+    if (kind === "connect") {
       tone(523, 0.05, 0);
       tone(784, 0.07, 0.06);
     } else if (kind === "error") {
