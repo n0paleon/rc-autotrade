@@ -1888,9 +1888,9 @@ pub fn router(state: Arc<AppState>, dist_dir: std::path::PathBuf) -> Router {
 }
 
 /// Security headers the Bun worker sends on every response, plus the CSP it
-/// adds to HTML documents. The deck's CSP allows Google Fonts and the control
-/// WebSocket, nothing else.
-const HTML_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ws: wss:; media-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+/// adds to HTML documents. The deck's CSP allows Google Fonts, the control
+/// WebSocket, and the profit sound clips hosted on storage.n0pal.net.
+const HTML_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ws: wss:; media-src 'self' data: https://storage.n0pal.net; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 
 async fn security_headers(
     request: axum::extract::Request,
