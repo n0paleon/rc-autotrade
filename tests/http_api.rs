@@ -705,6 +705,7 @@ async fn security_headers_match_the_bun_worker() {
     let csp = page.headers()["content-security-policy"].to_str().unwrap();
     assert!(csp.contains("default-src 'self'"));
     assert!(csp.contains("connect-src 'self' ws: wss:"));
+    assert!(csp.contains("media-src 'self' data: https://storage.n0pal.net"));
     assert!(csp.contains("frame-ancestors 'none'"));
 
     let _ = std::fs::remove_dir_all(&dir);
