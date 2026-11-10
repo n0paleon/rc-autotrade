@@ -39,6 +39,29 @@ pub struct PurchaseRequest {
     pub unit_price_raw: f64,
 }
 
+impl PurchaseRequest {
+    /// The exact JSON body posted to `/api/marketplace/purchase-item`.
+    ///
+    /// Kept in one place so the loot log can store what was actually sent
+    /// without drifting from the request builder.
+    pub fn payload(&self) -> Value {
+        let item_type = if self.item_type.is_empty() {
+            "mutation_component"
+        } else {
+            &self.item_type
+        };
+        json!({
+            "challenge": "",
+            "action": "marketplace",
+            "itemId": self.item_id,
+            "itemType": item_type,
+            "totalCount": self.qty,
+            "currency": "RLT",
+            "totalPrice": self.unit_price_raw * self.qty as f64,
+        })
+    }
+}
+
 /// Timing and connection marks for one HTTP exchange, taken inside the client
 /// so the debugger can separate dispatch, first byte and body read.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -394,20 +417,7 @@ impl ApiClient {
         credentials: &Credentials,
         request: &PurchaseRequest,
     ) -> PurchaseResult {
-        let item_type = if request.item_type.is_empty() {
-            "mutation_component"
-        } else {
-            &request.item_type
-        };
-        let payload = json!({
-            "challenge": "",
-            "action": "marketplace",
-            "itemId": request.item_id,
-            "itemType": item_type,
-            "totalCount": request.qty,
-            "currency": "RLT",
-            "totalPrice": request.unit_price_raw * request.qty as f64,
-        });
+        let payload = request.payload();
 
         let (status, body, text, transport_error, marks) = self
             .post_json(
@@ -838,6 +848,20 @@ mod tests {
             qty: 2,
             unit_price_raw: 90_000.0,
         }
+    }
+
+    #[test]
+    fn purchase_payload_defaults_the_item_type() {
+        let request = PurchaseRequest {
+            item_id: "6319f7baa8ce530569ed16b9".into(),
+            qty: 3,
+            unit_price_raw: 1.5,
+            ..Default::default()
+        };
+        let payload = request.payload();
+        assert_eq!(payload["itemType"], "mutation_component");
+        assert_eq!(payload["totalCount"], 3);
+        assert_eq!(payload["totalPrice"], 4.5);
     }
 
     #[tokio::test]
