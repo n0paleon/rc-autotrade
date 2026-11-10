@@ -639,6 +639,7 @@ async fn run_purchase(state: Arc<AppState>, mut intent: OrderIntent) {
         qty: intent.qty,
         unit_price_raw: intent.unit_price_raw,
     };
+    let request_payload = request.payload();
 
     // MOCK=1 routes purchases to the simulator; the HTTP client is untouched.
     let mock: Option<MockHandle> = state
@@ -701,6 +702,7 @@ async fn run_purchase(state: Arc<AppState>, mut intent: OrderIntent) {
         complete_at: Some(complete_at),
         ttfb_ms,
         accepted_at: None,
+        request_payload: Some(request_payload),
     };
 
     let events = {

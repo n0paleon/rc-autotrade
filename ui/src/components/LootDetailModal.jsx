@@ -541,9 +541,22 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
 
       <section className="border-2 border-line bg-night-950/50 p-3 sm:p-4">
         <h3 className="panel-title text-[13px]">
-          <span className="led bg-info" /> Raw event payloads
+          <span className="led bg-info" /> Raw payloads
         </h3>
         <div className="mt-3 space-y-2">
+          <RawEventPayload
+            label="Purchase request payload"
+            payload={rawEvents?.purchaseRequest}
+            missingText={
+              loadingDetail
+                ? "Loading raw payloads…"
+                : detailError
+                  ? "Could not load the raw payloads."
+                  : rawEvents
+                    ? "No purchase request payload was recorded for this loot entry."
+                    : "Raw payload capture was not available when this loot entry was recorded."
+            }
+          />
           <RawEventPayload
             label="Price change event"
             payload={rawEvents?.priceEvent}

@@ -155,6 +155,8 @@ pub struct PurchaseOutcome {
     /// responded.
     pub ttfb_ms: Option<f64>,
     pub accepted_at: Option<i64>,
+    /// Exact JSON body sent to the purchase endpoint, kept for the loot log.
+    pub request_payload: Option<Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +173,7 @@ struct PendingOrder {
     at: i64,
     timings: Timings,
     raw_price_event: Value,
+    request_payload: Option<Value>,
 }
 
 /// Locally committed book state for one target while a fill is being
@@ -1155,6 +1158,7 @@ impl Engine {
                     at: intent.at,
                     timings: timings.clone(),
                     raw_price_event: intent.raw_price_event.clone(),
+                    request_payload: outcome.request_payload.clone(),
                 },
             );
 
@@ -1272,6 +1276,7 @@ impl Engine {
                     timings: Some(timings.clone()),
                     raw_price_event: Some(intent.raw_price_event.clone()),
                     raw_result_event: None,
+                    request_payload: outcome.request_payload.clone(),
                     optimistic: intent.optimistic,
                 },
                 &reason,
@@ -1388,6 +1393,7 @@ impl Engine {
                 latency_ms: Some(now - pending_meta.at),
                 timings: Some(fill_timings),
                 raw_events: crate::raw_events::sanitize(&json!({
+                    "purchaseRequest": pending_meta.request_payload,
                     "priceEvent": pending_meta.raw_price_event,
                     "resultEvent": raw,
                 })),
@@ -1515,6 +1521,7 @@ impl Engine {
                     timings: Some(fill_timings),
                     raw_price_event: Some(pending_meta.raw_price_event.clone()),
                     raw_result_event: Some(raw.clone()),
+                    request_payload: pending_meta.request_payload.clone(),
                     optimistic: pending_meta.optimistic,
                 },
                 "no items obtained",
@@ -1963,6 +1970,7 @@ impl Engine {
             latency_ms: Some(now - meta.at).filter(|value| *value >= 0),
             timings: Some(timings),
             raw_events: crate::raw_events::sanitize(&json!({
+                "purchaseRequest": meta.request_payload,
                 "priceEvent": meta.raw_price_event,
                 "resultEvent": meta.raw_result_event,
             })),
@@ -2449,6 +2457,9 @@ struct FailureMeta {
     timings: Option<Timings>,
     raw_price_event: Option<Value>,
     raw_result_event: Option<Value>,
+    /// Exact purchase request body, stored with the loot row so the detail
+    /// modal can show what was sent even when no result frame arrived.
+    request_payload: Option<Value>,
     /// True for a locally fired follow-up. Only changes how the row reads: the
     /// backoff decision is made by the caller.
     optimistic: bool,
@@ -2921,6 +2932,81 @@ mod tests {
         assert!((h.store.state.stats.spent_rlt - 0.9).abs() < 1e-9);
         assert!(h.store.has_order("order-1"));
         assert!(h.engine.pending_snapshot().is_empty());
+    }
+
+    #[test]
+    fn purchase_request_payload_is_kept_on_the_filled_row() {
+        let mut h = harness();
+        let events =
+            h.engine
+                .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_001, true);
+        let intent = submissions(&events)[0].clone();
+        let payload = json!({
+            "challenge": "",
+            "action": "marketplace",
+            "itemId": "6319f7baa8ce530569ed16b9",
+            "itemType": "mutation_component",
+            "totalCount": 10,
+            "currency": "RLT",
+            "totalPrice": 900_000.0
+        });
+
+        h.now.store(1_000_120, Ordering::SeqCst);
+        h.engine.on_purchase_result(
+            &mut h.store,
+            &intent,
+            PurchaseOutcome {
+                ok: true,
+                order_id: Some("order-payload".into()),
+                accepted_at: Some(1_000_120),
+                request_payload: Some(payload.clone()),
+                ..Default::default()
+            },
+        );
+
+        h.now.store(1_000_400, Ordering::SeqCst);
+        h.engine.handle_frame(
+            &mut h.store,
+            &fill_frame("order-payload", 10, 900_000, ORDER_STATUS_FILLED),
+            1_000_400,
+            true,
+        );
+
+        let entry = h.store.state.history.first().expect("fill row");
+        let raw = entry.raw_events.as_ref().expect("raw events");
+        assert_eq!(raw["purchaseRequest"], payload);
+    }
+
+    #[test]
+    fn purchase_request_payload_is_kept_on_the_rejected_row() {
+        let mut h = harness();
+        let events =
+            h.engine
+                .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_001, true);
+        let intent = submissions(&events)[0].clone();
+        let payload = json!({
+            "action": "marketplace",
+            "itemId": "6319f7baa8ce530569ed16b9",
+            "totalCount": 10,
+            "currency": "RLT",
+            "totalPrice": 900_000.0
+        });
+
+        h.now.store(1_000_200, Ordering::SeqCst);
+        h.engine.on_purchase_result(
+            &mut h.store,
+            &intent,
+            PurchaseOutcome {
+                ok: false,
+                error: Some("marketplace rejected the order".into()),
+                request_payload: Some(payload.clone()),
+                ..Default::default()
+            },
+        );
+
+        let entry = h.store.state.history.first().expect("failure row");
+        let raw = entry.raw_events.as_ref().expect("raw events");
+        assert_eq!(raw["purchaseRequest"], payload);
     }
 
     #[test]

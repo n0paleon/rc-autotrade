@@ -25,17 +25,23 @@ fn snapshot_payload(value: &Value) -> Option<Value> {
     Some(value.clone())
 }
 
-/// Keeps the market signal and optional result frame as JSON-safe snapshots.
+/// Keeps the purchase request body, market signal and optional result frame as
+/// JSON-safe snapshots.
 pub fn sanitize(raw: &Value) -> Option<Value> {
     if !raw.is_object() {
         return None;
     }
+    let request = raw.get("purchaseRequest").and_then(snapshot_payload);
     let price_event = raw.get("priceEvent").and_then(snapshot_payload);
     let result_event = raw.get("resultEvent").and_then(snapshot_payload);
-    if price_event.is_none() && result_event.is_none() {
+    if request.is_none() && price_event.is_none() && result_event.is_none() {
         return None;
     }
     let mut out = Map::new();
+    out.insert(
+        "purchaseRequest".to_string(),
+        request.unwrap_or(Value::Null),
+    );
     out.insert("priceEvent".to_string(), price_event.unwrap_or(Value::Null));
     out.insert(
         "resultEvent".to_string(),
@@ -72,6 +78,22 @@ mod tests {
         let sanitized = sanitize(&raw).unwrap();
         assert_eq!(sanitized["priceEvent"]["cmd"], "marketplace_orders_update");
         assert_eq!(sanitized["resultEvent"]["cmd"], "marketplace_orders_filled");
+    }
+
+    #[test]
+    fn keeps_the_purchase_request_body() {
+        let raw = json!({
+            "purchaseRequest": {
+                "action": "marketplace",
+                "itemId": "6319f7baa8ce530569ed16b9",
+                "totalCount": 3
+            },
+            "priceEvent": { "cmd": "marketplace_orders_update" }
+        });
+        let sanitized = sanitize(&raw).unwrap();
+        assert_eq!(sanitized["purchaseRequest"]["action"], "marketplace");
+        assert_eq!(sanitized["purchaseRequest"]["totalCount"], 3);
+        assert!(sanitized["resultEvent"].is_null());
     }
 
     #[test]
