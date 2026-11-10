@@ -1,6 +1,7 @@
 // Verifies the profit-to-clip mapping used by the fill sound:
 //  * profit < 0                -> "loss" clip
-//  * profit == 0 .. < 1 RLT    -> no clip (the synth fill chirp plays)
+//  * profit == 0               -> silence
+//  * 0 < profit < 1 RLT        -> "small" clip
 //  * 1 RLT <= profit < 3 RLT   -> "good" clip
 //  * profit >= 3 RLT           -> "winning" clip
 //
@@ -25,14 +26,19 @@ test("selects the loss clip for strictly negative profit", () => {
   assert.equal(profitClip("-2.5"), "loss");
 });
 
-test("keeps the synth fill for zero up to just under 1 RLT", () => {
+test("stays silent at exactly zero and for non-numeric profit", () => {
   assert.equal(profitClip(0), null);
   assert.equal(profitClip(-0), null);
-  assert.equal(profitClip(0.5), null);
-  assert.equal(profitClip(0.999999), null);
   assert.equal(profitClip(null), null);
   assert.equal(profitClip(undefined), null);
   assert.equal(profitClip("not a number"), null);
+});
+
+test("selects the small clip for positive profit under 1 RLT", () => {
+  assert.equal(profitClip(0.000001), "small");
+  assert.equal(profitClip(0.5), "small");
+  assert.equal(profitClip(0.999999), "small");
+  assert.equal(profitClip("0.5"), "small");
 });
 
 test("selects the good clip from 1 RLT up to just under 3 RLT", () => {
@@ -64,19 +70,27 @@ test("playProfit plays the clip that matches the profit tier", () => {
   };
 
   try {
-    sound.playProfit(0.5);
     sound.playProfit(0);
-    sound.playProfit(0.999999);
+    sound.playProfit(-0);
+    sound.playProfit(null);
     assert.deepEqual(played, []);
 
+    sound.playProfit(0.5);
+    assert.deepEqual(played, [PROFIT_CLIPS.small]);
+
     sound.playProfit(-2);
-    assert.deepEqual(played, [PROFIT_CLIPS.loss]);
+    assert.deepEqual(played, [PROFIT_CLIPS.small, PROFIT_CLIPS.loss]);
 
     sound.playProfit(1);
-    assert.deepEqual(played, [PROFIT_CLIPS.loss, PROFIT_CLIPS.good]);
+    assert.deepEqual(played, [
+      PROFIT_CLIPS.small,
+      PROFIT_CLIPS.loss,
+      PROFIT_CLIPS.good
+    ]);
 
     sound.playProfit(3);
     assert.deepEqual(played, [
+      PROFIT_CLIPS.small,
       PROFIT_CLIPS.loss,
       PROFIT_CLIPS.good,
       PROFIT_CLIPS.winning
@@ -91,6 +105,10 @@ test("thresholds and clip URLs are the documented ones", () => {
   assert.equal(PROFIT_CLIP_WINNING_RLT, 3);
   assert.equal(
     PROFIT_CLIPS.loss,
+    "https://storage.n0pal.net/artifacts/u_8g40a9z0la-fail-234710.mp3"
+  );
+  assert.equal(
+    PROFIT_CLIPS.small,
     "https://storage.n0pal.net/artifacts/u_oepgi4ep3v-som_matricula-464025.mp3"
   );
   assert.equal(
