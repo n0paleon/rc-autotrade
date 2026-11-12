@@ -1,8 +1,11 @@
 (async () => {
 // ================== KONFIGURASI ==================
+// Istilah mengikuti panel "My power" di game:
+//   MinersPower       -> baris "Miners"        (power mentah miner, BUKAN "Current power")
+//   BonusPowerPercent -> persen di "Bonus Power" (contoh: 619.53)
 const CONFIG = {
-  CurrentPower: "20.745 Eh/s", // contoh: "10Gh/s", "10Ph/s", "15Eh/s" => raw power
-  CurrentBonus: 238.87,         // dalam persen
+  MinersPower: "71.769 Eh/s",  // isi dari baris "Miners"
+  BonusPowerPercent: 619.53,   // isi dari persen di baris "Bonus Power" (tanpa % dan tanda panah)
   limit: 192                   // batas halaman
 };
 
@@ -42,31 +45,34 @@ function formatPowerFromGH(gh, decimals = 3) {
 
 // ================== MAIN ==================
 async function main() {
-  const CurrentPower = parsePowerToGH(CONFIG.CurrentPower); // internal tetap GH/s
-  const CurrentBonus = CONFIG.CurrentBonus;
+  const minersPower = parsePowerToGH(CONFIG.MinersPower); // internal tetap GH/s
+  const bonusPowerPercent = CONFIG.BonusPowerPercent;
 
-  console.log(`Power saat ini: ${formatPowerFromGH(CurrentPower)} | Bonus: ${CurrentBonus}%`);
+  // Bonus Power (Eh/s) yang kamu punya sekarang, sama seperti di panel "My power"
+  const currentBonusPower = minersPower * (bonusPowerPercent / 100);
+
+  console.log(`Miners: ${formatPowerFromGH(minersPower)} | Bonus Power: +${bonusPowerPercent}% / ${formatPowerFromGH(currentBonusPower)}`);
   console.log("Scraping halaman...");
 
-  const allMiners = await scrapeAllPages(CurrentPower, CurrentBonus, CONFIG.limit);
+  const allItems = await scrapeAllPages(minersPower, bonusPowerPercent, CONFIG.limit);
 
   // Urutkan berdasarkan rasio terbaik (nilai mentah)
-  allMiners.sort((a, b) => b.ratio - a.ratio);
+  allItems.sort((a, b) => b.ratio - a.ratio);
 
-  console.log("Selesai. Total miner:", allMiners.length);
+  console.log("Selesai. Total item:", allItems.length);
 
   // Format output tabel dengan satuan
-  const table = allMiners.map(m => ({
+  const table = allItems.map(m => ({
     'Name': m.name,
     'Price': m.price,
-    'Power': formatPowerFromGH(m.power),
-    'Bonus[%]': m.bonus,
+    'Item Power': formatPowerFromGH(m.itemPower),
+    'Item Bonus[%]': m.itemBonusPercent,
     'Ratio': m.ratio.toFixed(2),
-    'Cur.Pow X Add.Bonus': formatPowerFromGH(m.ctm),
-    'Mine.Pow X Tot.Bonus': formatPowerFromGH(m.mtb),
-    'Addition Power': formatPowerFromGH(m.totalpower),
-    'TotalPower': formatPowerFromGH(m.totalpower + CurrentPower),
-    'Total Bonus %': (m.totalbonus * 100).toFixed(3)
+    'Bonus Power Tambahan (Miners lama)': formatPowerFromGH(m.extraBonusOnOldMiners),
+    'Bonus Power (Item baru)': formatPowerFromGH(m.bonusOnNewItem),
+    'Added Power': formatPowerFromGH(m.addedPower),
+    'New Current power': formatPowerFromGH(m.addedPower + minersPower + currentBonusPower),
+    'New Bonus Power[%]': (m.newBonusFraction * 100).toFixed(3)
   }));
 
   console.table(table);
@@ -92,15 +98,15 @@ function findNextPageButton() {
   return null;
 }
 
-async function scrapeAllPages(CurrentPower, CurrentBonus, maxPages = 5) {
-  const allMiners = [];
+async function scrapeAllPages(minersPower, bonusPowerPercent, maxPages = 5) {
+  const allItems = [];
   const seen = new Set();
 
   for (let i = 0; i < maxPages; i++) {
     console.log(`🔄 Memproses halaman ${i + 1}...`);
 
-    const miners = getMinersFromCurrentPage(CurrentPower, CurrentBonus, seen);
-    allMiners.push(...miners);
+    const items = getItemsFromCurrentPage(minersPower, bonusPowerPercent, seen);
+    allItems.push(...items);
 
     const nextBtn = findNextPageButton();
     if (nextBtn) {
@@ -112,47 +118,58 @@ async function scrapeAllPages(CurrentPower, CurrentBonus, maxPages = 5) {
     }
   }
 
-  return allMiners;
+  return allItems;
 }
 
 // ================== PARSING HALAMAN ==================
-function getMinersFromCurrentPage(CurrentPower, CurrentBonus, seenSet) {
-  const miners = [];
-  const minerTitles = document.getElementsByClassName('item-title');
-  const minerPrices = document.getElementsByClassName('item-price');
-  const minerPowers = document.getElementsByClassName('item-addition-power');
-  const minerBonuses = document.getElementsByClassName('item-addition-bonus');
+function getItemsFromCurrentPage(minersPower, bonusPowerPercent, seenSet) {
+  const items = [];
+  const titleEls = document.getElementsByClassName('item-title');
+  const priceEls = document.getElementsByClassName('item-price');
+  const powerEls = document.getElementsByClassName('item-addition-power');
+  const bonusEls = document.getElementsByClassName('item-addition-bonus');
 
-  for (let i = 0; i < minerTitles.length; i++) {
+  for (let i = 0; i < titleEls.length; i++) {
     try {
-      const name = minerTitles[i]?.textContent.trim();
-      const powerText = minerPowers[i]?.textContent.trim();
-      const bonusText = minerBonuses[i]?.textContent.trim();
-      const priceText = minerPrices[i]?.textContent.trim();
+      const name = titleEls[i]?.textContent.trim();
+      const powerText = powerEls[i]?.textContent.trim();
+      const bonusText = bonusEls[i]?.textContent.trim();
+      const priceText = priceEls[i]?.textContent.trim();
 
       if (!name || !powerText || !bonusText || !priceText) continue;
 
-      const power = parsePowerToGH(powerText); // GH/s
-      const bonus = parseFloat(bonusText);
+      const itemPower = parsePowerToGH(powerText);   // power item di marketplace (GH/s)
+      const itemBonusPercent = parseFloat(bonusText); // bonus item di marketplace (%)
       const price = parseFloat(priceText.replace(/\s/g, '').replace('RLT', ''));
 
-      if (seenSet.has(name) || power < 5 || bonus <= 0 || price <= 0) continue;
+      if (seenSet.has(name) || itemPower < 5 || itemBonusPercent <= 0 || price <= 0) continue;
       seenSet.add(name);
 
-      const totalbonus = (bonus + CurrentBonus) / 100;
-      const ctm = CurrentPower * (bonus / 100);
-      const mtb = power * totalbonus;
-      const totalpower = power + ctm + mtb;
-      const ratio = (totalpower / 1000) / price;
+      // Bonus Power baru setelah membeli item ini (pecahan, 2.4887 = 248.87%)
+      const newBonusFraction = (itemBonusPercent + bonusPowerPercent) / 100;
+
+      // Tambahan Bonus Power untuk Miners yang sudah kamu punya
+      const extraBonusOnOldMiners = minersPower * (itemBonusPercent / 100);
+
+      // Bonus Power yang dihasilkan item baru itu sendiri
+      const bonusOnNewItem = itemPower * newBonusFraction;
+
+      // Total kenaikan "Current power" jika item dibeli
+      const addedPower = itemPower + extraBonusOnOldMiners + bonusOnNewItem;
+
+      const ratio = (addedPower / 1000) / price;
 
       // Simpan nilai mentah (GH/s), format satuan dilakukan saat menampilkan tabel
-      miners.push({ name, price, power, bonus, ratio, ctm, mtb, totalpower, totalbonus });
+      items.push({
+        name, price, itemPower, itemBonusPercent, ratio,
+        extraBonusOnOldMiners, bonusOnNewItem, addedPower, newBonusFraction
+      });
     } catch (err) {
       console.warn(`❌ Error parsing item ke-${i + 1}:`, err);
     }
   }
 
-  return miners;
+  return items;
 }
 
 // ================== TUNGGU UPDATE KONTEN ==================
