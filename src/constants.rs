@@ -76,6 +76,37 @@ pub const EVENT_HISTORY_DAYS: i64 = 7;
 /// Counting stays in memory, so a busy feed never pays a write per frame.
 pub const EVENT_FLUSH_INTERVAL_MS: u64 = 10_000;
 
+/// Per-item market-frame counts are bucketed in 5-minute slices. Unlike the
+/// global activity chart this table is keyed by item id, so the item monitor can
+/// answer "which item ids moved the most" for an arbitrary range.
+///
+/// The monitor's finest window is one hour, so an hourly bucket could not answer
+/// it without counting a partly-elapsed hour as a whole one. 5 minutes matches
+/// `EVENT_BUCKET_MS`, divides the hour evenly (12 slices), and still keeps the
+/// row count modest: a month of a busy feed is ~8 600 slices per item at worst.
+pub const ITEM_EVENT_BUCKET_MS: i64 = 5 * 60_000;
+
+/// Item-activity history kept in SQLite. The monitor serves a 30-day window;
+/// the extra slack means the oldest selectable bucket is never truncated.
+pub const ITEM_EVENT_RETENTION_DAYS: i64 = 31;
+
+/// Widest window `/api/item-activity` will serve, in days.
+pub const ITEM_EVENT_HISTORY_DAYS: i64 = 30;
+
+/// Dirty item-activity buckets are written in one transaction this often. The
+/// frame path only touches an in-memory map, like the event counter.
+pub const ITEM_EVENT_FLUSH_INTERVAL_MS: u64 = 15_000;
+
+/// How many item ids one activity response may return.
+pub const ITEM_ACTIVITY_LIMIT: usize = 250;
+
+/// Rows per page when the caller does not ask for a size. The deck pages the
+/// table, so a full range no longer has to fit in one response.
+pub const ITEM_ACTIVITY_PAGE_SIZE: usize = 25;
+
+/// Same cap for the drop-in activity reader used by the read-only CLI probe.
+pub const ITEM_ACTIVITY_CLI_LIMIT: usize = 5_000;
+
 /// How many upstream events we keep as a rolling sample for the feed.
 pub const EVENT_SAMPLE_SIZE: usize = 60;
 

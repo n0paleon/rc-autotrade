@@ -152,6 +152,40 @@ CREATE TABLE IF NOT EXISTS event_points (
   bucket_at INTEGER PRIMARY KEY,
   events    INTEGER NOT NULL DEFAULT 0
 ) WITHOUT ROWID;
+
+-- Per-item market-frame activity, one row per item per hour. Keyed by item id
+-- instead of a single counter so the item monitor can rank the busiest ids in
+-- any date range, including ids that were never added to the target fleet.
+-- Additive like `event_points`; `user_version` does not move.
+CREATE TABLE IF NOT EXISTS item_event_points (
+  item_id     TEXT NOT NULL,
+  bucket_at   INTEGER NOT NULL,
+  item_type   TEXT,
+  events      INTEGER NOT NULL DEFAULT 0,
+  last_seen_at INTEGER,
+  PRIMARY KEY (item_id, bucket_at)
+) WITHOUT ROWID;
+
+-- Retention deletes by time alone, which the (item_id, bucket_at) primary key
+-- cannot serve. Mirrors `price_points_bucket_at`.
+CREATE INDEX IF NOT EXISTS item_event_points_bucket_at ON item_event_points (bucket_at);
+
+-- Last-seen metadata for every marketplace item the feed has shown, including
+-- ids that never entered the target fleet. The name is resolved lazily from
+-- item-info and cached here so the monitor can print a product name instead of
+-- a 24-character id without calling upstream on every render.
+CREATE TABLE IF NOT EXISTS item_catalog (
+  item_id      TEXT PRIMARY KEY,
+  item_type    TEXT NOT NULL DEFAULT 'mutation_component',
+  label        TEXT NOT NULL DEFAULT '',
+  rarity       TEXT,
+  rarity_color TEXT,
+  first_seen_at INTEGER,
+  last_seen_at  INTEGER,
+  resolved_at   INTEGER,
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  last_attempt_at INTEGER
+);
 "#;
 
 fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool, rusqlite::Error> {
@@ -222,6 +256,17 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
             conn.execute_batch(&format!("ALTER TABLE targets DROP COLUMN {column}"))?;
         }
     }
+
+    // The item monitor rotates its name-resolution batch by attempt count, so a
+    // few unnameable ids cannot starve the rest of the table. A database created
+    // before these columns existed gets them here.
+    add_column_if_missing(
+        conn,
+        "item_catalog",
+        "attempts",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(conn, "item_catalog", "last_attempt_at", "INTEGER")?;
 
     // Schema v8 unifies `paused` + `dry_run` into `settings.mode`. When the
     // upgrade has to do the mapping, the two legacy columns are still the
@@ -421,6 +466,8 @@ mod tests {
             "market_snapshot",
             "price_points",
             "event_points",
+            "item_event_points",
+            "item_catalog",
         ] {
             assert!(
                 tables.iter().any(|name| name == expected),
@@ -442,7 +489,11 @@ mod tests {
                 .map(Result::unwrap)
                 .collect()
         };
-        for expected in ["orders_at_id", "price_points_bucket_at"] {
+        for expected in [
+            "orders_at_id",
+            "price_points_bucket_at",
+            "item_event_points_bucket_at",
+        ] {
             assert!(
                 indexes.iter().any(|name| name == expected),
                 "missing index {expected}"

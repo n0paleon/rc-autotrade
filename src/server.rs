@@ -38,6 +38,7 @@ use crate::constants::{
 };
 use crate::engine::{Engine, MarketTick};
 use crate::feed::FeedHandle;
+use crate::item_activity::{self, ActivityFilters};
 use crate::item_info::ItemInfoService;
 use crate::keepalive::KeepaliveService;
 use crate::latency::LatencyTracker;
@@ -914,6 +915,47 @@ async fn events_view(
         "points": points,
     }))
     .into_response()
+}
+
+/// Ranked per-item activity for the item monitor.
+///
+/// Answers "which item ids was the market busiest on" for an arbitrary range,
+/// including ids that were never added to the target fleet. Names come from the
+/// catalogue; the first response for an unseen id spends a bounded slice of its
+/// budget asking `item-info`, and later refreshes pick up whatever is left.
+async fn item_activity_view(
+    _auth: Auth,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let filters = ActivityFilters::parse(&params, now_ms());
+    // Everything that touches the store happens inside a short critical
+    // section; the upstream lookups below run with no lock held.
+    let (mut view, credentials, pending) = {
+        let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
+        let view = item_activity::activity_view(&store, &filters);
+        let pending = item_activity::pending_names(&store, &view.rows);
+        (
+            view,
+            crate::session::credentials(&store.state.session),
+            pending,
+        )
+    };
+
+    if !pending.is_empty() {
+        let resolved =
+            item_activity::resolve_pending(&state.item_info, &credentials, &state.logger, pending)
+                .await;
+        let mut store = state.store.lock().unwrap_or_else(|e| e.into_inner());
+        view.unresolved = item_activity::apply_resolved(&mut store, &mut view.rows, resolved);
+        // The tracked flag is part of the row, so a target edited while the
+        // table is open is reflected on the next poll without a second request.
+        for row in view.rows.iter_mut() {
+            row.tracked = store.find_config(&row.item_id).is_some();
+        }
+    }
+
+    Json(json!({ "ok": true, "activity": view })).into_response()
 }
 
 /// Raw 1-minute closes for one target, used by the price chart's 3d/7d
@@ -1857,6 +1899,7 @@ pub fn router(state: Arc<AppState>, dist_dir: std::path::PathBuf) -> Router {
         .route("/api/history/{id}", get(history_detail))
         .route("/api/report", get(report))
         .route("/api/events", get(events_view))
+        .route("/api/item-activity", get(item_activity_view))
         .route("/api/price-history", get(price_history_view))
         .route(
             "/api/session",

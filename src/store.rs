@@ -22,14 +22,17 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::constants::{
-    EVENT_BUCKET_MS, EVENT_RETENTION_DAYS, LOOT_LOG_MAX_PAGE_SIZE, LOOT_LOG_PAGE_SIZE, MAX_HISTORY,
-    MAX_REPORT_PRODUCTS, PRICE_RETENTION_DAYS,
+    EVENT_BUCKET_MS, EVENT_RETENTION_DAYS, ITEM_ACTIVITY_LIMIT, ITEM_ACTIVITY_PAGE_SIZE,
+    ITEM_EVENT_BUCKET_MS, ITEM_EVENT_HISTORY_DAYS, ITEM_EVENT_RETENTION_DAYS,
+    LOOT_LOG_MAX_PAGE_SIZE, LOOT_LOG_PAGE_SIZE, MAX_HISTORY, MAX_REPORT_PRODUCTS,
+    PRICE_RETENTION_DAYS,
 };
 use crate::db;
 use crate::logger::Logger;
 use crate::model::{
-    MarketSnapshot, Mode, OrderEntry, PriceBand, PricePoint, PriceSeriesPoint, Product,
-    ProductView, ReportTotals, ReportView, Session, Settings, Stats, Target,
+    CatalogItem, ItemActivityReport, ItemActivityRow, ItemTypeTotal, MarketSnapshot, Mode,
+    OrderEntry, PriceBand, PricePoint, PriceSeriesPoint, Product, ProductView, ReportTotals,
+    ReportView, Session, Settings, Stats, Target,
 };
 use crate::rules::round_price;
 use crate::timings::Timings;
@@ -185,6 +188,17 @@ pub struct Store {
     /// Buckets changed since the last flush (absolute counts, not deltas).
     event_dirty: BTreeSet<i64>,
     event_pruned_at: i64,
+    /// Per-item frame counts, keyed by `(hour bucket, lowercase item id)`.
+    /// The market feed can show hundreds of distinct ids an hour, so the map is
+    /// capped and only the newest buckets survive a prune.
+    item_events: BTreeMap<(i64, String), ItemEventAccum>,
+    /// Item ids changed since the last flush.
+    item_event_dirty: BTreeSet<(i64, String)>,
+    item_event_pruned_at: i64,
+    /// Every id the feed has shown, with the name resolved from item-info.
+    /// `None` for an id means "looked up, not found", so a dead id is not
+    /// retried on every response.
+    catalog: HashMap<String, CatalogItem>,
     /// Lowercase item id → position in `state.configs`. The engine resolves a
     /// target on every frame, and the scan used to lowercase (and allocate for)
     /// every configured item on every lookup.
@@ -194,9 +208,54 @@ pub struct Store {
     last_write_error_at: AtomicI64,
 }
 
+#[derive(Debug, Clone, Default)]
+struct ItemEventAccum {
+    events: i64,
+    last_seen_at: Option<i64>,
+    item_type: Option<String>,
+}
+
+/// One `item_event_points` row on its way into the memory map.
+#[derive(Debug, Clone)]
+struct ItemEventRow {
+    key: (i64, String),
+    accum: ItemEventAccum,
+}
+
 /// Start of the 5-minute bucket that owns `at`.
 pub fn event_bucket_at(at: i64) -> i64 {
     at.div_euclid(EVENT_BUCKET_MS) * EVENT_BUCKET_MS
+}
+
+/// Start of the 1-hour bucket that owns `at` for the per-item monitor.
+pub fn item_event_bucket_at(at: i64) -> i64 {
+    at.div_euclid(ITEM_EVENT_BUCKET_MS) * ITEM_EVENT_BUCKET_MS
+}
+
+/// One aggregation request for [`Store::item_activity`]. Deserialised straight
+/// from `GET /api/item-activity`: the deck sends a date range, an optional item
+/// type, an optional search term and a row cap.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemActivityQuery {
+    /// Inclusive start of the range, epoch ms. 0 means "retention start".
+    #[serde(default)]
+    pub since: i64,
+    /// Inclusive end of the range, epoch ms. 0 means "now".
+    #[serde(default)]
+    pub until: i64,
+    /// "" (all) or one of the item types the feed reports.
+    #[serde(rename = "itemType", default)]
+    pub item_type: String,
+    /// Case-insensitive substring over the resolved name and the item id.
+    #[serde(default)]
+    pub q: String,
+    /// Rows per page. Clamped to [`ITEM_ACTIVITY_LIMIT`].
+    #[serde(default)]
+    pub limit: usize,
+    /// Rows to skip after ranking, for pagination.
+    #[serde(default)]
+    pub offset: usize,
 }
 
 impl Store {
@@ -215,12 +274,18 @@ impl Store {
             event_points: BTreeMap::new(),
             event_dirty: BTreeSet::new(),
             event_pruned_at: now_ms(),
+            item_events: BTreeMap::new(),
+            item_event_dirty: BTreeSet::new(),
+            item_event_pruned_at: now_ms(),
+            catalog: HashMap::new(),
             config_index: HashMap::new(),
             last_write_error_at: AtomicI64::new(0),
         };
         store.ensure_rows()?;
         store.hydrate()?;
         store.hydrate_events();
+        store.hydrate_item_events();
+        store.hydrate_catalog();
         // Reclaim anything older than the documented retention window. The API
         // only ever serves the last `PRICE_HISTORY_DAYS`, so this is not visible
         // in any chart; it just stops the table from growing across restarts.
@@ -761,9 +826,24 @@ impl Store {
         config.rarity_color = rarity_color.map(str::to_string);
         config.updated_at = Some(now_ms());
         let stamped = config.clone();
+        let item_id = stamped.item_id.clone();
         if let Err(error) = self.write_target(&stamped) {
             self.report_write_error("could not save item info", &error);
         }
+        // The item monitor names products from the catalogue, not from the
+        // target list, so a resolved target also updates its catalogue row.
+        // This path only knows the colour, so any rarity the monitor already
+        // resolved is kept instead of being blanked.
+        let resolved_at = now_ms();
+        let known = self.catalog_entry(&item_id).cloned().unwrap_or_default();
+        self.apply_catalog_item(
+            &item_id,
+            label,
+            item_type,
+            known.rarity.as_deref(),
+            rarity_color.or(known.rarity_color.as_deref()),
+            resolved_at,
+        );
         true
     }
 
@@ -1884,6 +1964,508 @@ impl Store {
             .map_err(|e| format!("could not prune event history: {e}"))
     }
 
+    // ── per-item market activity ────────────────────────────────────────────
+
+    /// Counts one market frame for `item_id` into its hourly bucket and stamps
+    /// the catalogue entry, so an id that was never added to the fleet still
+    /// appears (and gets a name) on the item monitor.
+    ///
+    /// Everything stays in memory on the frame path; the flusher below writes
+    /// the batches in one transaction.
+    pub fn note_item_event(&mut self, item_id: &str, item_type: Option<&str>, at: i64) {
+        let key = item_id.to_ascii_lowercase();
+        if key.is_empty() {
+            return;
+        }
+        let bucket = item_event_bucket_at(at);
+        {
+            let accum = self.item_events.entry((bucket, key.clone())).or_default();
+            accum.events += 1;
+            accum.last_seen_at = Some(at);
+            if let Some(item_type) = item_type.filter(|value| !value.is_empty()) {
+                accum.item_type = Some(item_type.to_ascii_lowercase());
+            }
+        }
+        self.item_event_dirty.insert((bucket, key.clone()));
+
+        let entry = self.catalog.entry(key).or_default();
+        if entry.first_seen_at.is_none() {
+            entry.first_seen_at = Some(at);
+            entry.item_id = item_id.to_string();
+        }
+        entry.last_seen_at = Some(at);
+        if let Some(item_type) = item_type.filter(|value| !value.is_empty()) {
+            let item_type = item_type.to_ascii_lowercase();
+            if entry.item_type.is_empty() {
+                entry.item_type = item_type;
+            }
+        }
+    }
+
+    /// Marks a catalogue id as looked up, even when upstream did not know it.
+    /// Recording the miss keeps a deleted marketplace item from being retried
+    /// on every monitor refresh.
+    pub fn mark_catalog_resolved(&mut self, item_id: &str, resolved_at: i64) {
+        let key = item_id.to_ascii_lowercase();
+        let Some(entry) = self.catalog.get_mut(&key) else {
+            return;
+        };
+        entry.resolved_at = Some(resolved_at);
+        entry.attempts += 1;
+        entry.last_attempt_at = Some(resolved_at);
+        let mut row = entry.clone();
+        row.item_id = key;
+        if let Err(error) = self.write_catalog_item(&row) {
+            self.report_write_error("could not save item catalog", &error);
+        }
+    }
+
+    /// Records that a lookup was attempted without deciding its outcome.
+    ///
+    /// Used for a transport failure: the id stays resolvable so a later refresh
+    /// retries it, but the attempt count moves it to the back of the batch so it
+    /// cannot starve every other row while the network is down. `None` performs
+    /// no write, which is what a definitive success or miss needs — those are
+    /// recorded by [`Self::apply_catalog_item`] / [`Self::mark_catalog_resolved`].
+    pub fn note_catalog_attempts(&mut self, item_id: &str, at: i64) {
+        let key = item_id.to_ascii_lowercase();
+        let Some(entry) = self.catalog.get_mut(&key) else {
+            return;
+        };
+        entry.attempts += 1;
+        entry.last_attempt_at = Some(at);
+        let mut row = entry.clone();
+        row.item_id = key;
+        if let Err(error) = self.write_catalog_item(&row) {
+            self.report_write_error("could not save item catalog attempt", &error);
+        }
+    }
+
+    /// Stores a resolved `item-info` payload on the catalogue row.
+    pub fn apply_catalog_item(
+        &mut self,
+        item_id: &str,
+        label: &str,
+        item_type: &str,
+        rarity: Option<&str>,
+        rarity_color: Option<&str>,
+        resolved_at: i64,
+    ) -> bool {
+        let key = item_id.to_ascii_lowercase();
+        let entry = self.catalog.entry(key.clone()).or_default();
+        if entry.item_id.is_empty() {
+            entry.item_id = item_id.to_string();
+        }
+        // The first type seen for an id is sticky. Both the feed and item-info
+        // report it, and they agree in practice — but resolution happens in
+        // small batches, so letting a late lookup rewrite the type would move a
+        // row between categories (and change the per-type totals) merely
+        // because its name arrived.
+        let next_type = if entry.item_type.is_empty() {
+            item_type.to_string()
+        } else {
+            entry.item_type.clone()
+        };
+        let changed = entry.label != label
+            || entry.item_type != next_type
+            || entry.rarity.as_deref() != rarity
+            || entry.rarity_color.as_deref() != rarity_color
+            || entry.resolved_at.is_none();
+        entry.label = label.to_string();
+        entry.item_type = next_type;
+        entry.rarity = rarity.map(str::to_string);
+        entry.rarity_color = rarity_color.map(str::to_string);
+        entry.resolved_at = Some(resolved_at);
+        entry.attempts += 1;
+        entry.last_attempt_at = Some(resolved_at);
+        if changed {
+            let mut row = entry.clone();
+            row.item_id = key;
+            if let Err(error) = self.write_catalog_item(&row) {
+                self.report_write_error("could not save item catalog", &error);
+            }
+        }
+        changed
+    }
+
+    /// Catalogue lookup by id, case-insensitive.
+    pub fn catalog_entry(&self, item_id: &str) -> Option<&CatalogItem> {
+        self.catalog.get(&item_id.to_ascii_lowercase())
+    }
+
+    /// Catalogue rows that still need an `item-info` lookup, newest first, at
+    /// most `limit` of them.
+    pub fn catalog_unresolved(&self, limit: usize) -> Vec<(String, String)> {
+        let mut pending: Vec<(&String, &CatalogItem)> = self
+            .catalog
+            .iter()
+            .filter(|(_, item)| item.needs_resolution())
+            .collect();
+        pending.sort_by_key(|(_, item)| std::cmp::Reverse(item.last_seen_at.unwrap_or(0)));
+        pending
+            .into_iter()
+            .take(limit)
+            .map(|(key, item)| {
+                let item_type = if item.item_type.is_empty() {
+                    "mutation_component".to_string()
+                } else {
+                    item.item_type.clone()
+                };
+                (key.clone(), item_type)
+            })
+            .collect()
+    }
+
+    /// The ranked item monitor for one range.
+    ///
+    /// Reads the in-memory accumulator, which holds the same retention window
+    /// the flusher keeps in SQLite, so a row cannot be counted twice and a fresh
+    /// frame shows up without waiting for a flush. Ids are matched
+    /// case-insensitively; `events_24h` is computed against `now`, not against
+    /// the requested range, so the heat column keeps meaning "busy right now".
+    ///
+    /// Pagination happens **after** ranking and after the per-type totals are
+    /// summed, so page 2 is the next slice of the same ordering and the type
+    /// summary always describes the whole range rather than the current page.
+    pub fn item_activity(&self, query: &ItemActivityQuery, now: i64) -> ItemActivityReport {
+        let since = if query.since > 0 {
+            query.since
+        } else {
+            now - ITEM_EVENT_HISTORY_DAYS * 86_400_000
+        };
+        let until = if query.until > 0 { query.until } else { now };
+        let day_ago = now - 86_400_000;
+        let wanted_type = query.item_type.trim().to_ascii_lowercase();
+        let term = query.q.trim().to_ascii_lowercase();
+        let limit = match query.limit {
+            // 0 means "caller did not ask", which is the default page size; a
+            // literal clamp would turn it into 1 and silently serve one row.
+            0 => ITEM_ACTIVITY_PAGE_SIZE,
+            requested => requested.min(ITEM_ACTIVITY_LIMIT),
+        };
+        let offset = query.offset;
+
+        struct Aggregate {
+            events: i64,
+            events_24h: i64,
+            first_at: i64,
+            last_at: i64,
+            item_type: String,
+        }
+
+        let mut aggregates: HashMap<&str, Aggregate> = HashMap::new();
+        for ((bucket, item_id), accum) in &self.item_events {
+            if *bucket > until {
+                continue;
+            }
+            // A bucket is a full slice that may start before `since`; the row
+            // still belongs to the range when part of it does.
+            let bucket_end = bucket + ITEM_EVENT_BUCKET_MS - 1;
+            let in_range = bucket_end >= since;
+            let in_day = *bucket <= now && bucket_end >= day_ago;
+            if !in_range && !in_day {
+                continue;
+            }
+            let entry = aggregates
+                .entry(item_id.as_str())
+                .or_insert_with(|| Aggregate {
+                    events: 0,
+                    events_24h: 0,
+                    first_at: i64::MAX,
+                    last_at: i64::MIN,
+                    item_type: String::new(),
+                });
+            if in_range {
+                entry.events += accum.events;
+                entry.first_at = entry.first_at.min((*bucket).max(since));
+                let last_frame = accum.last_seen_at.unwrap_or(bucket_end);
+                entry.last_at = entry.last_at.max(last_frame.clamp(since, until));
+            }
+            if in_day {
+                entry.events_24h += accum.events;
+            }
+            if entry.item_type.is_empty()
+                && let Some(item_type) = accum.item_type.as_deref()
+            {
+                entry.item_type = item_type.to_string();
+            }
+        }
+
+        let mut rows: Vec<ItemActivityRow> = aggregates
+            .into_iter()
+            .filter(|(_, aggregate)| aggregate.events > 0)
+            .filter_map(|(item_id, aggregate)| {
+                let catalog = self.catalog.get(item_id);
+                // The type a frame was counted under wins over the catalogue.
+                // Frames are grouped by the type the feed reported, so using
+                // anything else here would let the per-type totals disagree
+                // with the very counts they summarise — and a later `item-info`
+                // lookup would silently move rows between categories.
+                let item_type = if aggregate.item_type.is_empty() {
+                    catalog
+                        .map(|item| item.item_type.clone())
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or_else(|| "mutation_component".to_string())
+                } else {
+                    aggregate.item_type.clone()
+                };
+                if !wanted_type.is_empty() && item_type != wanted_type {
+                    return None;
+                }
+                let label = catalog.map(|item| item.label.clone()).unwrap_or_default();
+                if !term.is_empty()
+                    && !label.to_ascii_lowercase().contains(&term)
+                    && !item_id.contains(&term)
+                {
+                    return None;
+                }
+                let tracked = self.find_config(item_id).is_some();
+                let first_at = (aggregate.first_at != i64::MAX).then_some(aggregate.first_at);
+                let last_at = (aggregate.last_at != i64::MIN).then_some(aggregate.last_at);
+                Some(ItemActivityRow {
+                    item_id: item_id.to_string(),
+                    item_type,
+                    label,
+                    rarity: catalog.and_then(|item| item.rarity.clone()),
+                    rarity_color: catalog.and_then(|item| item.rarity_color.clone()),
+                    events: aggregate.events,
+                    events_24h: aggregate.events_24h,
+                    first_at,
+                    last_at,
+                    tracked,
+                })
+            })
+            .collect();
+
+        rows.sort_by(|a, b| {
+            b.events
+                .cmp(&a.events)
+                .then(b.events_24h.cmp(&a.events_24h))
+                // A stable tiebreak keeps the table from reshuffling between
+                // polls when two ids moved exactly as often.
+                .then_with(|| a.item_id.cmp(&b.item_id))
+        });
+
+        // Totals describe every row in the range, not the page being served.
+        let total_events: i64 = rows.iter().map(|row| row.events).sum();
+        let mut type_totals: BTreeMap<String, ItemTypeTotal> = BTreeMap::new();
+        for row in &rows {
+            let entry = type_totals
+                .entry(row.item_type.clone())
+                .or_insert_with(|| ItemTypeTotal {
+                    item_type: row.item_type.clone(),
+                    events: 0,
+                    items: 0,
+                });
+            entry.events += row.events;
+            entry.items += 1;
+        }
+        let total_rows = rows.len();
+        let page: Vec<ItemActivityRow> = rows.into_iter().skip(offset).take(limit).collect();
+
+        ItemActivityReport {
+            rows: page,
+            total_rows,
+            total_events,
+            type_totals: type_totals.into_values().collect(),
+        }
+    }
+
+    /// Total market frames the monitor knows about in a range, for the summary
+    /// line. Counts every id, not just the rows the pagination cap returns.
+    pub fn item_activity_total(&self, since: i64, until: i64) -> i64 {
+        self.item_events
+            .iter()
+            .filter(|((bucket, _), _)| *bucket <= until && bucket + ITEM_EVENT_BUCKET_MS > since)
+            .map(|(_, accum)| accum.events)
+            .sum()
+    }
+
+    /// Writes every dirty item bucket in one transaction, then drops expiry.
+    pub fn flush_item_events(&mut self) -> Result<u64, String> {
+        let pending: Vec<((i64, String), ItemEventAccum)> = self
+            .item_event_dirty
+            .iter()
+            .filter_map(|key| {
+                self.item_events
+                    .get(key)
+                    .map(|accum| (key.clone(), accum.clone()))
+            })
+            .collect();
+
+        if !pending.is_empty() {
+            let tx = self
+                .db
+                .unchecked_transaction()
+                .map_err(|e| format!("could not start item event flush: {e}"))?;
+            {
+                let mut statement = tx
+                    .prepare_cached(
+                        "INSERT INTO item_event_points
+                             (item_id, bucket_at, item_type, events, last_seen_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5)
+                         ON CONFLICT(item_id, bucket_at) DO UPDATE SET
+                           events = excluded.events,
+                           item_type = COALESCE(excluded.item_type, item_type),
+                           last_seen_at = excluded.last_seen_at",
+                    )
+                    .map_err(|e| format!("could not cache item event statement: {e}"))?;
+                for ((bucket, item_id), accum) in &pending {
+                    statement
+                        .execute(params![
+                            item_id,
+                            bucket,
+                            accum.item_type,
+                            accum.events,
+                            accum.last_seen_at
+                        ])
+                        .map_err(|e| format!("could not record item event point: {e}"))?;
+                }
+            }
+            tx.commit()
+                .map_err(|e| format!("could not commit item event points: {e}"))?;
+            self.item_event_dirty.clear();
+        }
+
+        self.prune_item_events()?;
+        Ok(pending.len() as u64)
+    }
+
+    fn hydrate_item_events(&mut self) {
+        let since = now_ms() - ITEM_EVENT_RETENTION_DAYS * 86_400_000;
+        let result = (|| -> Result<Vec<ItemEventRow>, String> {
+            let mut statement = self
+                .db
+                .prepare(
+                    "SELECT item_id, bucket_at, item_type, events, last_seen_at
+                     FROM item_event_points WHERE bucket_at >= ?1",
+                )
+                .map_err(|e| format!("could not prepare item event read: {e}"))?;
+            let rows = statement
+                .query_map(params![since], |row| {
+                    let item_id: String = row.get(0)?;
+                    let bucket: i64 = row.get(1)?;
+                    Ok(ItemEventRow {
+                        key: (bucket, item_id),
+                        accum: ItemEventAccum {
+                            events: row.get(3)?,
+                            last_seen_at: row.get(4)?,
+                            item_type: row.get(2)?,
+                        },
+                    })
+                })
+                .map_err(|e| format!("could not read item events: {e}"))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("could not decode item events: {e}"))
+        })();
+        match result {
+            Ok(rows) => {
+                for row in rows {
+                    self.item_events.insert(row.key, row.accum);
+                }
+            }
+            Err(error) => self.logger.warn("store", error),
+        }
+    }
+
+    fn hydrate_catalog(&mut self) {
+        let result = (|| -> Result<Vec<CatalogItem>, String> {
+            let mut statement = self
+                .db
+                .prepare(
+                    "SELECT item_id, item_type, label, rarity, rarity_color,
+                            first_seen_at, last_seen_at, resolved_at, attempts, last_attempt_at
+                     FROM item_catalog",
+                )
+                .map_err(|e| format!("could not prepare item catalog read: {e}"))?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok(CatalogItem {
+                        item_id: row.get(0)?,
+                        item_type: row.get(1)?,
+                        label: row.get(2)?,
+                        rarity: row.get(3)?,
+                        rarity_color: row.get(4)?,
+                        first_seen_at: row.get(5)?,
+                        last_seen_at: row.get(6)?,
+                        resolved_at: row.get(7)?,
+                        attempts: row.get(8)?,
+                        last_attempt_at: row.get(9)?,
+                    })
+                })
+                .map_err(|e| format!("could not read item catalog: {e}"))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("could not decode item catalog: {e}"))
+        })();
+        match result {
+            Ok(rows) => {
+                for row in rows {
+                    self.catalog.insert(row.item_id.to_ascii_lowercase(), row);
+                }
+            }
+            Err(error) => self.logger.warn("store", error),
+        }
+    }
+
+    fn write_catalog_item(&self, item: &CatalogItem) -> rusqlite::Result<()> {
+        self.db.execute(
+            "INSERT INTO item_catalog
+                 (item_id, item_type, label, rarity, rarity_color,
+                  first_seen_at, last_seen_at, resolved_at, attempts, last_attempt_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(item_id) DO UPDATE SET
+               item_type = excluded.item_type,
+               label = excluded.label,
+               rarity = excluded.rarity,
+               rarity_color = excluded.rarity_color,
+               last_seen_at = excluded.last_seen_at,
+               resolved_at = excluded.resolved_at,
+               attempts = excluded.attempts,
+               last_attempt_at = excluded.last_attempt_at",
+            params![
+                item.item_id,
+                item.item_type,
+                item.label,
+                item.rarity,
+                item.rarity_color,
+                item.first_seen_at,
+                item.last_seen_at,
+                item.resolved_at,
+                item.attempts,
+                item.last_attempt_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn prune_item_events(&mut self) -> Result<(), String> {
+        let now = now_ms();
+        let cutoff = now - ITEM_EVENT_RETENTION_DAYS * 86_400_000;
+        let expired = self
+            .item_events
+            .keys()
+            .next()
+            .map(|(bucket, _)| *bucket < cutoff)
+            .unwrap_or(false);
+        // A month of hourly rows for a busy feed is a few thousand entries; an
+        // hourly sweep is plenty. An expiry between sweeps (clock jump, restored
+        // data) still forces the sweep immediately.
+        if !expired && now - self.item_event_pruned_at < 3_600_000 {
+            return Ok(());
+        }
+        self.item_event_pruned_at = now;
+        self.item_events.retain(|(bucket, _), _| *bucket >= cutoff);
+        self.item_event_dirty
+            .retain(|(bucket, _)| *bucket >= cutoff);
+        self.db
+            .execute(
+                "DELETE FROM item_event_points WHERE bucket_at < ?1",
+                params![cutoff],
+            )
+            .map(|_| ())
+            .map_err(|e| format!("could not prune item activity: {e}"))
+    }
+
     // ── session ─────────────────────────────────────────────────────────────
 
     pub fn apply_session_patch(&mut self, patch: SessionPatch) -> Result<(), String> {
@@ -2009,6 +2591,7 @@ impl Store {
     pub fn close(&mut self) {
         let _ = self.flush();
         let _ = self.flush_event_points();
+        let _ = self.flush_item_events();
         db::checkpoint_and_close(&self.db);
     }
 
@@ -2024,9 +2607,13 @@ fn row_to_entry(row: &Row<'_>) -> rusqlite::Result<OrderEntry> {
     let qty: i64 = row.get(4)?;
     // Legacy failed rows stored the attempted count in qty; the fulfillment
     // count is 0 there, so don't fall back to qty for failed rows.
-    let requested_qty = row
-        .get::<_, Option<i64>>(5)?
-        .or_else(|| if status == "failed" { Some(0) } else { Some(qty) });
+    let requested_qty = row.get::<_, Option<i64>>(5)?.or_else(|| {
+        if status == "failed" {
+            Some(0)
+        } else {
+            Some(qty)
+        }
+    });
     Ok(OrderEntry {
         id: row.get(0)?,
         order_id: row.get(1)?,
@@ -2057,9 +2644,13 @@ fn row_to_entry_lite(row: &Row<'_>) -> rusqlite::Result<OrderEntry> {
     let qty: i64 = row.get(4)?;
     // Legacy failed rows stored the attempted count in qty; the fulfillment
     // count is 0 there, so don't fall back to qty for failed rows.
-    let requested_qty = row
-        .get::<_, Option<i64>>(5)?
-        .or_else(|| if status == "failed" { Some(0) } else { Some(qty) });
+    let requested_qty = row.get::<_, Option<i64>>(5)?.or_else(|| {
+        if status == "failed" {
+            Some(0)
+        } else {
+            Some(qty)
+        }
+    });
     Ok(OrderEntry {
         id: row.get(0)?,
         order_id: row.get(1)?,
@@ -2610,6 +3201,405 @@ mod tests {
             event_bucket_at(bucket + EVENT_BUCKET_MS),
             bucket + EVENT_BUCKET_MS
         );
+    }
+
+    #[test]
+    fn item_activity_ranks_every_id_by_frame_count() {
+        let mut store = store("item-activity");
+        let now = now_ms();
+        // Two busy items and one quiet one, all outside the target fleet.
+        for _ in 0..5 {
+            store.note_item_event("busy-a", Some("miner"), now - 1_000);
+        }
+        for _ in 0..3 {
+            store.note_item_event("busy-b", Some("rack"), now - 2_000);
+        }
+        store.note_item_event("quiet", Some("battery"), now - 3_000);
+
+        let report = store.item_activity(&ItemActivityQuery::default(), now);
+        let rows = &report.rows;
+        assert_eq!(rows.len(), 3);
+        assert_eq!(report.total_rows, 3);
+        assert_eq!(rows[0].item_id, "busy-a");
+        assert_eq!(rows[0].events, 5);
+        assert_eq!(rows[0].item_type, "miner");
+        assert!(!rows[0].tracked);
+        assert_eq!(rows[1].item_id, "busy-b");
+        assert_eq!(rows[2].item_id, "quiet");
+
+        // The per-id counters sum to the same number the global chart counts.
+        assert_eq!(report.total_events, 9);
+        assert_eq!(store.item_activity_total(now - 86_400_000, now), 9);
+
+        // Per-type totals describe the whole range, not the page. The map is
+        // ordered by type key, which keeps the header summary stable between
+        // polls instead of reshuffling as rows re-rank.
+        let types: Vec<(&str, i64)> = report
+            .type_totals
+            .iter()
+            .map(|total| (total.item_type.as_str(), total.events))
+            .collect();
+        assert_eq!(types, vec![("battery", 1), ("miner", 5), ("rack", 3)]);
+    }
+
+    #[test]
+    fn item_activity_filters_by_type_search_and_range() {
+        let mut store = store("item-activity-filters");
+        let now = now_ms();
+        let target = target("miner-tracked");
+        store.upsert_config(target, None);
+        store.apply_catalog_item(
+            "miner-tracked",
+            "Epic Hashboard",
+            "miner",
+            Some("Epic"),
+            Some("a52bff"),
+            now,
+        );
+
+        for _ in 0..4 {
+            store.note_item_event("miner-tracked", Some("miner"), now - 1_000);
+        }
+        for _ in 0..2 {
+            store.note_item_event("rack-1", Some("rack"), now - 1_000);
+        }
+        // Old enough to fall outside a one-day window but inside retention.
+        for _ in 0..7 {
+            store.note_item_event("old-part", Some("mutation_component"), now - 4 * 86_400_000);
+        }
+
+        let all = store.item_activity(&ItemActivityQuery::default(), now);
+        let all_rows = &all.rows;
+        assert_eq!(all_rows.len(), 3);
+        assert_eq!(
+            all_rows[0].item_id, "old-part",
+            "the busiest id wins the default range"
+        );
+        assert!(
+            all_rows
+                .iter()
+                .any(|row| row.item_id == "miner-tracked" && row.tracked),
+            "a fleet id must be flagged as tracked"
+        );
+
+        let by_type = store.item_activity(
+            &ItemActivityQuery {
+                item_type: "miner".into(),
+                ..Default::default()
+            },
+            now,
+        );
+        assert_eq!(by_type.rows.len(), 1);
+        assert_eq!(by_type.total_events, 4, "the type filter scopes the totals");
+        assert_eq!(by_type.rows[0].label, "Epic Hashboard");
+        assert_eq!(by_type.rows[0].rarity.as_deref(), Some("Epic"));
+        assert_eq!(by_type.rows[0].rarity_color.as_deref(), Some("a52bff"));
+        assert_eq!(by_type.rows[0].events_24h, 4);
+
+        let by_name = store.item_activity(
+            &ItemActivityQuery {
+                q: "HASH".into(),
+                ..Default::default()
+            },
+            now,
+        );
+        assert_eq!(by_name.rows.len(), 1, "the resolved name is searchable");
+        let by_id = store.item_activity(
+            &ItemActivityQuery {
+                q: "RACK-1".into(),
+                ..Default::default()
+            },
+            now,
+        );
+        assert_eq!(by_id.rows.len(), 1, "the raw id stays searchable");
+
+        let recent = store.item_activity(
+            &ItemActivityQuery {
+                since: now - 86_400_000,
+                until: now,
+                ..Default::default()
+            },
+            now,
+        );
+        assert_eq!(
+            recent.rows.len(),
+            2,
+            "the four-day-old id leaves a one-day range"
+        );
+        assert!(recent.rows.iter().all(|row| row.item_id != "old-part"));
+        // `events24h` stays anchored to "now", not to the selected window.
+        assert_eq!(recent.rows[0].events_24h, recent.rows[0].events);
+    }
+
+    /// The table is paged, so a page must be a slice of one stable ranking and
+    /// the totals must keep describing the whole range, not the visible rows.
+    #[test]
+    fn item_activity_pages_a_stable_ranking_with_range_wide_totals() {
+        let mut store = store("item-activity-paging");
+        let now = now_ms();
+        // Ten ids with strictly decreasing volume, so the expected order is
+        // unambiguous: item-9 (10 frames) down to item-0 (1 frame).
+        for index in 0..10 {
+            let item_type = if index % 2 == 0 { "miner" } else { "rack" };
+            for _ in 0..=index {
+                store.note_item_event(&format!("item-{index}"), Some(item_type), now - 1_000);
+            }
+        }
+
+        let first = store.item_activity(
+            &ItemActivityQuery {
+                limit: 4,
+                offset: 0,
+                ..Default::default()
+            },
+            now,
+        );
+        assert_eq!(first.rows.len(), 4);
+        assert_eq!(first.total_rows, 10);
+        assert_eq!(
+            first
+                .rows
+                .iter()
+                .map(|row| row.item_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["item-9", "item-8", "item-7", "item-6"]
+        );
+        // 10+9+…+1
+        assert_eq!(first.total_events, 55);
+        // The share column divides by this, so it has to describe the range and
+        // not the page: 180 of 2 176 must read 8% on every page.
+        assert_eq!(first.total_events, 55);
+
+        let second = store.item_activity(
+            &ItemActivityQuery {
+                limit: 4,
+                offset: 4,
+                ..Default::default()
+            },
+            now,
+        );
+        assert_eq!(
+            second
+                .rows
+                .iter()
+                .map(|row| row.item_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["item-5", "item-4", "item-3", "item-2"]
+        );
+        // Totals are unchanged by paging: they describe the range.
+        assert_eq!(second.total_events, first.total_events);
+        assert_eq!(second.total_rows, first.total_rows);
+        assert_eq!(second.type_totals, first.type_totals);
+
+        // The last page is short and still reports the real total.
+        let last = store.item_activity(
+            &ItemActivityQuery {
+                limit: 4,
+                offset: 8,
+                ..Default::default()
+            },
+            now,
+        );
+        assert_eq!(last.rows.len(), 2);
+        assert_eq!(last.total_rows, 10);
+
+        // An offset past the end is an empty page, not a panic or a wrap.
+        let past = store.item_activity(
+            &ItemActivityQuery {
+                limit: 4,
+                offset: 999,
+                ..Default::default()
+            },
+            now,
+        );
+        assert!(past.rows.is_empty());
+        assert_eq!(past.total_rows, 10);
+    }
+
+    #[test]
+    fn item_activity_pages_within_a_type_filter() {
+        let mut store = store("item-activity-paging-type");
+        let now = now_ms();
+        for index in 0..6 {
+            let item_type = if index < 4 { "miner" } else { "rack" };
+            for _ in 0..(index + 1) {
+                store.note_item_event(&format!("t-{index}"), Some(item_type), now - 1_000);
+            }
+        }
+
+        let report = store.item_activity(
+            &ItemActivityQuery {
+                item_type: "miner".into(),
+                limit: 2,
+                offset: 0,
+                ..Default::default()
+            },
+            now,
+        );
+        // Only the four miners count toward the totals or the ranking.
+        assert_eq!(report.total_rows, 4);
+        assert_eq!(report.rows.len(), 2);
+        assert_eq!(report.rows[0].item_id, "t-3");
+        assert_eq!(report.type_totals.len(), 1);
+        assert_eq!(report.type_totals[0].item_type, "miner");
+        assert_eq!(report.type_totals[0].items, 4);
+        assert_eq!(report.total_events, 1 + 2 + 3 + 4);
+    }
+
+    #[test]
+    fn item_activity_summarizes_frames_per_type() {
+        let mut store = store("item-activity-type-totals");
+        let now = now_ms();
+        for _ in 0..6 {
+            store.note_item_event("miner-a", Some("miner"), now - 1_000);
+            store.note_item_event("miner-b", Some("miner"), now - 1_000);
+        }
+        for _ in 0..3 {
+            store.note_item_event("rack-a", Some("rack"), now - 1_000);
+        }
+
+        let report = store.item_activity(&ItemActivityQuery::default(), now);
+        let miners = report
+            .type_totals
+            .iter()
+            .find(|total| total.item_type == "miner")
+            .expect("miner total");
+        assert_eq!(miners.events, 12);
+        assert_eq!(miners.items, 2);
+        let racks = report
+            .type_totals
+            .iter()
+            .find(|total| total.item_type == "rack")
+            .expect("rack total");
+        assert_eq!(racks.events, 3);
+        assert_eq!(racks.items, 1);
+        // The per-type sums equal the range total, so the header can show both.
+        let summed: i64 = report.type_totals.iter().map(|total| total.events).sum();
+        assert_eq!(summed, report.total_events);
+    }
+
+    #[test]
+    fn item_activity_survives_a_reopen_and_updates_in_place() {
+        let dir = temp_dir("item-activity-reopen");
+        let logger = Arc::new(Logger::new("error"));
+        let now = now_ms();
+        {
+            let mut store = Store::open(dir.clone(), logger.clone()).expect("store");
+            for _ in 0..6 {
+                store.note_item_event("persisted", Some("miner"), now - 5_000);
+            }
+            store.flush_item_events().expect("flush");
+            let stored: i64 = store
+                .db
+                .query_row("SELECT SUM(events) FROM item_event_points", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(stored, 6);
+        }
+
+        // Counting continues after boot; the second flush must replace the row
+        // instead of inserting a duplicate for the same slice.
+        let mut store = Store::open(dir, logger).expect("reopen");
+        let rows = store.item_activity(&ItemActivityQuery::default(), now).rows;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].events, 6);
+        for _ in 0..2 {
+            store.note_item_event("persisted", Some("miner"), now - 4_000);
+        }
+        store.flush_item_events().expect("second flush");
+        let rows = store.item_activity(&ItemActivityQuery::default(), now).rows;
+        assert_eq!(rows[0].events, 8);
+        let rows_in_table: i64 = store
+            .db
+            .query_row("SELECT COUNT(*) FROM item_event_points", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows_in_table, 1);
+    }
+
+    #[test]
+    fn catalog_records_names_misses_and_boot_state() {
+        let dir = temp_dir("catalog");
+        let logger = Arc::new(Logger::new("error"));
+        let now = now_ms();
+        {
+            let mut store = Store::open(dir.clone(), logger.clone()).expect("store");
+            store.note_item_event("named", Some("miner"), now);
+            store.note_item_event("missing", Some("rack"), now);
+            assert_eq!(store.catalog_unresolved(10).len(), 2);
+
+            assert!(store.apply_catalog_item(
+                "named",
+                "Epic Hashboard",
+                "miner",
+                Some("Epic"),
+                Some("a52bff"),
+                now,
+            ));
+            store.mark_catalog_resolved("missing", now);
+            assert!(store.catalog_unresolved(10).is_empty());
+
+            let entry = store
+                .catalog_entry("NAMED")
+                .expect("case-insensitive lookup");
+            assert_eq!(entry.label, "Epic Hashboard");
+            assert_eq!(entry.rarity.as_deref(), Some("Epic"));
+            assert!(!entry.needs_resolution());
+        }
+
+        // A lookup miss must stay a miss after a restart, so a delisted item is
+        // not retried on every monitor refresh.
+        let store = Store::open(dir, logger).expect("reopen");
+        let missing = store.catalog_entry("missing").expect("catalogued");
+        assert!(!missing.needs_resolution());
+        assert_eq!(missing.label, "");
+        assert!(store.catalog_unresolved(10).is_empty());
+    }
+
+    #[test]
+    fn item_event_buckets_align_to_the_five_minute_grid() {
+        let at = 1_700_000_007_999;
+        let bucket = item_event_bucket_at(at);
+        assert_eq!(bucket % ITEM_EVENT_BUCKET_MS, 0);
+        assert!(bucket <= at && at < bucket + ITEM_EVENT_BUCKET_MS);
+        assert_eq!(item_event_bucket_at(bucket), bucket);
+        // The monitor's finest range is an hour, which must divide evenly.
+        assert_eq!(3_600_000 % ITEM_EVENT_BUCKET_MS, 0);
+    }
+
+    #[test]
+    fn item_events_are_pruned_outside_retention() {
+        let mut store = store("item-activity-prune");
+        let now = now_ms();
+        store.note_item_event("fresh", Some("miner"), now - 1_000);
+        store.note_item_event(
+            "stale",
+            Some("miner"),
+            now - (ITEM_EVENT_RETENTION_DAYS + 1) * 86_400_000,
+        );
+        store.flush_item_events().expect("flush");
+
+        let report = store.item_activity(
+            &ItemActivityQuery {
+                since: now - (ITEM_EVENT_RETENTION_DAYS + 5) * 86_400_000,
+                until: now,
+                ..Default::default()
+            },
+            now,
+        );
+        assert_eq!(report.rows.len(), 1);
+        assert_eq!(report.rows[0].item_id, "fresh");
+        let stale_rows: i64 = store
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM item_event_points WHERE item_id = 'stale'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stale_rows, 0);
     }
 
     #[test]

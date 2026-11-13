@@ -692,6 +692,16 @@ impl Engine {
                 let Some(item_id) = event.item_id.clone() else {
                     return Vec::new();
                 };
+                // The item monitor ranks every id the RLT market shows, not
+                // just the ones on the target fleet, so the frame is counted
+                // before the target lookup below can return early.
+                if event
+                    .currency
+                    .as_deref()
+                    .is_none_or(|currency| currency == "RLT")
+                {
+                    store.note_item_event(&item_id, event.item_type.as_deref(), received_at);
+                }
                 self.handle_market(store, &event, &item_id, raw, received_at)
             }
             Kind::Fill => self.handle_fill(store, &event, raw, received_at),
@@ -2775,6 +2785,61 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The item monitor must rank every id the RLT market shows, not only the
+    /// ones on the target fleet: the whole point of the table is the discovery.
+    #[test]
+    fn counts_market_frames_for_ids_outside_the_target_fleet() {
+        let mut h = harness();
+        let stranger = json!({
+            "cmd": "marketplace_orders_update",
+            "value": {
+                "item_id": "65aa0001d3e4f5061728394a",
+                "currency": "RLT",
+                "item_type": "rack",
+                "data": { "list": [{ "price": 250_000, "quantity": 3 }] }
+            }
+        });
+        // No target matches, so the engine returns early — the frame still has
+        // to be counted.
+        let events = h
+            .engine
+            .handle_frame(&mut h.store, &stranger, 1_000_100, true);
+        assert!(events.is_empty(), "a stranger must not produce a tick");
+
+        // A non-RLT marketplace is a different economy; counting it would rank
+        // ids the RLT monitor can never serve.
+        let other_currency = json!({
+            "cmd": "marketplace_orders_update",
+            "value": {
+                "item_id": "65aa0002d3e4f5061728394b",
+                "currency": "USDT",
+                "data": { "list": [{ "price": 250_000, "quantity": 3 }] }
+            }
+        });
+        h.engine
+            .handle_frame(&mut h.store, &other_currency, 1_000_100, true);
+
+        // The fleet target is counted too, with its type picked up from the
+        // frame so the catalogue can be filtered by product category.
+        h.engine
+            .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_100, true);
+
+        let report = h
+            .store
+            .item_activity(&crate::store::ItemActivityQuery::default(), 1_000_100);
+        let ids: Vec<&str> = report.rows.iter().map(|row| row.item_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["6319f7baa8ce530569ed16b9", "65aa0001d3e4f5061728394a"]
+        );
+        assert_eq!(report.rows[0].item_type, "miner");
+        assert_eq!(report.rows[1].item_type, "rack");
+        // The catalogue now lists both, which is what lets the monitor name
+        // them later without another frame.
+        assert!(h.store.catalog_entry("65aa0001d3e4f5061728394a").is_some());
+        assert!(h.store.find_config("65aa0001d3e4f5061728394a").is_none());
     }
 
     #[test]

@@ -105,6 +105,7 @@ Rollercoin session — two of either will duplicate orders.
 | `DELETE /api/history` | ✅ | wipes the loot log + profit report and resets stats, engine counters and latency samples |
 | `GET /api/report` | ✅ | same derived columns |
 | `GET /api/events` | ➕ | Rust-only: market-frame counts per 5-minute bucket for `?days=1..7`; the deck sums them into the chart timeframe in local time |
+| `GET /api/item-activity` | ➕ | Rust-only: market-frame counts **per item id** in 5-minute buckets over `?days=1..30` or an explicit `?since=&until=`. Takes `itemType` and `q` filters plus `limit` (default 25, max 250) and `offset`; answers a ranked page with `events`, `events24h` and a `tracked` fleet flag, alongside range-wide `totalRows`, `totalEvents` and `typeTotals` computed before paging. Ids never added to the target fleet are included; names come from the `item_catalog` cache, and a bounded, rotating batch of unresolved ids is looked up through `item-info` on each response |
 | `GET /api/price-history` | ➕ | Rust-only: one duration-weighted median close per minute plus its held and raw low/high bands for a single `itemId` over `?days=1..7`; the deck buckets them in local time and merges the live 24h window |
 | `GET /api/session` | ✅ | same preview/expires fields |
 | `POST /api/session` | ✅ | validated, `changed` flag |
@@ -618,3 +619,115 @@ Covered by `engine::tests::a_partial_fill_rearms_the_remainder_without_waiting_f
 `a_remainder_below_the_minimum_is_not_chased`,
 `off_mode_stops_the_local_rearm`, `a_follow_up_needs_a_linked_session` and
 `a_duplicate_fill_cannot_rearm_twice`.
+
+---
+
+## 15. Item activity monitor
+
+`GET /api/events` counts the feed as a whole. `GET /api/item-activity` answers a
+different question — *which item ids moved most* — which needs the count keyed
+by item, so it gets its own tables:
+
+| Table | Row | Retention |
+| --- | --- | --- |
+| `item_event_points` | one `item_id` × one 5-minute slice: `events`, `item_type`, `last_seen_at` | 31 days |
+| `item_catalog` | one row per id ever seen: resolved `label`/`rarity`, `first_seen_at`, `last_seen_at`, `resolved_at`, `attempts` | none (grows with the catalogue) |
+
+Both are additive: a build that predates them ignores the tables, so
+`user_version` stays at 8 and `migrate()` only has to add the two `item_catalog`
+columns the rotation needs.
+
+Slices are **5 minutes**, not an hour. The monitor's finest window is one hour,
+so hourly storage could not answer it without counting a partly-elapsed hour as
+a whole one; 5 minutes divides the hour evenly (12 slices), matches
+`EVENT_BUCKET_MS`, and keeps a month of a busy feed to a few thousand rows per
+item. Note that widening or narrowing `ITEM_EVENT_BUCKET_MS` invalidates
+existing rows, because `bucket_at` encodes the slice grid — change it only with a
+migration.
+
+### Count path
+
+`Engine::handle_frame` counts the frame **before** the target lookup, so an id
+that is not on the fleet is still ranked — that is the discovery half of the
+feature. Only `RLT` frames are counted (a frame with no `currency` counts too,
+matching the engine's own currency gate). Counting is an in-memory
+`BTreeMap<(slice, item_id), _>` bump; `Worker` flushes dirty buckets in one
+transaction every 15 s and on shutdown, exactly like the global event counter.
+
+### Ranking and paging
+
+`Store::item_activity` aggregates the in-memory map (the same window the flusher
+persists, so nothing is double counted), builds the full ranking, sums the
+range-wide totals, and only then slices the requested page. Order is `events`,
+then `events24h`, then id. Per row it derives:
+
+- `events` — frames in the requested range; `events24h` — frames in the last 24 h
+  regardless of the range, so the heat column keeps meaning "busy right now"
+  while the table is scoped to a narrow window;
+- `firstAt`/`lastAt` — the newest and oldest frame the product produced inside
+  the range;
+- `tracked` — whether the id is currently on the target fleet.
+
+A per-row "active time" (`activeHours`) and its derived `rate` used to be
+returned here. They were dropped with the column that displayed them: counts are
+stored in 5-minute slices, so a worker up for two minutes has all of its frames
+in one slice, and any "per hour" figure derived from that describes uptime rather
+than the market.
+
+Paging happens after ranking, so the next batch continues the same order rather
+than re-sorting a new subset. `totalRows`, `totalEvents` and `typeTotals` are
+computed before the slice, which is what lets the header summary and the share
+column stay still while the reader loads more rows. The deck uses the cursor
+style of the loot log — rows accumulate and a **Load more** button asks for the
+next batch — so `offset` is simply how many rows are already held.
+`limit` defaults to `ITEM_ACTIVITY_PAGE_SIZE` (25) and caps at
+`ITEM_ACTIVITY_LIMIT` (250); an `offset` past the end returns an empty page that
+still reports the real `totalRows`.
+
+The share column is `events / totalEvents`: a product's slice of every frame in
+the range, so the column sums to about 100% and 180 of 2 176 reads 8%. An earlier
+version drew a bar scaled to the busiest product next to that number, which let
+one row claim a full track and "8%" at the same time; the bar was removed rather
+than given a second denominator, and `totalEvents` is now the only quantity the
+column needs.
+
+`typeTotals` groups by the type each frame was counted under, not by whatever the
+catalogue says later. `item-info` fills the catalogue in small batches, so
+letting a late lookup rewrite the type would move rows between categories (and
+change the summary) merely because a name arrived; `apply_catalog_item` therefore
+keeps the first type it sees.
+
+### Name resolution
+
+`item-info` is the only source of names, and it is a network call, so the
+response must not depend on it completing:
+
+- `pending_names` (sync, under the store lock) picks up to 8 rows whose name is
+  unknown and whose catalogue row is not already a cached miss, ordered by
+  **fewest attempts first**, then by volume.
+- `resolve_pending` (async, no lock held) asks `item-info` for those ids with a
+  2.5 s budget per response.
+- `apply_resolved` (sync, short lock) writes the outcomes: a success updates the
+  catalogue and the in-memory row; a *definitive* miss (`not found` / `invalid`)
+  is cached via `resolved_at` so it is never retried; a transport failure only
+  bumps `attempts`, so a flaky network recovers later without starving other rows.
+
+The attempt ordering is what makes the last rule safe. Without it a batch of 8
+unnameable ids (a delisted product, or the simulator's random ids) would be
+retried on every refresh and every other row would stay anonymous forever — the
+bug this section exists to prevent. A target enriched by `POST /api/configs` also
+updates its catalogue row, so a fleet item is named before its first frame.
+
+Covered by `item_activity::tests::the_resolution_batch_rotates_instead_of_retrying_the_same_rows`,
+`item_activity::tests::pagination_params_are_parsed_and_bounded`,
+`store::tests::item_activity_ranks_every_id_by_frame_count`,
+`store::tests::item_activity_filters_by_type_search_and_range`,
+`store::tests::item_activity_pages_a_stable_ranking_with_range_wide_totals`,
+`store::tests::item_activity_pages_within_a_type_filter`,
+`store::tests::item_activity_summarizes_frames_per_type`,
+`store::tests::item_activity_survives_a_reopen_and_updates_in_place`,
+`store::tests::catalog_records_names_misses_and_boot_state`,
+`store::tests::item_event_buckets_align_to_the_five_minute_grid`,
+`engine::tests::counts_market_frames_for_ids_outside_the_target_fleet`,
+`http_api::item_activity_ranks_ids_outside_the_fleet_and_names_them_from_item_info` and
+`http_api::item_activity_paginates_without_changing_the_range_totals`.
