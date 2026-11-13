@@ -18,8 +18,8 @@ use tokio::task::JoinHandle;
 
 use crate::api::{PurchaseRequest, PurchaseResult};
 use crate::constants::{
-    EVENT_FLUSH_INTERVAL_MS, MARKET_BROADCAST_INTERVAL_MS, MARKET_COALESCE_MAX,
-    PRICE_SAMPLE_FEED_IDLE_MS, PRICE_SAMPLE_INTERVAL_MS,
+    EVENT_FLUSH_INTERVAL_MS, ITEM_EVENT_FLUSH_INTERVAL_MS, MARKET_BROADCAST_INTERVAL_MS,
+    MARKET_COALESCE_MAX, PRICE_SAMPLE_FEED_IDLE_MS, PRICE_SAMPLE_INTERVAL_MS,
 };
 use crate::dns_probe::{self, SocketMode};
 use crate::engine::{EngineEvent, MarketTick, OrderIntent, PurchaseOutcome};
@@ -93,7 +93,62 @@ pub fn seed_mock_state(store: &mut Store, logger: &Arc<Logger>) -> Result<(), St
         store.apply_session_patch(patch)?;
         logger.info("mock", "seeded mock session");
     }
+    seed_mock_catalog(store, logger);
     Ok(())
+}
+
+/// Names the simulator's ambient items up front.
+///
+/// The real worker resolves names from `item-info`; `MOCK=1` has no session to
+/// call it with, so without this the item monitor would show six 24-character
+/// ids and no product names. Rarity is derived from the level the same way the
+/// miner resolver does it.
+fn seed_mock_catalog(store: &mut Store, logger: &Arc<Logger>) {
+    let now = crate::store::now_ms();
+    let mut seeded = 0usize;
+    for (item_id, name, item_type, level) in crate::mock::AMBIENT_ITEMS {
+        if store.catalog_entry(item_id).is_some() {
+            continue;
+        }
+        let rarity = match level {
+            1 => Some(("Uncommon", "2bd600")),
+            2 => Some(("Rare", "2196f3")),
+            3 => Some(("Epic", "a52bff")),
+            4 => Some(("Legendary", "ffb800")),
+            5 => Some(("Unreal", "ff3b6b")),
+            _ => None,
+        };
+        let label = match rarity {
+            Some((rarity, _)) => format!("{rarity} {name}"),
+            None => name.to_string(),
+        };
+        store.apply_catalog_item(
+            item_id,
+            &label,
+            item_type,
+            rarity.map(|(rarity, _)| rarity),
+            rarity.map(|(_, color)| color),
+            now,
+        );
+        seeded += 1;
+    }
+    for target in store.state.configs.clone() {
+        if store.catalog_entry(&target.item_id).is_some() {
+            continue;
+        }
+        store.apply_catalog_item(
+            &target.item_id,
+            &target.label,
+            &target.item_type,
+            None,
+            target.rarity_color.as_deref(),
+            now,
+        );
+        seeded += 1;
+    }
+    if seeded > 0 {
+        logger.info("mock", format!("seeded {seeded} catalogue item(s)"));
+    }
 }
 
 pub struct Worker {
@@ -105,6 +160,7 @@ pub struct Worker {
     maintenance: JoinHandle<()>,
     stats_task: JoinHandle<()>,
     event_task: JoinHandle<()>,
+    item_event_task: JoinHandle<()>,
     market_task: JoinHandle<()>,
     keepalive_task: Option<JoinHandle<()>>,
     system_tasks: Vec<JoinHandle<()>>,
@@ -434,6 +490,31 @@ impl Worker {
             }
         });
 
+        // Per-item frame counts also stay in memory; this task writes them in
+        // one transaction on a slower cadence than the global activity counter.
+        let item_event_state = state.clone();
+        let item_event_task = tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_millis(ITEM_EVENT_FLUSH_INTERVAL_MS));
+            interval.tick().await; // the first tick is immediate
+            loop {
+                interval.tick().await;
+                let flushed = {
+                    let mut store = item_event_state
+                        .store
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    store.flush_item_events()
+                };
+                if let Err(error) = flushed {
+                    item_event_state.logger.warn(
+                        "events",
+                        format!("could not persist item activity: {error}"),
+                    );
+                }
+            }
+        });
+
         let stats_state = state.clone();
         let stats_task = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(HEALTH_TICK_MS));
@@ -454,6 +535,7 @@ impl Worker {
             maintenance,
             stats_task,
             event_task,
+            item_event_task,
             market_task,
             keepalive_task,
             system_tasks,
@@ -477,6 +559,7 @@ impl Worker {
         self.maintenance.abort();
         self.stats_task.abort();
         self.event_task.abort();
+        self.item_event_task.abort();
         self.market_task.abort();
     }
 }

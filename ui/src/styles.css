@@ -695,6 +695,14 @@
     color: var(--type-color, var(--color-muted));
   }
 
+  /* The item-activity header puts a frame count inside the badge. The count
+     carries the weight so the eye lands on the number, while the type name
+     stays the quieter label next to it. */
+  .type-badge > b {
+    @apply font-bold text-ink;
+    letter-spacing: 0;
+  }
+
   /* A data-quality marker, not a target state: the Book figure on the card is
      the market's number, while decisions use a local floor for a short window
      after a fill. The dashed edge marks it as provisional rather than a value

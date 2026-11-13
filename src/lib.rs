@@ -22,6 +22,7 @@ pub mod engine;
 pub mod events;
 pub mod feed;
 pub mod gateway;
+pub mod item_activity;
 pub mod item_info;
 pub mod keepalive;
 pub mod latency;

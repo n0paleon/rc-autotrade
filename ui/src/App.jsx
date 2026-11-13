@@ -4,6 +4,7 @@ import { Icon } from "./components/ModalShell.jsx";
 import { MonitorWindow } from "./components/MonitorWindow.jsx";
 import { BackupModal } from "./components/BackupModal.jsx";
 import { LootDetailModal } from "./components/LootDetailModal.jsx";
+import { ItemMonitor } from "./components/ItemMonitor.jsx";
 import {
   BridgeModal,
   ConfirmModal,
@@ -2263,6 +2264,9 @@ const MemoReportPanel = memo(ReportPanel);
 const MemoTargetsPanel = memo(TargetsPanel);
 const MemoTrendPanel = memo(TrendPanel);
 const MemoFeedPanel = memo(FeedPanel);
+// The item monitor owns its own polling and filter state; a market tick must not
+// re-render it (nor reset an in-flight name lookup).
+const MemoItemMonitor = memo(ItemMonitor);
 
 function Dashboard({ worker, notify, toasts, dismissToast }) {
   const { snapshot, logs, status, latency } = worker;
@@ -2470,6 +2474,9 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       </div>
       <div className="deck-enter deck-enter-3 mx-auto mt-4 w-full max-w-[1600px] px-3 sm:px-4 lg:px-6">
         <MemoActivityChart request={worker.request} />
+      </div>
+      <div className="deck-enter deck-enter-3 mx-auto mt-4 w-full max-w-[1600px] px-3 sm:px-4 lg:px-6">
+        <MemoItemMonitor request={worker.request} notify={notify} />
       </div>
       <div className="deck-enter deck-enter-3 mx-auto mt-4 w-full max-w-[1600px] px-3 sm:px-4 lg:px-6">
         <MemoTrendPanel configs={snapshot.configs || []} onEdit={openTargetModal} />

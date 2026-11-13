@@ -22,6 +22,37 @@ pub const MIN_INTERVAL_MS: u64 = 200;
 pub const MAX_INTERVAL_MS: u64 = 10_000;
 pub const CONNECT_DELAY_MS: u64 = 350;
 
+/// Items the simulator mentions but never trades. They exist so the item
+/// monitor has something to rank besides the two seeded targets: the whole point
+/// of that table is that it covers ids which are *not* on the fleet.
+///
+/// `(item_id, name, item_type, level)` — the level mirrors the miner rarity
+/// ladder the real `item-info` payload carries, so the cached label reads like
+/// the production one ("Epic Aurora Miner").
+pub const AMBIENT_ITEMS: [(&str, &str, &str, u8); 6] = [
+    (
+        "65aa0001d3e4f5061728394a",
+        "Clover Hashboard",
+        "mutation_component",
+        0,
+    ),
+    ("65aa0002d3e4f5061728394b", "Watt Battery", "battery", 0),
+    ("65aa0003d3e4f5061728394c", "Server Rack Mk II", "rack", 0),
+    ("65aa0004d3e4f5061728394d", "Aurora Miner", "miner", 3),
+    (
+        "65aa0005d3e4f5061728394e",
+        "Copper Coil",
+        "mutation_component",
+        0,
+    ),
+    (
+        "65aa0006d3e4f5061728394f",
+        "Liquid Cooler",
+        "utility_item",
+        0,
+    ),
+];
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -315,7 +346,9 @@ async fn run(
                     let value = market_frame(&item, phase, &mut walk);
                     emit(&events, &stats, "marketplace_orders_update", value);
                 }
-                if ticks % 4 == 0 {
+                if ticks.is_multiple_of(4) {
+                    // A random id keeps the "unknown product" path exercised: it
+                    // is counted by the item monitor but never named.
                     emit(&events, &stats, "marketplace_orders_update", json!({
                         "item_id": format!("65aa{:x}", rand::random::<u32>()),
                         "currency": "RLT",
@@ -323,7 +356,24 @@ async fn run(
                         "data": { "list": [{ "price": 250_000, "quantity": 4 }] },
                     }));
                 }
-                if ticks % 6 == 0 {
+                if ticks.is_multiple_of(3) {
+                    // Ambient marketplace traffic: ids that are deliberately not
+                    // on the target fleet, so the item monitor has a real ranking
+                    // to draw while the simulator runs.
+                    let index = (rand::random::<u32>() as usize) % AMBIENT_ITEMS.len();
+                    let (item_id, _, item_type, _) = AMBIENT_ITEMS[index];
+                    let price = 120_000 + (rand::random::<u32>() % 400_000);
+                    let quantity = 1 + (rand::random::<u32>() % 25);
+                    emit(&events, &stats, "marketplace_orders_update", json!({
+                        "item_id": item_id,
+                        "currency": "RLT",
+                        "item_type": item_type,
+                        "data": {
+                            "list": [{ "price": price, "quantity": quantity }],
+                        },
+                    }));
+                }
+                if ticks.is_multiple_of(6) {
                     emit(&events, &stats, "marketplace_activity", json!({
                         "item_id": format!("65aa{:x}", rand::random::<u32>()),
                         "currency": "RLT",
