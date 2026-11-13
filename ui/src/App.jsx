@@ -648,8 +648,8 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
                 className="recon-chip shrink-0"
                 title={
                   Number.isFinite(runtime.lastStock) && effectiveStock !== null
-                    ? `Reconciling a recent fill: the market still shows ${formatInt(runtime.lastStock)}, but orders use the local remainder (${formatInt(effectiveStock)}) until the window closes.`
-                    : "Reconciling a recent fill: orders do not trust the market stock until the window closes."
+                    ? `Reconciling a recent order: the market still shows ${formatInt(runtime.lastStock)}, but orders use the local remainder (${formatInt(effectiveStock)}) until the window closes.`
+                    : "Reconciling a recent order: orders do not trust the market stock until the window closes."
                 }
               >
                 RECON

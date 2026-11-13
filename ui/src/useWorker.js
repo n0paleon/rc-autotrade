@@ -423,7 +423,8 @@ export function useWorker({ notify }) {
             lastStock: data.stock,
             // `stock` is what upstream reported; `effectiveStock` is what the
             // engine was allowed to order against. They differ for ~1.5 s after
-            // a fill, while a frame that may predate our purchase is distrusted.
+            // an order, while a frame that may predate our purchase is
+            // distrusted.
             effectiveStock: Number.isFinite(data.effectiveStock)
               ? data.effectiveStock
               : runtime.effectiveStock,

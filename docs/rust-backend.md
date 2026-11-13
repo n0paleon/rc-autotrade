@@ -526,42 +526,63 @@ Still open (deliberately unchanged): per-request auth rate limiting, loot-log
 retention plus `COUNT(*)` caching for a very large `orders` table, and a release
 profile with LTO.
 
-## 14. Partial fills and local reconciliation
+## 14. Early rearm and local reconciliation
 
 The feed is the slow part of a trade, so waiting for it twice is expensive: an
-order that fills partially leaves stock behind, and the old engine only bought
-that leftover when the *next* `marketplace_orders_update` frame re-advertised it
-— one extra WS hop after the fill.
+order leaves stock behind, and the old engine only bought that leftover when the
+*next* `marketplace_orders_update` frame re-advertised it — one extra WS hop
+after the fill.
 
-**Local rearm.** `handle_fill` now fires the remainder itself
-(`rearm_after_partial_fill`). The quantity is bounded by two numbers: the
-intent's own unfilled remainder (`qty - got`) and the book seen at trigger minus
-what the fill took (`stockAtTrigger - got`), so a deep book cannot make the
-follow-up over-buy and a follow-up never assumes an unobserved restock. It goes
-through `plan_order` like any other order, so the price ceiling, the minimum and
-`allowPartialOrder` still decide. `place_order` was extracted from
-`handle_market` so the follow-up cannot skip a gate: it only opts out of
-`delayPerOrder` (it completes an order that is already in flight) and still pays
-a rate slot. A rejected follow-up is recorded but does not trip the backoff,
-because a wrong guess about the remainder is an expected outcome and the backoff
-would freeze the target for far longer than the frame wait it replaced.
+**Early rearm.** `handle_fill` re-plans the level itself (`rearm_after_fill`)
+instead of waiting for that frame. The quantity no longer comes from the intent's
+unfilled remainder (`qty - got`); it comes from the same `plan_order` call a frame
+would make, against the units the level still holds, so every quantity
+relationship is covered:
+
+- `got < sent` — a partial fill leaves the rest of the request on the book;
+- `sent < ready` — the request never covered the best level, so `ready - sent`
+  units are still listed and would otherwise wait one WS hop;
+- a full fill of the whole level — the floor is 0, the planner returns `no-stock`
+  and nothing is fired.
+
+It goes through `plan_order` like any other order, so the price ceiling, the
+minimum and `allowPartialOrder` still decide, and high-stock doubling is disabled
+(a fill confirms what was taken; it is not a new signal). `place_order` was
+extracted from `handle_market` so the follow-up cannot skip a gate: it only opts
+out of `delayPerOrder` (it extends a fill the engine has just booked) and
+still pays a rate slot. A rejected follow-up is recorded but does not trip the
+backoff, because a wrong guess about the leftover is an expected outcome and the
+backoff would freeze the target for far longer than the frame wait it replaced.
 
 **Reconciliation.** Frames carry no `updatedAt` and no sequence number (verified
 against the raw frames in `orders.raw_events`), so a snapshot generated before
 our purchase was applied can arrive after it and still show the pre-purchase
 depth. Trusting it would resurrect stock that is already gone. `Runtime::reconcile`
-therefore holds a floor for `RECONCILE_WINDOW_MS` (1.5 s) after a fill:
+is therefore a local ledger of the best level for `RECONCILE_WINDOW_MS` (1.5 s):
 
+- it opens when the order is **submitted**, reserving the whole request out of
+  the level, so neither a stale frame nor a second order can spend the same units
+  in the gap between the HTTP response and the result frame;
+- a fill returns only the part upstream did not take (`sent - got`) and records
+  what it did take; a result that obtained nothing returns the whole request;
 - a frame may lower the decision stock but never raise it above the floor;
-- every order placed while the window is open consumes from the floor, so a
-  stale frame cannot re-order units a follow-up already committed;
 - the window closes early — and the frame wins — when its best price moved to a
   different level, when it shows a *fuller* best level than the one that was
   bought from (a pre-purchase snapshot cannot contain new listings), when it
   shows at most the floor, or when its `totalCount` dropped by at least what was
-  bought;
+  bought (the total proof only applies once a fill has been booked, otherwise
+  "dropped by zero" would close the window on the first frame);
 - on expiry the frame wins again, so a genuine restock is invisible for at most
-  the window.
+  the window;
+- a result that arrives after the window closed is booked but never reopens it:
+  the feed has been authoritative for longer than the window, so rebuilding a
+  floor from the old trigger could only resurrect stock that is gone.
+
+Settling against the ledger instead of recomputing `stockAtTrigger - got` at
+every fill is what stops the early update from firing a wrong buy when the real
+result lands: any order placed in the meantime already spent its own share of
+the floor, and recomputing would hand those units to the fill as well — the
+double-buy the early rearm used to trigger.
 
 The price and depth proofs matter: without them a full fill of a whole level
 (floor 0) would blind the engine to a genuinely cheaper listing that appears on
@@ -577,6 +598,12 @@ in the runtime snapshot for debugging. Nothing about the window is persisted: it
 is a within-process view that a restart simply drops.
 
 Covered by `engine::tests::a_partial_fill_rearms_the_remainder_without_waiting_for_a_frame`,
+`a_full_fill_with_stock_left_rearms_early`,
+`a_submitted_order_protects_its_units_before_the_fill_lands`,
+`the_early_update_never_spends_the_leftover_twice`,
+`a_late_fill_does_not_reopen_the_window`,
+`a_failed_fill_gives_its_reservation_back`,
+`an_over_fill_cannot_inflate_the_book`,
 `a_stale_frame_cannot_resurrect_stock_a_fill_already_consumed`,
 `a_frame_that_shows_at_most_the_floor_closes_the_window_early`,
 `an_expired_window_lets_the_frame_win_again`,
