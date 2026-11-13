@@ -176,27 +176,35 @@ struct PendingOrder {
     request_payload: Option<Value>,
 }
 
-/// Locally committed book state for one target while a fill is being
-/// reconciled against the live feed.
+/// Locally committed book state for one target while an order is outstanding or
+/// its fill is being reconciled against the live feed.
 ///
 /// The engine cannot tell a stale frame (generated before upstream applied our
 /// order) from a genuine restock: the frames carry no version at all. So it
 /// keeps a floor for a short window instead of guessing: frames may not raise
 /// the decision stock past [`Reconcile::floor`] until the window closes or one
 /// of the proofs below shows the frame has caught up with us.
+///
+/// The ledger opens when the order is **submitted**, not when its fill lands,
+/// so the units a request commits are never offered to a second order in the
+/// gap between the HTTP response and the result frame. Scaling the ledger by
+/// `floor` rather than by `stockAtTrigger - got` is what keeps the early rearm
+/// honest: every path that spends from the book goes through the same floor.
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Reconcile {
-    /// Remaining book the engine believes it can still buy. Any order placed
-    /// while the window is open consumes from it, so a follow-up cannot be
-    /// re-ordered by a stale frame.
+    /// Units the engine believes it can still buy at this level. Opening the
+    /// window reserves the whole request out of it, a fill returns the part
+    /// upstream did not take, and a result that obtained nothing returns the
+    /// whole request, so a stale frame or a follow-up can never be handed the
+    /// same units twice.
     floor: i64,
     /// Wall-clock deadline. Past it the next frame is assumed fresh.
     until: i64,
     /// Whole-book depth when the signal fired (`totalCount`). Lets a frame prove
     /// freshness by its total dropping by at least [`Reconcile::bought`].
     total_at_trigger: Option<i64>,
-    /// Units this fill actually took from the book.
+    /// Units booked fills have actually taken from the level.
     bought: i64,
     /// Best-level depth when the signal fired. A frame showing *more* than this
     /// has new listings the pre-purchase snapshot cannot contain.
@@ -204,6 +212,38 @@ struct Reconcile {
     /// Best-level price when the signal fired, as a micro-RLT key. A frame
     /// whose best price moved is a different level and carries new information.
     price_key: i64,
+}
+
+impl Reconcile {
+    /// Opens a ledger for the level a frame just advertised.
+    fn open(now: i64, stock: i64, price: f64, total: Option<i64>) -> Self {
+        Self {
+            floor: stock,
+            until: now + RECONCILE_WINDOW_MS,
+            total_at_trigger: total,
+            bought: 0,
+            trigger_stock: stock,
+            price_key: price_key(price),
+        }
+    }
+
+    /// True while the frame path must still defer to the local ledger.
+    fn live(&self, now: i64) -> bool {
+        now < self.until
+    }
+
+    /// Removes the units a just-submitted order committed.
+    fn reserve(&mut self, qty: i64) {
+        self.floor = self.floor.saturating_sub(qty).max(0);
+    }
+
+    /// Returns units an order did not actually take to the book.
+    fn release(&mut self, qty: i64) {
+        self.floor = self
+            .floor
+            .saturating_add(qty.max(0))
+            .min(self.trigger_stock);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -426,11 +466,11 @@ impl Runtime {
 
     /// Stock the decision path is allowed to believe for this frame.
     ///
-    /// With no open window this is simply the frame's own depth. While a fill
-    /// is being reconciled, a frame may not raise the book above what we know
-    /// we still have, because it was most likely generated before upstream
-    /// applied our order. Four proofs close the window early and hand authority
-    /// straight back to the frame:
+    /// With no open window this is simply the frame's own depth. While an order
+    /// is outstanding or a fill is being reconciled, a frame may not raise the
+    /// book above what we know we still have, because it was most likely
+    /// generated before upstream applied our order. Four proofs close the
+    /// window early and hand authority straight back to the frame:
     ///
     /// * its best price moved — a different level is new information;
     /// * it shows a *fuller* best level than the one we bought from, which a
@@ -453,7 +493,11 @@ impl Runtime {
             self.reconcile = None;
             return raw;
         }
-        if let Some(frame_total) = frame_total
+        // The total proof needs a booked fill to compare against: before any
+        // result lands `bought` is 0, and "dropped by at least zero" would
+        // close the window on the very first frame instead of proving anything.
+        if reconcile.bought > 0
+            && let Some(frame_total) = frame_total
             && let Some(at_trigger) = reconcile.total_at_trigger
             && frame_total <= at_trigger.saturating_sub(reconcile.bought)
         {
@@ -461,6 +505,77 @@ impl Runtime {
             return raw;
         }
         reconcile.floor
+    }
+
+    /// Books one order result against the local ledger of the level it bought.
+    ///
+    /// The whole request was reserved when the order was submitted, so a fill
+    /// only has to (a) return the units upstream did not take and (b) record
+    /// the units it did take. Nothing is recomputed from the trigger frame: any
+    /// order the engine placed in the meantime already spent its own share out
+    /// of the floor, and recomputing would hand those units to this fill as
+    /// well — the double-buy that made an early rearm fire for goods another
+    /// order had already committed.
+    ///
+    /// A result that arrives after the reservation expired does not open a new
+    /// window. The feed has been authoritative for longer than the window, so
+    /// rebuilding a floor from the old trigger frame could only resurrect stock
+    /// that is already gone. Such a fill is booked and leaves the next frame in
+    /// charge. Returns the free units left on the level, when a ledger exists.
+    fn settle_fill(
+        &mut self,
+        now: i64,
+        sent: i64,
+        got: i64,
+        total_at_trigger: Option<i64>,
+        price: f64,
+    ) -> Option<i64> {
+        let key = price_key(price);
+        match self.reconcile {
+            None => return None,
+            Some(window) if !window.live(now) => {
+                // A result that arrives after the reservation expired is booked
+                // but never reopens a window: the feed has been authoritative
+                // for longer than the window, so rebuilding a floor from the
+                // old trigger frame could only resurrect stock that is gone.
+                self.reconcile = None;
+                return None;
+            }
+            // A fill at another level belongs to a price the ledger no longer
+            // tracks; the best level's own reservation stays untouched.
+            Some(window) if window.price_key != key => return None,
+            Some(_) => {}
+        }
+        let window = self.reconcile.as_mut().expect("matched above");
+        // `saturating_sub` clamps at `i64::MIN`, not at zero, so an over-fill
+        // has to be floored explicitly: it never owes the book units.
+        window.release(sent.saturating_sub(got).max(0));
+        window.bought = window.bought.saturating_add(got).min(window.trigger_stock);
+        // A fill is fresh evidence that upstream applied the order, so the
+        // distrust window restarts from the result, exactly as before.
+        window.until = now + RECONCILE_WINDOW_MS;
+        if window.total_at_trigger.is_none() {
+            window.total_at_trigger = total_at_trigger;
+        }
+        Some(window.floor)
+    }
+
+    /// Gives the reservation of an order that obtained nothing back to the book.
+    ///
+    /// Used when the result frame itself says the order was not filled. An
+    /// HTTP rejection deliberately does **not** release: the request may still
+    /// have reached the matching engine, so until the window closes the units
+    /// stay distrusted exactly like the ones a fill consumed. Keeping the
+    /// window (instead of dropping it) also preserves a follow-up's own
+    /// reservation in the same floor.
+    fn release_reservation(&mut self, now: i64, qty: i64, price: f64) {
+        let key = price_key(price);
+        if let Some(window) = self.reconcile.as_mut()
+            && window.live(now)
+            && window.price_key == key
+        {
+            window.release(qty);
+        }
     }
 }
 
@@ -935,9 +1050,9 @@ impl Engine {
                 return events;
             }
         }
-        // A follow-up completes an intent that already exists rather than
-        // opening a new one, so the inter-order cooldown does not apply to it.
-        // It still pays for a rate slot below.
+        // A follow-up extends a fill the engine has just booked rather than
+        // opening a new signal, so the inter-order cooldown does not apply to
+        // it. It still pays for a rate slot below.
         if !follow_up && now - self.last_order_at < settings.delay_per_order {
             self.logger
                 .debug("engine", format!("{label} in range, waiting for cooldown"));
@@ -1064,11 +1179,21 @@ impl Engine {
             runtime.last_result = Some(json!({
                 "status": "submitted", "at": now, "qty": qty, "price": unit_price
             }));
-            // The units are committed now, so they come off the local floor:
-            // a stale frame carrying the pre-purchase book can no longer order
-            // them a second time.
-            if let Some(reconcile) = runtime.reconcile.as_mut() {
-                reconcile.floor = (reconcile.floor - qty).max(0);
+            // The units are committed the moment the request goes out, so the
+            // ledger opens here rather than waiting for the result frame. A
+            // stale frame carrying the pre-purchase book can no longer order
+            // them a second time, and the early rearm reads a floor that already
+            // has every outstanding order reserved out of it.
+            let key = price_key(unit_price);
+            let live = matches!(runtime.reconcile, Some(window) if window.live(now) && window.price_key == key);
+            if live {
+                if let Some(window) = runtime.reconcile.as_mut() {
+                    window.reserve(qty);
+                }
+            } else if let Some(stock) = stock_at_trigger {
+                let mut window = Reconcile::open(now, stock, unit_price, total_count_at_trigger);
+                window.reserve(qty);
+                runtime.reconcile = Some(window);
             }
         }
 
@@ -1417,12 +1542,10 @@ impl Engine {
                 self.pending.remove(order_id);
             }
 
-            // The fill is booked: until a fresher frame confirms it, the
-            // decision stock is floored at what this fill left behind. The raw
-            // `last_stock` is deliberately left alone — it must keep reporting
-            // what upstream said.
-            let trigger_stock = pending_meta.stock_at_trigger;
-            let floor = trigger_stock.map(|stock| stock.saturating_sub(fill.count));
+            // The fill is booked against the local ledger: the part of the
+            // request upstream did not take comes back to the book, and what it
+            // did take stays spent. The raw `last_stock` is deliberately left
+            // alone — it must keep reporting what upstream said.
             let stock_after = {
                 let runtime = self.runtime_for(&item_id, pending_meta.qty.max(1));
                 runtime.fills += 1;
@@ -1430,17 +1553,16 @@ impl Engine {
                     "status": "filled", "at": now, "qty": fill.count,
                     "price": unit_price, "profit": profit
                 }));
-                if let (Some(floor), Some(trigger_stock)) = (floor, trigger_stock) {
-                    runtime.reconcile = Some(Reconcile {
-                        floor,
-                        until: now + RECONCILE_WINDOW_MS,
-                        total_at_trigger: pending_meta.total_count_at_trigger,
-                        bought: fill.count,
-                        trigger_stock,
-                        price_key: price_key(pending_meta.unit_price),
-                    });
-                }
-                floor.or(runtime.last_stock).unwrap_or(0)
+                runtime
+                    .settle_fill(
+                        now,
+                        pending_meta.qty,
+                        fill.count,
+                        pending_meta.total_count_at_trigger,
+                        pending_meta.unit_price,
+                    )
+                    .or(runtime.last_stock)
+                    .unwrap_or(0)
             };
 
             self.logger.info(
@@ -1474,7 +1596,7 @@ impl Engine {
             });
             self.logger
                 .debug("fill", format!("recorded {entry_id} for {item_id}"));
-            events.extend(self.rearm_after_partial_fill(
+            events.extend(self.rearm_after_fill(
                 store,
                 config.as_ref(),
                 &pending_meta,
@@ -1490,10 +1612,13 @@ impl Engine {
             if let Some(order_id) = &fill.order_id {
                 self.pending.remove(order_id);
             }
-            // Upstream just said there is nothing: our floor is no better
-            // information than the next frame, so stop distrusting the feed.
+            // Upstream just said there is nothing, so this order's reservation
+            // goes back to the book. The ledger is kept rather than dropped: a
+            // follow-up that is still in flight owns its own share of the same
+            // floor, and the next frame closes the window by showing at most
+            // what is actually left.
             self.runtime_for(&item_id, pending_meta.qty.max(1))
-                .reconcile = None;
+                .release_reservation(now, pending_meta.qty, pending_meta.unit_price);
             self.logger.warn(
                 "fill",
                 format!(
@@ -1548,21 +1673,31 @@ impl Engine {
         events
     }
 
-    /// Fires the remainder of a partially filled order immediately instead of
+    /// Fires the next slice of a level as soon as its fill lands, instead of
     /// waiting for the next market frame to re-advertise the leftover stock.
     ///
-    /// The quantity is bounded by two different numbers on purpose:
+    /// The quantity no longer comes from the intent's own unfilled remainder.
+    /// It comes from the same planner a frame would call, against the local
+    /// ledger the fill just settled, so every quantity relationship is covered:
     ///
-    /// * the order's own remainder (`qty - got`), so a deep book cannot make the
-    ///   follow-up buy more than the intent still wanted;
-    /// * the book we saw at trigger minus what was just bought, so the follow-up
-    ///   never assumes a restock that has not been observed.
+    /// * `got < sent` — the order was partially matched and the rest of the
+    ///   request is still on the book;
+    /// * `sent < ready` — the request never covered the best level, so the level
+    ///   still holds `ready - sent` units that a frame would re-advertise one WS
+    ///   hop later;
+    /// * a full fill of the whole level — the settled book is empty and the
+    ///   planner returns `no-stock`, so nothing is fired.
+    ///
+    /// The local floor is the bound, not `stockAtTrigger - got`. The floor
+    /// already had every order the engine placed reserved out of it, so a stale
+    /// frame or an earlier follow-up can never hand the same units to two
+    /// orders — the wrong buy this used to trigger when the real result landed.
     ///
     /// The plan still goes through the normal price/target/minimum checks; a
-    /// remainder below `min_acceptable_qty` is left alone, exactly like a thin
-    /// frame would be.
+    /// slice below `min_acceptable_qty` is left alone, exactly like a thin frame
+    /// would be.
     #[allow(clippy::too_many_arguments)]
-    fn rearm_after_partial_fill(
+    fn rearm_after_fill(
         &mut self,
         store: &mut Store,
         config: Option<&Target>,
@@ -1579,15 +1714,22 @@ impl Engine {
         if got <= 0 {
             return events;
         }
-        let Some(stock_at_trigger) = pending.stock_at_trigger else {
-            return events;
-        };
-        let floor = stock_at_trigger.saturating_sub(got);
-        let unfilled = pending.qty.saturating_sub(got);
-        if floor <= 0 || unfilled <= 0 {
+        if !store.state.settings.mode.plans() {
             return events;
         }
-        if !store.state.settings.mode.plans() {
+        let key = price_key(pending.unit_price);
+        let available = {
+            let runtime = self.runtime_for(&config.item_id, config.desired_qty);
+            match runtime.reconcile {
+                // Only a live ledger for the same level may be traded from:
+                // once a frame (or the window) has taken authority back, the
+                // fill's old trigger snapshot is stale and re-arming from it
+                // would buy goods that are already committed or gone.
+                Some(window) if window.live(now) && window.price_key == key => window.floor,
+                _ => return events,
+            }
+        };
+        if available < 1 {
             return events;
         }
 
@@ -1595,15 +1737,21 @@ impl Engine {
             crate::rules::PlanInput {
                 active: config.active,
                 target_price: config.target_price,
-                desired_qty: unfilled,
-                // A follow-up completes an intent that already exists: it must
-                // never double that intent just because the book looks deep.
+                // A fill is a fresh look at the same level, so the target's
+                // normal per-signal quantity applies. It is deliberately not
+                // the intent's unfilled remainder: when `sent < ready` the book
+                // is deeper than the request and a frame would order the same
+                // quantity again.
+                desired_qty: config.desired_qty,
+                // Never re-double a level just because high-stock mode would
+                // have doubled it on a frame: a fill confirms what was taken,
+                // it is not a new signal.
                 high_stock_threshold: i64::MAX,
                 min_acceptable_qty: config.min_acceptable_qty,
                 allow_partial_order: config.allow_partial_order,
             },
             pending.unit_price,
-            floor as f64,
+            available as f64,
             false,
             Some(config.target_price),
         );
@@ -1611,7 +1759,7 @@ impl Engine {
             self.logger.info(
                 "order",
                 format!(
-                    "partial fill for {label} leaves {floor} on the book, but the plan says {} — no local rearm",
+                    "fill for {label} leaves {available} on the book, but the plan says {} — no local rearm",
                     plan.reason.unwrap_or("skip")
                 ),
             );
@@ -1619,14 +1767,14 @@ impl Engine {
         }
         let qty = plan.qty.unwrap_or(1);
         // `plan_order` only applies the minimum when the book is thinner than
-        // the request. A follow-up asks for exactly the remainder, so it would
+        // the request. A follow-up asks for a slice of the level, so it would
         // otherwise slip a below-minimum order through; holding it to the same
         // minimum keeps a config like "never fill fewer than 2" honest.
         if qty < config.min_acceptable_qty {
             self.logger.info(
                 "order",
                 format!(
-                    "partial fill for {label} leaves {qty}, below the {}-unit minimum — no local rearm",
+                    "fill for {label} leaves {qty}, below the {}-unit minimum — no local rearm",
                     config.min_acceptable_qty
                 ),
             );
@@ -1635,7 +1783,7 @@ impl Engine {
         self.logger.info(
             "order",
             format!(
-                "LOCAL REARM {label} ×{qty} @ {:.6} RLT — remainder of a partial fill, not waiting for the next frame",
+                "LOCAL REARM {label} ×{qty} @ {:.6} RLT — {available} left on the level after the fill, not waiting for the next frame",
                 pending.unit_price
             ),
         );
@@ -1648,10 +1796,9 @@ impl Engine {
             false,
             (pending.unit_price * PRICE_SCALE).round(),
             pending.unit_price,
-            Some(floor),
-            // The follow-up's own window will be built from whatever frame
-            // eventually confirms it; forwarding the parent's total would be a
-            // stale proof.
+            Some(available),
+            // The follow-up shares the window that is already open; forwarding
+            // the parent's `totalCount` would be a stale proof.
             None,
             signal_at,
             now,
@@ -3485,6 +3632,230 @@ mod tests {
         assert!(follow.is_empty(), "nothing is left to chase");
     }
 
+    /// `sent < ready`: the request never covered the best level, so the units a
+    /// frame would re-advertise one WS hop later are bought from the result
+    /// itself. The old rule only fired on `got < sent`, so this level was
+    /// abandoned until the next frame.
+    #[test]
+    fn a_full_fill_with_stock_left_rearms_early() {
+        let mut h = harness();
+        {
+            let mut target = h.store.state.configs[0].clone();
+            target.desired_qty = 3;
+            h.store.upsert_config(target, None);
+        }
+        h.now.store(1_000_001, Ordering::SeqCst);
+        let events =
+            h.engine
+                .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_001, true);
+        let intent = submissions(&events)[0].clone();
+        assert_eq!(
+            intent.qty, 3,
+            "the request intentionally stops below the book"
+        );
+
+        accept(&mut h, &intent, "order-1", 1_000_120);
+        h.now.store(1_000_400, Ordering::SeqCst);
+        let fill = h.engine.handle_frame(
+            &mut h.store,
+            &fill_frame("order-1", 3, 270_000, ORDER_STATUS_FILLED),
+            1_000_400,
+            true,
+        );
+
+        // `got == sent`, so there is no shortfall at all: the trigger is the
+        // stock the level still shows, exactly like a fresh frame would see it.
+        let follow = submissions(&fill);
+        assert_eq!(follow.len(), 1, "a deep level is not abandoned for a frame");
+        assert_eq!(follow[0].qty, 3);
+        assert!(follow[0].optimistic);
+        assert_eq!(follow[0].stock_at_trigger, Some(7));
+
+        // The deck learns the settled book from the same event, not later.
+        let broadcast = fill
+            .iter()
+            .find_map(|event| match event {
+                EngineEvent::Broadcast {
+                    kind: "order",
+                    data,
+                } if data["phase"] == "filled" => Some(data.clone()),
+                _ => None,
+            })
+            .expect("filled broadcast");
+        assert_eq!(broadcast["stockAfter"], 7);
+    }
+
+    #[test]
+    fn a_submitted_order_protects_its_units_before_the_fill_lands() {
+        let mut h = harness();
+        h.now.store(1_000_001, Ordering::SeqCst);
+        let events =
+            h.engine
+                .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_001, true);
+        let intent = submissions(&events)[0].clone();
+        accept(&mut h, &intent, "order-1", 1_000_120);
+
+        // A frame generated before upstream applied the request still shows the
+        // pre-purchase book. Ordering from it would commit ten units that the
+        // request already took.
+        h.now.store(1_000_200, Ordering::SeqCst);
+        let stale = h
+            .engine
+            .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_200, true);
+        assert!(submissions(&stale).is_empty());
+        let tick = market_payloads(&stale).remove(0);
+        assert_eq!(tick["stock"], 10, "the deck keeps the raw upstream depth");
+        assert_eq!(tick["effectiveStock"], 0);
+        assert_eq!(tick["reconciling"], true);
+    }
+
+    /// The bug this guards: the early update used to rebuild its remaining
+    /// quantity from the trigger frame, so a frame or a follow-up that already
+    /// spent the leftover was handed it a second time when the result landed.
+    #[test]
+    fn the_early_update_never_spends_the_leftover_twice() {
+        let mut h = harness();
+        {
+            let mut target = h.store.state.configs[0].clone();
+            target.desired_qty = 3;
+            h.store.upsert_config(target, None);
+        }
+        h.now.store(1_000_001, Ordering::SeqCst);
+        let events = h
+            .engine
+            .handle_frame(&mut h.store, &market_frame(90_000, 3), 1_000_001, true);
+        let intent = submissions(&events)[0].clone();
+        accept(&mut h, &intent, "order-1", 1_000_120);
+
+        // A frame lands before the result and already shows the level down to
+        // the one unit the fill will leave. The request has those units
+        // committed, so it must not buy them.
+        h.now.store(1_000_200, Ordering::SeqCst);
+        let caught_up =
+            h.engine
+                .handle_frame(&mut h.store, &market_frame(90_000, 1), 1_000_200, true);
+        assert!(submissions(&caught_up).is_empty());
+
+        // The real event lands: two of three filled, one unit is known left.
+        h.now.store(1_000_400, Ordering::SeqCst);
+        let fill = h.engine.handle_frame(
+            &mut h.store,
+            &fill_frame("order-1", 2, 180_000, ORDER_STATUS_FILLED),
+            1_000_400,
+            true,
+        );
+        let follow = submissions(&fill);
+        assert_eq!(follow.len(), 1);
+        assert_eq!(follow[0].qty, 1, "only the unit the fill left behind");
+        let follow = follow[0].clone();
+        accept(&mut h, &follow, "order-2", 1_000_500);
+
+        // A stale frame repeats the same depth. The follow-up owns that unit,
+        // so no second order may be fired for it.
+        h.now.store(1_000_600, Ordering::SeqCst);
+        let stale = h
+            .engine
+            .handle_frame(&mut h.store, &market_frame(90_000, 1), 1_000_600, true);
+        assert!(submissions(&stale).is_empty());
+        assert_eq!(h.store.state.stats.orders_sent, 2);
+    }
+
+    #[test]
+    fn a_late_fill_does_not_reopen_the_window() {
+        let mut h = harness();
+        h.now.store(1_000_001, Ordering::SeqCst);
+        let events = h
+            .engine
+            .handle_frame(&mut h.store, &market_frame(90_000, 3), 1_000_001, true);
+        let intent = submissions(&events)[0].clone();
+        accept(&mut h, &intent, "order-1", 1_000_120);
+
+        // The result arrives after the local window expired: the feed has been
+        // authoritative for a while, so the old trigger must not be revived.
+        let late = 1_000_120 + RECONCILE_WINDOW_MS + 1;
+        h.now.store(late, Ordering::SeqCst);
+        let fill = h.engine.handle_frame(
+            &mut h.store,
+            &fill_frame("order-1", 2, 180_000, ORDER_STATUS_FILLED),
+            late,
+            true,
+        );
+        assert!(submissions(&fill).is_empty(), "a late fill cannot rearm");
+        let snapshot = h.engine.runtime_snapshot(&h.store);
+        assert!(snapshot["6319f7baa8ce530569ed16b9"]["reconcile"].is_null());
+
+        // A fresh frame is trusted and can trade the unit that is left.
+        h.now.store(late + 100, Ordering::SeqCst);
+        let fresh = h
+            .engine
+            .handle_frame(&mut h.store, &market_frame(90_000, 1), late + 100, true);
+        let tick = market_payloads(&fresh).remove(0);
+        assert_eq!(tick["effectiveStock"], 1);
+        assert_eq!(tick["reconciling"], false);
+        assert_eq!(submissions(&fresh).len(), 1);
+    }
+
+    #[test]
+    fn a_failed_fill_gives_its_reservation_back() {
+        let mut h = harness();
+        h.now.store(1_000_001, Ordering::SeqCst);
+        let events =
+            h.engine
+                .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_001, true);
+        let intent = submissions(&events)[0].clone();
+        accept(&mut h, &intent, "order-1", 1_000_120);
+
+        h.now.store(1_000_400, Ordering::SeqCst);
+        let failed = h.engine.handle_frame(
+            &mut h.store,
+            &fill_frame("order-1", 0, 0, ORDER_STATUS_FAILED),
+            1_000_400,
+            true,
+        );
+        assert!(submissions(&failed).is_empty());
+        let snapshot = h.engine.runtime_snapshot(&h.store);
+        assert_eq!(
+            snapshot["6319f7baa8ce530569ed16b9"]["reconcile"]["floor"], 10,
+            "nothing was obtained, so the whole request returns to the book"
+        );
+
+        // The next frame shows the level intact; because the floor is back at
+        // the pre-order depth the frame wins and the missed level is retryable.
+        h.now.store(1_000_500, Ordering::SeqCst);
+        let resumed =
+            h.engine
+                .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_500, true);
+        assert_eq!(market_payloads(&resumed)[0]["reconciling"], false);
+        assert_eq!(submissions(&resumed).len(), 1);
+    }
+
+    #[test]
+    fn an_over_fill_cannot_inflate_the_book() {
+        let mut h = harness();
+        h.now.store(1_000_001, Ordering::SeqCst);
+        let events = h
+            .engine
+            .handle_frame(&mut h.store, &market_frame(90_000, 3), 1_000_001, true);
+        let intent = submissions(&events)[0].clone();
+        accept(&mut h, &intent, "order-1", 1_000_120);
+
+        // Upstream reports more units than were requested. The ledger must clamp
+        // instead of going negative or offering a phantom remainder.
+        h.now.store(1_000_400, Ordering::SeqCst);
+        let fill = h.engine.handle_frame(
+            &mut h.store,
+            &fill_frame("order-1", 5, 450_000, ORDER_STATUS_FILLED),
+            1_000_400,
+            true,
+        );
+        assert!(submissions(&fill).is_empty());
+        let snapshot = h.engine.runtime_snapshot(&h.store);
+        assert_eq!(
+            snapshot["6319f7baa8ce530569ed16b9"]["reconcile"]["floor"],
+            0
+        );
+    }
+
     #[test]
     fn a_stale_frame_cannot_resurrect_stock_a_fill_already_consumed() {
         let mut h = harness();
@@ -3664,8 +4035,9 @@ mod tests {
             h.store.upsert_config(target, None);
         }
 
-        // 10 on the book, 3 bought, 2 filled: the remainder is 1 even though
-        // the book still looks deep. The follow-up must not re-double it.
+        // 10 on the book, 3 bought, 2 filled: the level still holds 8, so the
+        // early follow-up repeats the target's per-signal quantity (3) and is
+        // never doubled just because the book looks deep.
         h.now.store(1_000_001, Ordering::SeqCst);
         let events =
             h.engine
@@ -3684,7 +4056,11 @@ mod tests {
         );
         let follow = submissions(&fill);
         assert_eq!(follow.len(), 1);
-        assert_eq!(follow[0].qty, 1, "the intent still wanted exactly one more");
+        assert_eq!(
+            follow[0].qty, 3,
+            "a deep level gets the normal per-signal quantity, not the intent remainder"
+        );
+        assert!(!follow[0].doubled);
         assert_eq!(follow[0].stock_at_trigger, Some(8));
     }
 
@@ -3943,7 +4319,16 @@ mod tests {
         assert_eq!(tick["reconciling"], false);
         assert_eq!(tick["effectiveStock"], 4);
 
+        // The old window is gone. The frame bought 4 units of its own, so a new
+        // ledger legitimately opens for that order — with `bought` back at zero
+        // and the frame's depth as its trigger.
+        let follow_now = submissions(&caught_up);
+        assert_eq!(follow_now.len(), 1);
+        assert_eq!(follow_now[0].qty, 4);
         let snapshot = h.engine.runtime_snapshot(&h.store);
-        assert!(snapshot["6319f7baa8ce530569ed16b9"]["reconcile"].is_null());
+        let reconcile = &snapshot["6319f7baa8ce530569ed16b9"]["reconcile"];
+        assert_eq!(reconcile["triggerStock"], 4);
+        assert_eq!(reconcile["bought"], 0);
+        assert_eq!(reconcile["floor"], 0, "the new order committed all four");
     }
 }

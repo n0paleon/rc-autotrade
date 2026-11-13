@@ -283,22 +283,28 @@ After `plan_order()` returns a `buy` plan, `src/engine.rs` still applies runtime
 
 - `inflight` blocks a target that already has an order in progress.
 - `blocked_until` blocks a target after a rejected purchase. Backoff starts at 5 seconds, then 10, 20, and 40 seconds.
-- `delayPerOrder` applies a global cooldown between orders. A locally fired follow-up for a partial fill skips it.
+- `delayPerOrder` applies a global cooldown between orders. A locally fired follow-up that extends a fill the engine has just booked skips it.
 - `maxOrdersPerMinute` caps the number of orders per minute.
 - A Rollercoin token must be available in `live` mode. `shadow` needs no session.
 
 These gates never change the quantity. `plan_order()` remains the only component that decides it.
 
-#### Local rearm after a partial fill
+#### Early rearm after a fill
 
-A fill frame reports how much of an order was actually matched. On a partial fill the worker no longer waits for the next `marketplace_orders_update` frame to advertise the leftover stock: it fires the remainder of the same intent from the fill handler.
+A fill frame reports how much of an order was actually matched. Instead of waiting for the next `marketplace_orders_update` frame to re-advertise the leftover stock, the worker re-plans the level as soon as the result lands and fires the next slice itself.
 
-- It buys `min(unfilled, stockAtTrigger - got)` units, so it can neither exceed what the intent still wanted nor assume a restock nobody observed.
-- It reuses the normal planner, so `targetPrice`, `minAcceptableQty` and `allowPartialOrder` still apply. A remainder below `minAcceptableQty` is left alone.
-- It skips the `delayPerOrder` cooldown because it completes an order that is already in flight, but it still consumes a rate slot and obeys `inflight`, `blocked_until` and the session gate.
+- The quantity comes from the normal planner, run against the units the level still holds, so every relationship between the three quantities is covered:
+  - `got < sent` — a partial fill leaves the rest of the request on the book;
+  - `sent < ready` — the request never covered the best level, and the rest of the level would otherwise wait one WS hop;
+  - a full fill of the whole level — nothing is left, the planner returns `no-stock`, and nothing is fired.
+- The bound is the local floor, not `stockAtTrigger - got`. The floor has every outstanding order reserved out of it, so a stale frame or an earlier follow-up can never buy the same units twice.
+- It reuses the normal planner, so `targetPrice`, `minAcceptableQty` and `allowPartialOrder` still apply, and it never triggers high-stock doubling (a fill confirms what was taken; it is not a new signal). A slice below `minAcceptableQty` is left alone.
+- It skips the `delayPerOrder` cooldown because it extends a fill the engine has just booked, but it still consumes a rate slot and obeys `inflight`, `blocked_until` and the session gate.
 - A rejected follow-up is recorded as a failed order but does **not** trip the backoff, so a wrong guess costs one attempt instead of freezing the target for up to a minute.
 
-Because market frames are not versioned, a frame generated before the purchase was applied can still arrive afterwards with the old, deeper book. For `RECONCILE_WINDOW_MS` (1.5 s) after a fill the worker therefore treats its local remainder as a floor: a frame may lower it but never raise it. The frame gets authority back as soon as the window closes, its best price moves to another level, it shows a fuller level than the one that was bought from, it shows at most the floor, or its `totalCount` has dropped by at least what was bought. Each tick carries both numbers — `stock` is the raw upstream depth, `effectiveStock` is what the decision used, and `reconciling` marks the window — while the snapshot persists the raw value. Target cards show a dashed `RECON` chip while the window is open, with a tooltip naming the market's stock and the local remainder the engine is actually using.
+Because market frames are not versioned, a frame generated before the purchase was applied can still arrive afterwards with the old, deeper book. For `RECONCILE_WINDOW_MS` (1.5 s) the worker therefore treats its local remainder as a floor: a frame may lower it but never raise it. The window opens when the order is **submitted** — not when its fill lands — so the units a request commits cannot be ordered a second time in the gap between the HTTP response and the result frame. Within it, a fill returns only the units upstream did not take, and a result that obtained nothing returns the whole request, so the ledger stays a single consistent number. The frame gets authority back as soon as the window closes, its best price moves to another level, it shows a fuller level than the one that was bought from, it shows at most the floor, or its `totalCount` has dropped by at least what was bought. A result that arrives after the window closed is still booked, but it cannot reopen the window or rearm: the feed has been authoritative for longer than the window, so rebuilding a floor from the old trigger would only resurrect stock that is gone.
+
+Each tick carries both numbers — `stock` is the raw upstream depth, `effectiveStock` is what the decision used, and `reconciling` marks the window — while the snapshot persists the raw value. Target cards show a dashed `RECON` chip while the window is open, with a tooltip naming the market's stock and the local remainder the engine is actually using, and the card's `HOT` state is computed from `effectiveStock`, so the deck never advertises a buy the engine would refuse.
 
 ### Trading modes
 

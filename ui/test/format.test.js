@@ -54,6 +54,34 @@ test("runtimeHot compares the market price against the saved target", () => {
   assert.equal(runtimeHot({ ...config, runtime: { ...config.runtime, lastStock: 0 } }), false);
 });
 
+test("runtimeHot follows the stock the worker may actually order", () => {
+  const config = {
+    itemId: "x",
+    active: true,
+    targetPrice: 0.1,
+    minAcceptableQty: 1,
+    runtime: { lastPrice: 0.09, lastStock: 5 }
+  };
+  // A stale frame still advertises the pre-purchase depth. While the worker is
+  // reconciling, decisions use the local remainder; the deck must not light up
+  // a buy the engine would refuse.
+  assert.equal(
+    runtimeHot({ ...config, runtime: { ...config.runtime, effectiveStock: 0 } }),
+    false
+  );
+  assert.equal(
+    runtimeHot({ ...config, runtime: { ...config.runtime, reconcile: { floor: 0 } } }),
+    false
+  );
+  assert.equal(
+    runtimeHot({
+      ...config,
+      runtime: { ...config.runtime, effectiveStock: 2, lastStock: 2 }
+    }),
+    true
+  );
+});
+
 test("runtimeReconciling reads the tick flag and the snapshot deadline", () => {
   assert.equal(runtimeReconciling({ runtime: { reconciling: true } }), true);
   assert.equal(runtimeReconciling({ runtime: { reconciling: false } }), false);

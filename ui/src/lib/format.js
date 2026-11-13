@@ -109,23 +109,28 @@ export function isRecent(ts, windowMs) {
 
 export function runtimeHot(config) {
   const runtime = config?.runtime || {};
+  // Same stock the worker may order against: while a recent order or fill is
+  // being reconciled a stale frame can still advertise the pre-purchase depth,
+  // and showing that number as payable would light up a buy the engine refuses.
+  const effective = runtimeEffectiveStock(config);
+  const stock = Number.isFinite(effective) ? effective : runtime.lastStock;
   return Boolean(
     config?.active &&
       Number.isFinite(runtime.lastPrice) &&
       runtime.lastPrice <= Number(config.targetPrice) + 1e-9 &&
-      Number.isFinite(runtime.lastStock) &&
-      runtime.lastStock >= config.minAcceptableQty
+      Number.isFinite(stock) &&
+      stock >= config.minAcceptableQty
   );
 }
 
 /**
- * True while the worker is reconciling a fill it has just booked.
+ * True while the worker is reconciling a recent order or fill.
  *
- * Market frames carry no version, so for a short window after a fill the stock
- * in a frame may still be the pre-purchase book. The worker keeps a local floor
- * for decisions in that window and marks the tick `reconciling`; a hydrated
- * snapshot carries the window deadline instead, which expires on its own even
- * if the item never sends another frame.
+ * Market frames carry no version, so for a short window after an order the
+ * stock in a frame may still be the pre-purchase book. The worker keeps a local
+ * floor for decisions in that window and marks the tick `reconciling`; a
+ * hydrated snapshot carries the window deadline instead, which expires on its
+ * own even if the item never sends another frame.
  */
 export function runtimeReconciling(config) {
   const runtime = config?.runtime || {};
@@ -136,7 +141,7 @@ export function runtimeReconciling(config) {
 
 /**
  * Stock the worker is allowed to order against: the frame's own depth, or the
- * local floor while a fill is being reconciled.
+ * local floor while a recent order or fill is being reconciled.
  */
 export function runtimeEffectiveStock(config) {
   const runtime = config?.runtime || {};
