@@ -104,7 +104,7 @@ Rollercoin session — two of either will duplicate orders.
 | `GET /api/history/:id` | ➕ | Rust-only: `timings` + `rawEvents` for one row (the detail modal) |
 | `DELETE /api/history` | ✅ | wipes the loot log + profit report and resets stats, engine counters and latency samples |
 | `GET /api/report` | ✅ | same derived columns |
-| `GET /api/events` | ➕ | Rust-only: market-frame counts per 5-minute bucket for `?days=1..7`; the deck sums them into the chart timeframe in local time |
+| `GET /api/events` | ➕ | Rust-only: marketplace-command counts (listing/price updates and fulfillment results) per 5-minute bucket for `?days=1..7`; the deck sums them into the chart timeframe in local time |
 | `GET /api/item-activity` | ➕ | Rust-only: market-frame counts **per item id** in 5-minute buckets over `?days=1..30` or an explicit `?since=&until=`. Takes `itemType` and `q` filters plus `limit` (default 25, max 250) and `offset`; answers a ranked page with `events`, `events24h` and a `tracked` fleet flag, alongside range-wide `totalRows`, `totalEvents` and `typeTotals` computed before paging. Ids never added to the target fleet are included; names come from the `item_catalog` cache, and a bounded, rotating batch of unresolved ids is looked up through `item-info` on each response |
 | `GET /api/price-history` | ➕ | Rust-only: one duration-weighted median close per minute plus its held and raw low/high bands for a single `itemId` over `?days=1..7`; the deck buckets them in local time and merges the live 24h window |
 | `GET /api/session` | ✅ | same preview/expires fields |
@@ -624,7 +624,9 @@ Covered by `engine::tests::a_partial_fill_rearms_the_remainder_without_waiting_f
 
 ## 15. Item activity monitor
 
-`GET /api/events` counts the feed as a whole. `GET /api/item-activity` answers a
+`GET /api/events` counts marketplace commands as a whole (listing/price
+updates and fulfillment results); prediction-market, reward and exchange-rate
+frames are excluded. `GET /api/item-activity` answers a
 different question — *which item ids moved most* — which needs the count keyed
 by item, so it gets its own tables:
 

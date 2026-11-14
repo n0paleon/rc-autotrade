@@ -18,6 +18,7 @@ use tokio_tungstenite::Connector;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
+use crate::events::is_marketplace_cmd;
 use crate::latency::{Channel, LatencyTracker};
 use crate::logger::Logger;
 use crate::redact::redact_secrets;
@@ -47,6 +48,10 @@ pub struct GatewayStats {
     pub attempts: i64,
     pub reconnects: i64,
     pub event_count: i64,
+    /// Marketplace commands only (listing/price updates and fulfillment
+    /// results). `event_count` stays the total wire traffic so a feed that is
+    /// only sending prediction-market frames still looks alive.
+    pub market_event_count: i64,
     pub parse_errors: i64,
     /// Frames the core loop could not take because its queue was full. Market
     /// frames are superseded by the next tick, so dropping one is safe; a
@@ -54,6 +59,16 @@ pub struct GatewayStats {
     pub dropped: i64,
     pub cmd_counts: BTreeMap<String, i64>,
     pub last_ping_ms: Option<f64>,
+}
+
+impl GatewayStats {
+    fn note_message(&mut self, cmd: &str) {
+        self.event_count += 1;
+        if is_marketplace_cmd(cmd) {
+            self.market_event_count += 1;
+        }
+        *self.cmd_counts.entry(cmd.to_string()).or_insert(0) += 1;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +111,7 @@ impl GatewayHandle {
             "attempts": stats.attempts,
             "reconnects": stats.reconnects,
             "eventCount": stats.event_count,
+            "marketEventCount": stats.market_event_count,
             "parseErrors": stats.parse_errors,
             "dropped": stats.dropped,
             "commands": commands,
@@ -181,6 +197,7 @@ fn status_payload(stats: &Arc<Mutex<GatewayStats>>, upstream: &str) -> Value {
         "attempts": stats.attempts,
         "reconnects": stats.reconnects,
         "eventCount": stats.event_count,
+        "marketEventCount": stats.market_event_count,
         "parseErrors": stats.parse_errors,
         "dropped": stats.dropped,
         "upstream": upstream,
@@ -396,8 +413,7 @@ async fn run(
                                         let is_fill = cmd.contains("fill");
                                         {
                                             let mut stats = stats.lock().unwrap_or_else(|e| e.into_inner());
-                                            stats.event_count += 1;
-                                            *stats.cmd_counts.entry(cmd).or_insert(0) += 1;
+                                            stats.note_message(&cmd);
                                         }
                                         let event = GatewayEvent::Frame {
                                             raw: value,
@@ -577,6 +593,21 @@ mod tests {
         Arc::new(Mutex::new(LatencyTracker::new(120, Arc::new(|| now_ms()))))
     }
 
+    #[test]
+    fn marketplace_counter_ignores_other_channels() {
+        let mut stats = GatewayStats::default();
+        stats.note_message("marketplace_orders_update");
+        stats.note_message("marketplace_orders_filled");
+        stats.note_message("prediction_market_live_price");
+        stats.note_message("pe_reward_statistic_update");
+        stats.note_message("marketplace_activity");
+        stats.note_message("unknown");
+
+        assert_eq!(stats.event_count, 6);
+        assert_eq!(stats.market_event_count, 3);
+        assert_eq!(stats.cmd_counts["marketplace_orders_update"], 1);
+    }
+
     #[tokio::test]
     async fn connects_receives_frames_and_counts_them() {
         let connections = Arc::new(AtomicUsize::new(0));
@@ -610,6 +641,7 @@ mod tests {
         let stats = handle.stats_json();
         assert_eq!(stats["status"], "online");
         assert_eq!(stats["eventCount"], 1);
+        assert_eq!(stats["marketEventCount"], 1);
         assert_eq!(stats["commands"][0]["cmd"], "marketplace_orders_update");
         assert!(stats["lastMessageAt"].as_i64().is_some());
 

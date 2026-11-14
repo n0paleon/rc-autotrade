@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::api::{PurchaseRequest, PurchaseResult};
+use crate::events::is_marketplace_cmd;
 use crate::gateway::GatewayEvent;
 use crate::latency::{Channel, LatencyTracker};
 use crate::logger::Logger;
@@ -90,6 +91,8 @@ pub struct MockStats {
     pub attempts: i64,
     pub reconnects: i64,
     pub event_count: i64,
+    /// Marketplace commands only, mirroring the real gateway.
+    pub market_event_count: i64,
     pub parse_errors: i64,
     /// Simulated frames the core loop could not take (queue full).
     pub dropped: i64,
@@ -130,6 +133,7 @@ impl MockHandle {
             "attempts": stats.attempts,
             "reconnects": stats.reconnects,
             "eventCount": stats.event_count,
+            "marketEventCount": stats.market_event_count,
             "parseErrors": stats.parse_errors,
             "dropped": stats.dropped,
             "commands": commands,
@@ -191,6 +195,7 @@ fn status_payload(stats: &Arc<Mutex<MockStats>>) -> Value {
         "attempts": stats.attempts,
         "reconnects": stats.reconnects,
         "eventCount": stats.event_count,
+        "marketEventCount": stats.market_event_count,
         "parseErrors": stats.parse_errors,
         "dropped": stats.dropped,
         "commands": [],
@@ -211,6 +216,9 @@ fn set_status(stats: &Arc<Mutex<MockStats>>, events: &mpsc::Sender<GatewayEvent>
 fn record_frame(stats: &Arc<Mutex<MockStats>>, cmd: &str) {
     let mut stats = stats.lock().unwrap_or_else(|e| e.into_inner());
     stats.event_count += 1;
+    if is_marketplace_cmd(cmd) {
+        stats.market_event_count += 1;
+    }
     stats.last_message_at = Some(now_ms());
     *stats.cmd_counts.entry(cmd.to_string()).or_insert(0) += 1;
 }
@@ -530,6 +538,7 @@ mod tests {
         assert_eq!(stats["status"], "online");
         assert_eq!(stats["upstream"], "mock");
         assert!(stats["eventCount"].as_i64().unwrap() > 0);
+        assert!(stats["marketEventCount"].as_i64().unwrap() > 0);
         handle.stop().await;
     }
 

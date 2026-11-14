@@ -181,13 +181,18 @@ pub struct Store {
     _data_lock: std::fs::File,
     logger: Arc<Logger>,
     metrics: Arc<crate::db_metrics::DbMetrics>,
-    /// Market frames counted per 5-minute bucket. The window covers
+    /// Marketplace commands counted per 5-minute bucket (listing/price
+    /// updates and fulfillment results). The window covers
     /// [`EVENT_RETENTION_DAYS`], so the chart can serve a week without a query
     /// per render; SQLite only receives the batches the flusher writes.
     event_points: BTreeMap<i64, i64>,
     /// Buckets changed since the last flush (absolute counts, not deltas).
     event_dirty: BTreeSet<i64>,
     event_pruned_at: i64,
+    /// First instant owned by the marketplace-only counter. Older
+    /// `event_points` rows were written before the scope was narrowed, cannot
+    /// be split by command, and are hidden from the chart.
+    event_scope_at: i64,
     /// Per-item frame counts, keyed by `(hour bucket, lowercase item id)`.
     /// The market feed can show hundreds of distinct ids an hour, so the map is
     /// capped and only the newest buckets survive a prune.
@@ -226,6 +231,11 @@ struct ItemEventRow {
 pub fn event_bucket_at(at: i64) -> i64 {
     at.div_euclid(EVENT_BUCKET_MS) * EVENT_BUCKET_MS
 }
+
+/// Meta key holding the first instant counted by the marketplace-only event
+/// scope. A database written before the scope was narrowed has no key, so the
+/// first boot stamps it and the API hides the older all-frame buckets.
+const MARKET_EVENT_SCOPE_KEY: &str = "market_event_scope_at";
 
 /// Start of the 1-hour bucket that owns `at` for the per-item monitor.
 pub fn item_event_bucket_at(at: i64) -> i64 {
@@ -274,6 +284,7 @@ impl Store {
             event_points: BTreeMap::new(),
             event_dirty: BTreeSet::new(),
             event_pruned_at: now_ms(),
+            event_scope_at: 0,
             item_events: BTreeMap::new(),
             item_event_dirty: BTreeSet::new(),
             item_event_pruned_at: now_ms(),
@@ -1856,10 +1867,11 @@ impl Store {
             .map_err(|e| format!("could not checkpoint WAL: {e}"))
     }
 
-    // ── market-event activity ───────────────────────────────────────────────
+    // ── marketplace event activity ──────────────────────────────────────────
 
-    /// Counts one market frame into its 5-minute bucket. Stays in memory: the
-    /// flusher writes the batch, so the frame path never waits on SQLite.
+    /// Counts one marketplace command into its 5-minute bucket. Stays in
+    /// memory: the flusher writes the batch, so the frame path never waits on
+    /// SQLite.
     pub fn note_market_event(&mut self, at: i64) {
         let bucket = event_bucket_at(at);
         *self.event_points.entry(bucket).or_insert(0) += 1;
@@ -1872,6 +1884,12 @@ impl Store {
             .range(since..)
             .map(|(bucket, count)| (*bucket, *count))
             .collect()
+    }
+
+    /// First bucket the marketplace-only counter owns; older rows have no
+    /// command breakdown and must not be served as market activity.
+    pub fn event_scope_at(&self) -> i64 {
+        self.event_scope_at
     }
 
     /// Writes every dirty bucket in one transaction, then drops expiry.
@@ -1910,7 +1928,40 @@ impl Store {
     }
 
     fn hydrate_events(&mut self) {
-        let since = now_ms() - EVENT_RETENTION_DAYS * 86_400_000;
+        let now = now_ms();
+        let stored_scope = match self.get_meta(MARKET_EVENT_SCOPE_KEY) {
+            Ok(Some(raw)) => raw.parse::<i64>().ok().filter(|at| *at > 0),
+            Ok(None) => None,
+            Err(error) => {
+                self.logger.warn("store", error);
+                None
+            }
+        };
+        self.event_scope_at = match stored_scope {
+            Some(at) => at,
+            None => {
+                // First boot after the scope narrowed. The live bucket may
+                // already hold all-frame counts from before the upgrade, so
+                // drop just that bucket and let the corrected counter refill
+                // it. Older buckets stay in SQLite for retention but the API
+                // hides them.
+                let bucket = event_bucket_at(now);
+                if let Err(error) = self.db.execute(
+                    "DELETE FROM event_points WHERE bucket_at = ?1",
+                    params![bucket],
+                ) {
+                    self.logger.warn(
+                        "store",
+                        format!("could not clear the pre-scope event bucket: {error}"),
+                    );
+                }
+                if let Err(error) = self.set_meta(MARKET_EVENT_SCOPE_KEY, &bucket.to_string()) {
+                    self.logger.warn("store", error);
+                }
+                bucket
+            }
+        };
+        let since = now - EVENT_RETENTION_DAYS * 86_400_000;
         let mut statement = match self.db.prepare(
             "SELECT bucket_at, events FROM event_points WHERE bucket_at >= ?1 ORDER BY bucket_at",
         ) {
@@ -3187,6 +3238,39 @@ mod tests {
         assert_eq!(
             store.event_series(previous),
             vec![(previous, 2), (current, 1)]
+        );
+    }
+
+    #[test]
+    fn marketplace_event_scope_is_stamped_once_and_survives_a_reopen() {
+        let dir = temp_dir("event-scope");
+        let logger = Arc::new(Logger::new("error"));
+        let first = {
+            let store = Store::open(dir.clone(), logger.clone()).expect("store");
+            let scope = store.event_scope_at();
+            assert_eq!(
+                scope,
+                event_bucket_at(scope),
+                "scope starts on a bucket edge"
+            );
+            let stored: String = store
+                .db
+                .query_row(
+                    "SELECT value FROM meta WHERE key = ?1",
+                    params![MARKET_EVENT_SCOPE_KEY],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored, scope.to_string());
+            scope
+        };
+
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let store = Store::open(dir, logger).expect("reopen");
+        assert_eq!(
+            store.event_scope_at(),
+            first,
+            "a restart must not move the scope and hide already-correct buckets"
         );
     }
 

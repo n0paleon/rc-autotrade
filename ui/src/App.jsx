@@ -453,11 +453,10 @@ function Ticker({ configs, mock }) {
   );
 }
 
-function Hud({ snapshot, eps }) {
+function Hud({ snapshot, eps, marketEvents }) {
   const now = useNow(1000);
   const stats = snapshot.stats || {};
   const configs = snapshot.configs || [];
-  const gateway = snapshot.gateway || {};
   const latency = snapshot.latency || {};
   const fresh = latency.freshest || null;
   const hot = configs.filter((config) => runtimeHot(config)).length;
@@ -506,13 +505,17 @@ function Hud({ snapshot, eps }) {
           <span id="stat-armed">{formatInt(armed)}</span> armed · <span id="stat-hot">{formatInt(hot)}</span> in range
         </div>
       </article>
-      <article data-accent="pink" className="stat-tile">
+      <article
+        data-accent="pink"
+        className="stat-tile"
+        title="Marketplace listing/price updates and fulfillment results seen since this worker started. Prediction-market, reward and exchange-rate channels are excluded."
+      >
         <div className="flex items-center justify-between gap-2">
           <span className="label">Market events</span>
           <Icon name="i-wifi" className="stat-icon h-4 w-4 max-sm:hidden" />
         </div>
         <div className="mt-1.5 font-mono text-[20px] font-bold leading-none tabular-nums text-pink" id="stat-events">
-          {formatInt(gateway.eventCount || 0)}
+          {formatInt(marketEvents)}
         </div>
         <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
           <span id="stat-eps">{eps.toFixed(1)}</span>/s · <span id="stat-uptime">{formatUptime(now - (snapshot.startedAt || now))}</span>
@@ -2365,7 +2368,8 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       ? 0
       : Number(recentOrderCount);
 
-  const eps = useEventRate(snapshot.gateway?.eventCount || 0);
+  const marketEvents = Number(snapshot.gateway?.marketEventCount ?? snapshot.gateway?.eventCount ?? 0) || 0;
+  const eps = useEventRate(marketEvents);
   const baseUrl = worker.getConnection().baseUrl;
   const reportByItem = useMemo(() => {
     const map = {};
@@ -2539,7 +2543,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       />
       <Ticker configs={snapshot.configs || []} mock={snapshot.worker?.mock} />
       <div className="deck-enter deck-enter-2 mx-auto w-full max-w-[1600px] px-3 pt-4 sm:px-4 lg:px-6">
-        <Hud snapshot={snapshot} eps={eps} />
+        <Hud snapshot={snapshot} eps={eps} marketEvents={marketEvents} />
       </div>
       <div className="deck-enter deck-enter-3 mx-auto mt-4 w-full max-w-[1600px] px-3 sm:px-4 lg:px-6">
         <MemoActivityChart request={worker.request} />
