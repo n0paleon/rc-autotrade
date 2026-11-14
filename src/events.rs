@@ -49,6 +49,24 @@ impl Kind {
     }
 }
 
+/// Upstream channels owned by the marketplace.
+///
+/// The socket also carries prediction-market, reward-statistic and exchange
+/// rate messages. They share the same wire but are not market activity, so the
+/// frame counters must filter on the command prefix instead of counting every
+/// envelope that arrives.
+pub fn is_marketplace_cmd(cmd: &str) -> bool {
+    cmd.starts_with("marketplace_")
+}
+
+/// True when a raw upstream frame belongs to a marketplace channel.
+pub fn is_marketplace_frame(frame: &Value) -> bool {
+    frame
+        .get("cmd")
+        .and_then(Value::as_str)
+        .is_some_and(is_marketplace_cmd)
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FillEvent {
@@ -422,5 +440,30 @@ mod tests {
         assert_eq!(event.currency.as_deref(), Some("RLT"));
         assert_eq!(event.listings[0].unit_price, 0.25);
         assert_eq!(event.rest.map(|rest| rest.quantity), Some(500));
+    }
+
+    #[test]
+    fn marketplace_counters_ignore_other_socket_channels() {
+        assert!(is_marketplace_cmd("marketplace_orders_update"));
+        assert!(is_marketplace_cmd("marketplace_orders_filled"));
+        assert!(is_marketplace_cmd("marketplace_activity"));
+        assert!(!is_marketplace_cmd("prediction_market_live_price"));
+        assert!(!is_marketplace_cmd("pe_reward_statistic_update"));
+        assert!(!is_marketplace_cmd("exchange_rates_updated"));
+        assert!(!is_marketplace_cmd(""));
+
+        assert!(is_marketplace_frame(&json!({
+            "cmd": "marketplace_orders_update",
+            "value": { "item_id": "abc123" }
+        })));
+        assert!(is_marketplace_frame(&json!({
+            "cmd": "marketplace_orders_filled",
+            "value": { "order_id": "order-1" }
+        })));
+        assert!(!is_marketplace_frame(&json!({
+            "cmd": "prediction_market_updates",
+            "value": {}
+        })));
+        assert!(!is_marketplace_frame(&json!({ "value": {} })));
     }
 }

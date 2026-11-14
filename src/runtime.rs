@@ -23,6 +23,7 @@ use crate::constants::{
 };
 use crate::dns_probe::{self, SocketMode};
 use crate::engine::{EngineEvent, MarketTick, OrderIntent, PurchaseOutcome};
+use crate::events::is_marketplace_frame;
 use crate::feed::FeedHandle;
 use crate::gateway::{self, GatewayConfig, GatewayEvent};
 use crate::keepalive::{KeepaliveConfig, KeepaliveService};
@@ -571,9 +572,12 @@ fn process_frame(state: &Arc<AppState>, raw: Value, at: i64) {
             .store
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // Every frame the deck counts on the "Market events" tile is also what
-        // the activity chart draws, so both numbers come from the same source.
-        store.note_market_event(at);
+        // The activity chart is marketplace-only: listing/price updates and
+        // order fulfillment results. Prediction-market, reward-statistic and
+        // exchange-rate frames share the socket and must not inflate it.
+        if is_marketplace_frame(&raw) {
+            store.note_market_event(at);
+        }
         let has_token = !store.state.session.access_token.is_empty();
         let mut engine = state
             .engine

@@ -282,6 +282,7 @@ async fn feed_to_fill_round_trip() {
     };
     assert_eq!(snapshot["gateway"]["status"], "online");
     assert!(snapshot["gateway"]["eventCount"].as_i64().unwrap() >= 2);
+    assert!(snapshot["gateway"]["marketEventCount"].as_i64().unwrap() >= 2);
 
     // The activity chart reads the same frames the HUD counts, bucketed.
     let counted: i64 = state

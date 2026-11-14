@@ -16,6 +16,7 @@ import {
 import { useWorker, URL_KEY, readStoredToken, isRemembered } from "./useWorker.js";
 import { useToasts } from "./useToasts.js";
 import { useMediaQuery, useNow } from "./lib/hooks.js";
+import { feedAtBottom, feedScrollIntent } from "./lib/feed.js";
 import {
   cardState,
   fixedPrice,
@@ -452,11 +453,10 @@ function Ticker({ configs, mock }) {
   );
 }
 
-function Hud({ snapshot, eps }) {
+function Hud({ snapshot, eps, marketEvents }) {
   const now = useNow(1000);
   const stats = snapshot.stats || {};
   const configs = snapshot.configs || [];
-  const gateway = snapshot.gateway || {};
   const latency = snapshot.latency || {};
   const fresh = latency.freshest || null;
   const hot = configs.filter((config) => runtimeHot(config)).length;
@@ -505,13 +505,17 @@ function Hud({ snapshot, eps }) {
           <span id="stat-armed">{formatInt(armed)}</span> armed · <span id="stat-hot">{formatInt(hot)}</span> in range
         </div>
       </article>
-      <article data-accent="pink" className="stat-tile">
+      <article
+        data-accent="pink"
+        className="stat-tile"
+        title="Marketplace listing/price updates and fulfillment results seen since this worker started. Prediction-market, reward and exchange-rate channels are excluded."
+      >
         <div className="flex items-center justify-between gap-2">
           <span className="label">Market events</span>
           <Icon name="i-wifi" className="stat-icon h-4 w-4 max-sm:hidden" />
         </div>
         <div className="mt-1.5 font-mono text-[20px] font-bold leading-none tabular-nums text-pink" id="stat-events">
-          {formatInt(gateway.eventCount || 0)}
+          {formatInt(marketEvents)}
         </div>
         <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
           <span id="stat-eps">{eps.toFixed(1)}</span>/s · <span id="stat-uptime">{formatUptime(now - (snapshot.startedAt || now))}</span>
@@ -1778,6 +1782,13 @@ function FeedPanel({ logs, onClear, notify }) {
   const [frozen, setFrozen] = useState([]);
   const [unread, setUnread] = useState(0);
   const feedRef = useRef(null);
+  // A `scroll` event is not proof that the user scrolled: the browser also
+  // fires one when the capped window drops its oldest row (scroll anchoring)
+  // and when a resize reflows the lines. Only a real gesture may pause the
+  // tail, so remember when the wheel, touch, scrollbar or keyboard was used.
+  const lastScrollTopRef = useRef(0);
+  const gestureUntilRef = useRef(0);
+  const mouseDownRef = useRef(false);
   // The scrollback is capped: 400 mounted log lines cost layout on every
   // worker event and the oldest ones are far outside the visible screen.
   const FEED_WINDOW = 120;
@@ -1799,13 +1810,9 @@ function FeedPanel({ logs, onClear, notify }) {
     scrollToLatest();
   }, [logs, paused, tailing, frozen.length, scrollToLatest]);
 
-  const handleFeedScroll = () => {
-    if (paused) return;
-    const feed = feedRef.current;
-    if (!feed) return;
-    const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 24;
-    if (atBottom !== tailing) setTailing(atBottom);
-  };
+  const markScrollGesture = useCallback(() => {
+    gestureUntilRef.current = Date.now() + 400;
+  }, []);
 
   const enableTail = useCallback(() => {
     if (paused) {
@@ -1816,6 +1823,66 @@ function FeedPanel({ logs, onClear, notify }) {
     setTailing(true);
     requestAnimationFrame(scrollToLatest);
   }, [paused, scrollToLatest]);
+
+  useEffect(() => {
+    const release = () => {
+      mouseDownRef.current = false;
+    };
+    window.addEventListener("pointerup", release);
+    window.addEventListener("pointercancel", release);
+    return () => {
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+    };
+  }, []);
+
+  const handleFeedScroll = () => {
+    if (paused) return;
+    const feed = feedRef.current;
+    if (!feed) return;
+    const top = feed.scrollTop;
+    const previous = lastScrollTopRef.current;
+    lastScrollTopRef.current = top;
+    const gesture = mouseDownRef.current || Date.now() < gestureUntilRef.current;
+    const intent = feedScrollIntent({
+      top,
+      previous,
+      gesture,
+      atBottom: feedAtBottom(feed),
+      tailing
+    });
+    if (intent === "pause") setTailing(false);
+    else if (intent === "resume") setTailing(true);
+  };
+
+  const handleFeedWheel = (event) => {
+    if (paused || event.deltaY === 0) return;
+    markScrollGesture();
+    // A wheel-down at the bottom has no remaining scroll distance, so there
+    // is no `scroll` event to re-arm from; treat it as a request to follow.
+    if (event.deltaY > 0 && !tailing && feedAtBottom(feedRef.current)) enableTail();
+  };
+
+  const handleFeedTouchMove = () => {
+    if (!paused) markScrollGesture();
+  };
+
+  const handleFeedKeyDown = (event) => {
+    if (paused) return;
+    if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) {
+      markScrollGesture();
+    }
+  };
+
+  const handleFeedPointerDown = (event) => {
+    if (paused) return;
+    // Overlay scrollbars press through to the log row below, so any mouse
+    // press is a possible scrollbar drag. The direction check keeps a plain
+    // text selection from pausing the feed.
+    if (event.pointerType === "mouse") {
+      mouseDownRef.current = true;
+    }
+  };
 
   const toggleTail = () => {
     if (isTailing) {
@@ -1879,7 +1946,12 @@ function FeedPanel({ logs, onClear, notify }) {
           role="log"
           aria-live="polite"
           aria-label="Worker event log"
+          tabIndex={0}
           onScroll={handleFeedScroll}
+          onWheel={handleFeedWheel}
+          onTouchMove={handleFeedTouchMove}
+          onKeyDown={handleFeedKeyDown}
+          onPointerDown={handleFeedPointerDown}
         >
           {shown.length === 0 ? <div className="px-3 py-2 font-mono text-[12px] text-faint">[SYS] Waiting for events…</div> : null}
           {shown.map((entry) => (
@@ -2296,7 +2368,8 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       ? 0
       : Number(recentOrderCount);
 
-  const eps = useEventRate(snapshot.gateway?.eventCount || 0);
+  const marketEvents = Number(snapshot.gateway?.marketEventCount ?? snapshot.gateway?.eventCount ?? 0) || 0;
+  const eps = useEventRate(marketEvents);
   const baseUrl = worker.getConnection().baseUrl;
   const reportByItem = useMemo(() => {
     const map = {};
@@ -2470,7 +2543,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       />
       <Ticker configs={snapshot.configs || []} mock={snapshot.worker?.mock} />
       <div className="deck-enter deck-enter-2 mx-auto w-full max-w-[1600px] px-3 pt-4 sm:px-4 lg:px-6">
-        <Hud snapshot={snapshot} eps={eps} />
+        <Hud snapshot={snapshot} eps={eps} marketEvents={marketEvents} />
       </div>
       <div className="deck-enter deck-enter-3 mx-auto mt-4 w-full max-w-[1600px] px-3 sm:px-4 lg:px-6">
         <MemoActivityChart request={worker.request} />

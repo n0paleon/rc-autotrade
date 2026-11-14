@@ -247,6 +247,7 @@ impl AppState {
                 "attempts": 0,
                 "reconnects": 0,
                 "eventCount": 0,
+                "marketEventCount": 0,
                 "parseErrors": 0,
                 "commands": [],
                 "upstream": upstream_host(&self.config.ws_url),
@@ -884,9 +885,10 @@ async fn report(_auth: Auth, State(state): State<Arc<AppState>>) -> Response {
     Json(json!({ "ok": true, "report": store.report_view() })).into_response()
 }
 
-/// Bucketed market-frame counts for the activity chart. Buckets stay at the
-/// stored 5-minute resolution; the deck sums them into 15m/30m/1h/2h windows
-/// so that boundaries line up with the viewer's local clock, not the server's.
+/// Bucketed marketplace-command counts for the activity chart: listing/price
+/// updates and order fulfillment results. Buckets stay at the stored 5-minute
+/// resolution; the deck sums them into 15m/30m/1h/2h windows so that boundaries
+/// line up with the viewer's local clock, not the server's.
 async fn events_view(
     _auth: Auth,
     State(state): State<Arc<AppState>>,
@@ -898,8 +900,10 @@ async fn events_view(
         .unwrap_or(1)
         .clamp(1, EVENT_HISTORY_DAYS);
     let now = now_ms();
-    let since = now - days * 86_400_000;
     let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
+    // Buckets written before the marketplace-only scope cannot be split by
+    // command, so they must not be presented as market activity.
+    let since = (now - days * 86_400_000).max(store.event_scope_at());
     let points: Vec<Value> = store
         .event_series(since)
         .into_iter()

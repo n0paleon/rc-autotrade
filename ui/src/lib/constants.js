@@ -54,16 +54,16 @@ export const LOOT_LOG_PAGE_SIZE = 50;
 
 /**
  * Control-socket telemetry cadence, mirrored from `TELEMETRY_INTERVAL_SECS` in
- * `src/constants.rs`. The worker pushes `gateway` (which carries `eventCount`),
- * `system`, `latency` and `benchmark` together this often.
+ * `src/constants.rs`. The worker pushes `gateway` (which carries
+ * `marketEventCount`), `system`, `latency` and `benchmark` together this often.
  */
 export const TELEMETRY_PUSH_MS = 3000;
 
 /**
- * A gap this long without a fresh `eventCount` means the feed stalled, so the
- * `/s` readout starts decaying instead of holding a stale rate. Kept a little
- * above the push cadence: the counter updates in steps, and decaying before the
- * next step arrives would make the number flicker.
+ * A gap this long without a fresh `marketEventCount` means the marketplace
+ * feed stalled, so the `/s` readout starts decaying instead of holding a stale
+ * rate. Kept a little above the push cadence: the counter updates in steps, and
+ * decaying before the next step arrives would make the number flicker.
  */
 export const EVENT_RATE_STALE_MS = TELEMETRY_PUSH_MS + 900;
 
