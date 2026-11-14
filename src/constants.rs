@@ -116,8 +116,8 @@ pub const EVENT_SAMPLE_SIZE: usize = 60;
 /// the HUD for no benefit.
 ///
 /// The deck mirrors this in `ui/src/lib/constants.js` (`TELEMETRY_PUSH_MS`):
-/// the `/s` readout decays after ~1.3× this window, so changing one without the
-/// other makes the rate flicker between pushes.
+/// the `/min` readout decays after ~1.3× this window, so changing one without
+/// the other makes the rate flicker between pushes.
 pub const TELEMETRY_INTERVAL_SECS: u64 = 3;
 
 /// Market ticks are coalesced per item before they reach the control socket.

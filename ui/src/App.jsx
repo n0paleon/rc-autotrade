@@ -107,6 +107,7 @@ function TargetPriceChart({ history, targetPrice, itemId, request, label }) {
   );
 }
 
+/** Smoothed market-event rate, in events per minute. */
 function useEventRate(count) {
   const [rate, setRate] = useState(0);
   const reference = useRef({ count: 0, at: 0 });
@@ -116,7 +117,7 @@ function useEventRate(count) {
     if (previous.at && Number.isFinite(count) && count >= previous.count) {
       const dt = (now - previous.at) / 1000;
       if (dt >= 0.4) {
-        const instant = (count - previous.count) / dt;
+        const instant = ((count - previous.count) / dt) * 60;
         setRate((current) => (current ? current * 0.6 + instant * 0.4 : instant));
       }
     }
@@ -454,7 +455,7 @@ function Ticker({ configs, mock }) {
   );
 }
 
-function Hud({ snapshot, eps, marketEvents }) {
+function Hud({ snapshot, epm, marketEvents }) {
   const now = useNow(1000);
   const stats = snapshot.stats || {};
   const configs = snapshot.configs || [];
@@ -519,7 +520,7 @@ function Hud({ snapshot, eps, marketEvents }) {
           {formatInt(marketEvents)}
         </div>
         <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
-          <span id="stat-eps">{eps.toFixed(1)}</span>/s · <span id="stat-uptime">{formatUptime(now - (snapshot.startedAt || now))}</span>
+          <span id="stat-epm">{epm.toFixed(1)}</span>/min · <span id="stat-uptime">{formatUptime(now - (snapshot.startedAt || now))}</span>
         </div>
       </article>
       <article data-accent="violet" className="stat-tile">
@@ -2391,7 +2392,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       : Number(recentOrderCount);
 
   const marketEvents = Number(snapshot.gateway?.marketEventCount ?? snapshot.gateway?.eventCount ?? 0) || 0;
-  const eps = useEventRate(marketEvents);
+  const epm = useEventRate(marketEvents);
   const baseUrl = worker.getConnection().baseUrl;
   const reportByItem = useMemo(() => {
     const map = {};
@@ -2565,7 +2566,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       />
       <Ticker configs={snapshot.configs || []} mock={snapshot.worker?.mock} />
       <div className="deck-enter deck-enter-2 mx-auto w-full max-w-[1600px] px-3 pt-4 sm:px-4 lg:px-6">
-        <Hud snapshot={snapshot} eps={eps} marketEvents={marketEvents} />
+        <Hud snapshot={snapshot} epm={epm} marketEvents={marketEvents} />
       </div>
       <div className="deck-enter deck-enter-3 mx-auto mt-4 w-full max-w-[1600px] px-3 sm:px-4 lg:px-6">
         <MemoActivityChart request={worker.request} />

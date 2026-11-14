@@ -62,7 +62,7 @@ export const TELEMETRY_PUSH_MS = 3000;
 
 /**
  * A gap this long without a fresh `marketEventCount` means the marketplace
- * feed stalled, so the `/s` readout starts decaying instead of holding a stale
+ * feed stalled, so the `/min` readout starts decaying instead of holding a stale
  * rate. Kept a little above the push cadence: the counter updates in steps, and
  * decaying before the next step arrives would make the number flicker.
  */
