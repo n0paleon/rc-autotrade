@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon, ModalShell, ToggleRow, useModalClose } from "./ModalShell.jsx";
-import { fixedPrice, shortId } from "../lib/format.js";
+import { applyTotalPriceMarkup, fixedPrice, shortId } from "../lib/format.js";
 
 export async function copyText(text) {
   try {
@@ -58,7 +58,7 @@ function validateTargetLocally(target) {
   return errors;
 }
 
-export function TargetModal({ config, onClose, worker, notify }) {
+export function TargetModal({ config, onClose, worker, notify, markupPct = 0 }) {
   const { closeRef, close } = useModalClose();
   const editing = Boolean(config);
   const [itemId, setItemId] = useState(config?.itemId || "");
@@ -139,8 +139,12 @@ export function TargetModal({ config, onClose, worker, notify }) {
   const maxSpend = useMemo(() => {
     const price = Number(targetPrice) || 0;
     const qty = Number(desiredQty) || 0;
-    return price > 0 && qty > 0 ? `${fixedPrice(price * qty * 2)} RLT` : "—";
-  }, [targetPrice, desiredQty]);
+    if (!(price > 0 && qty > 0)) return "—";
+    // Worst case: price at the target ceiling, high-stock doubling active, and
+    // the marketplace taking the whole total-price headroom.
+    const ceiling = applyTotalPriceMarkup(price * qty * 2, markupPct);
+    return `${fixedPrice(ceiling)} RLT`;
+  }, [targetPrice, desiredQty, markupPct]);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -320,7 +324,10 @@ export function TargetModal({ config, onClose, worker, notify }) {
           <div className="field">
             <span>Max spend per fill</span>
             <output className="output-box">{maxSpend}</output>
-            <small>Effective target × doubled quantity ceiling.</small>
+            <small>
+              Target × doubled quantity ceiling
+              {Number(markupPct) > 0 ? `, including the ${Number(markupPct)}% total-price markup` : ""}.
+            </small>
           </div>
         </div>
 

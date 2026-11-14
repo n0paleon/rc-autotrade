@@ -49,7 +49,11 @@ CREATE TABLE IF NOT EXISTS settings (
   paused                INTEGER NOT NULL DEFAULT 0,
   -- Added in schema v8: the only field that decides behaviour. The two columns
   -- above are kept in sync as mirrors for pre-v8 readers.
-  mode                  TEXT NOT NULL DEFAULT 'live'
+  mode                  TEXT NOT NULL DEFAULT 'live',
+  -- Added after schema v8: percentage of headroom added to the purchase
+  -- request's totalPrice so the marketplace can fill the whole order instead of
+  -- a partial slice.
+  total_price_markup_pct REAL NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS targets (
   item_id              TEXT PRIMARY KEY,
@@ -292,6 +296,15 @@ fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
              paused  = CASE mode WHEN '{MODE_OFF}' THEN 1 ELSE 0 END
          WHERE id = 1"
     ))?;
+
+    // Fulfillment headroom. Existing databases start at 0 (off), so an
+    // upgrade never raises the price ceiling of a running worker.
+    add_column_if_missing(
+        conn,
+        "settings",
+        "total_price_markup_pct",
+        "REAL NOT NULL DEFAULT 0",
+    )?;
     Ok(())
 }
 
@@ -607,6 +620,17 @@ mod tests {
             assert_eq!(mode, expected, "dry_run={dry_run} paused={paused}");
             assert_eq!(dry, i64::from(expected != MODE_LIVE));
             assert_eq!(paused_after, i64::from(expected == MODE_OFF));
+            let markup: f64 = conn
+                .query_row(
+                    "SELECT total_price_markup_pct FROM settings WHERE id = 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                markup, 0.0,
+                "an upgraded database must not start with price headroom"
+            );
             let version: i64 = conn
                 .query_row("PRAGMA user_version", [], |row| row.get(0))
                 .unwrap();

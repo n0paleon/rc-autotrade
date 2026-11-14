@@ -37,9 +37,24 @@ pub struct PurchaseRequest {
     pub item_type: String,
     pub qty: i64,
     pub unit_price_raw: f64,
+    /// Headroom added to `totalPrice` so the marketplace can fill the whole
+    /// request instead of a partial slice. Validated as `totalPriceMarkupPct`
+    /// in the worker settings; 0 keeps the exact listing total.
+    pub total_price_markup_pct: f64,
 }
 
 impl PurchaseRequest {
+    /// The listing total before headroom, in raw micro-RLT.
+    pub fn base_total_price(&self) -> f64 {
+        self.unit_price_raw * self.qty as f64
+    }
+
+    /// The `totalPrice` actually posted: the listing total plus the configured
+    /// fulfillment headroom.
+    pub fn total_price(&self) -> f64 {
+        crate::rules::apply_total_price_markup(self.base_total_price(), self.total_price_markup_pct)
+    }
+
     /// The exact JSON body posted to `/api/marketplace/purchase-item`.
     ///
     /// Kept in one place so the loot log can store what was actually sent
@@ -57,7 +72,7 @@ impl PurchaseRequest {
             "itemType": item_type,
             "totalCount": self.qty,
             "currency": "RLT",
-            "totalPrice": self.unit_price_raw * self.qty as f64,
+            "totalPrice": self.total_price(),
         })
     }
 }
@@ -847,6 +862,7 @@ mod tests {
             item_type: "miner".into(),
             qty: 2,
             unit_price_raw: 90_000.0,
+            total_price_markup_pct: 0.0,
         }
     }
 
@@ -862,6 +878,30 @@ mod tests {
         assert_eq!(payload["itemType"], "mutation_component");
         assert_eq!(payload["totalCount"], 3);
         assert_eq!(payload["totalPrice"], 4.5);
+    }
+
+    #[test]
+    fn purchase_payload_applies_the_configured_total_price_headroom() {
+        let request = PurchaseRequest {
+            item_id: "6319f7baa8ce530569ed16b9".into(),
+            item_type: "miner".into(),
+            qty: 10,
+            unit_price_raw: 90_000.0,
+            total_price_markup_pct: 10.0,
+        };
+        // The listing total is 0.9 RLT; 10% headroom asks for a 0.99 RLT cap
+        // so a deeper level can complete the order instead of filling partially.
+        assert_eq!(request.base_total_price(), 900_000.0);
+        assert_eq!(request.total_price(), 990_000.0);
+        assert_eq!(request.payload()["totalPrice"], 990_000.0);
+        assert_eq!(request.payload()["totalCount"], 10);
+    }
+
+    #[test]
+    fn a_zero_markup_keeps_the_legacy_payload_exact() {
+        let request = purchase_request();
+        let payload = request.payload();
+        assert_eq!(payload["totalPrice"], 180_000.0);
     }
 
     #[tokio::test]

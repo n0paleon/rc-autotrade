@@ -92,6 +92,7 @@ fn main() {
         max_orders_per_minute: 600,
         mode: Mode::Shadow,
         auto_refresh: false,
+        total_price_markup_pct: 0.0,
     };
 
     let now = Arc::new(AtomicI64::new(1_777_982_400_000));

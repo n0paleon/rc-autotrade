@@ -45,7 +45,8 @@ import {
   drawPixelAvatar,
   formatMs,
   latencyChannelLabel,
-  latencyClass
+  latencyClass,
+  applyTotalPriceMarkup
 } from "./lib/format.js";
 import { sound } from "./lib/sound.js";
 import { countTargetsByStatus, filterTargets } from "./lib/targets.js";
@@ -2126,6 +2127,7 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
   const mode = modeOf(settings);
   const [delay, setDelay] = useState(String(settings.delayPerOrder ?? 200));
   const [maxOrders, setMaxOrders] = useState(String(settings.maxOrdersPerMinute ?? 60));
+  const [markup, setMarkup] = useState(String(settings.totalPriceMarkupPct ?? 0));
   const [saving, setSaving] = useState(false);
   const [modesBusy, setModesBusy] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
@@ -2133,7 +2135,14 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
   useEffect(() => {
     setDelay(String(settings.delayPerOrder ?? 200));
     setMaxOrders(String(settings.maxOrdersPerMinute ?? 60));
-  }, [settings.delayPerOrder, settings.maxOrdersPerMinute]);
+    setMarkup(String(settings.totalPriceMarkupPct ?? 0));
+  }, [settings.delayPerOrder, settings.maxOrdersPerMinute, settings.totalPriceMarkupPct]);
+
+  const markupNumber = Number(markup);
+  const markupPreview =
+    Number.isFinite(markupNumber) && markupNumber > 0
+      ? `Preview: a ${fixedPrice(1)} RLT total becomes ${fixedPrice(applyTotalPriceMarkup(1, markupNumber))} RLT.`
+      : "0 sends the exact listing total.";
 
   const changeMode = async (next) => {
     if (next === mode) return;
@@ -2151,11 +2160,15 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
     try {
       await worker.saveSettings({
         delayPerOrder: Number(delay),
-        maxOrdersPerMinute: Number(maxOrders)
+        maxOrdersPerMinute: Number(maxOrders),
+        totalPriceMarkupPct: Number(markup)
       });
       notify("info", "CONFIG UPDATED", "Worker settings applied.");
     } catch (error) {
-      notify("error", "CONFIG FAILED", error.message);
+      const details = Object.entries(error.fields || {})
+        .map(([field, message]) => `${field}: ${message}`)
+        .join(" · ");
+      notify("error", "CONFIG FAILED", details || error.message);
     } finally {
       setSaving(false);
     }
@@ -2190,6 +2203,15 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
               <span>Max orders / min</span>
               <input className="input" type="number" inputMode="numeric" step="1" min="1" max="600" value={maxOrders} onChange={(event) => setMaxOrders(event.target.value)} />
               <small>Hard burst protection.</small>
+            </label>
+            <label className="field @[30rem]:col-span-2">
+              <span>Total price markup (%)</span>
+              <input className="input" type="number" inputMode="decimal" step="0.01" min="0" max="100" value={markup} onChange={(event) => setMarkup(event.target.value)} />
+              <small>
+                Extra headroom on the purchase <code className="text-ink-dim">totalPrice</code> so the marketplace can
+                fill the whole order instead of a partial slice. The plan, quantity and target price are unchanged;
+                the fill can cost up to this marked-up cap. {markupPreview}
+              </small>
             </label>
           </div>
           <button className="btn btn-primary btn-sm btn-block" type="submit" disabled={saving} data-busy={saving ? "true" : undefined} aria-busy={saving}>
@@ -2625,6 +2647,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           onClose={() => setModal(null)}
           worker={worker}
           notify={notify}
+          markupPct={snapshot.settings?.totalPriceMarkupPct ?? 0}
         />
       ) : null}
       {modal?.type === "session" ? (

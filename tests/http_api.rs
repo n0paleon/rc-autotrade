@@ -679,6 +679,31 @@ async fn settings_patch_accepts_mode_and_the_legacy_aliases() {
         .unwrap();
     assert_eq!(invalid.status(), 422);
 
+    // Fulfillment headroom: the deck writes it through the same patch route,
+    // and the accepted value comes back in the settings object.
+    let body: Value = client
+        .patch(format!("{base}/api/settings"))
+        .bearer_auth(TOKEN)
+        .json(&json!({ "totalPriceMarkupPct": 10 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["settings"]["totalPriceMarkupPct"], 10.0);
+
+    let out_of_range = client
+        .patch(format!("{base}/api/settings"))
+        .bearer_auth(TOKEN)
+        .json(&json!({ "totalPriceMarkupPct": 101 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(out_of_range.status(), 422);
+    let body: Value = out_of_range.json().await.unwrap();
+    assert!(body["fields"]["totalPriceMarkupPct"].as_str().is_some());
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 

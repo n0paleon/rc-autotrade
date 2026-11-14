@@ -132,12 +132,13 @@ pub const MARKET_BROADCAST_INTERVAL_MS: u64 = 250;
 pub const MARKET_COALESCE_MAX: usize = 512;
 
 /// Runtime defaults, used when the database has no settings row yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DefaultSettings {
     pub delay_per_order: i64,
     pub max_orders_per_minute: i64,
     pub mode: Mode,
     pub auto_refresh: bool,
+    pub total_price_markup_pct: f64,
 }
 
 pub const DEFAULT_SETTINGS: DefaultSettings = DefaultSettings {
@@ -145,6 +146,9 @@ pub const DEFAULT_SETTINGS: DefaultSettings = DefaultSettings {
     max_orders_per_minute: 60,
     mode: Mode::Live,
     auto_refresh: true,
+    // Off by default: an upgrade must not silently raise the price ceiling of
+    // every order. The deck exposes it in CONFIG → Runtime config.
+    total_price_markup_pct: 0.0,
 };
 
 pub struct Limits;
@@ -157,6 +161,12 @@ impl Limits {
     pub const DELAY_MAX: i64 = 60_000;
     pub const ORDERS_PER_MINUTE_MIN: i64 = 1;
     pub const ORDERS_PER_MINUTE_MAX: i64 = 600;
+    /// `totalPriceMarkupPct` is a percentage added to the purchase request's
+    /// total price. 0 keeps the exact listing total; the cap keeps one typo
+    /// from turning a snipe into a 10× overpay.
+    pub const MARKUP_MIN: f64 = 0.0;
+    pub const MARKUP_MAX: f64 = 100.0;
+    pub const MARKUP_DECIMALS: f64 = 2.0;
     pub const LABEL_MAX: usize = 48;
     pub const CONFIGS_MAX: usize = 100;
     pub const BODY_BYTES: usize = 256 * 1024;
@@ -177,6 +187,7 @@ mod tests {
         assert_eq!(DEFAULT_SETTINGS.max_orders_per_minute, 60);
         assert_eq!(DEFAULT_SETTINGS.mode, Mode::Live);
         assert!(DEFAULT_SETTINGS.auto_refresh);
+        assert_eq!(DEFAULT_SETTINGS.total_price_markup_pct, 0.0);
         assert_eq!(PRICE_SCALE, 1_000_000.0);
         assert_eq!(MAX_HISTORY, 200);
     }

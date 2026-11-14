@@ -323,15 +323,17 @@ impl Store {
         self.db
             .execute(
                 "INSERT OR IGNORE INTO settings
-                 (id, delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused, mode)
-                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+                 (id, delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused, mode,
+                  total_price_markup_pct)
+                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     defaults.delay_per_order,
                     defaults.max_orders_per_minute,
                     dry_run as i64,
                     defaults.auto_refresh as i64,
                     paused as i64,
-                    defaults.mode.as_str()
+                    defaults.mode.as_str(),
+                    defaults.total_price_markup_pct
                 ],
             )
             .map_err(|e| format!("could not seed settings: {e}"))?;
@@ -376,7 +378,8 @@ impl Store {
         let settings_row = self
             .db
             .query_row(
-                "SELECT delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused, mode
+                "SELECT delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused, mode,
+                        total_price_markup_pct
                  FROM settings WHERE id = 1",
                 [],
                 |row| {
@@ -391,6 +394,7 @@ impl Store {
                         mode: Mode::parse(&mode)
                             .unwrap_or_else(|| Mode::from_legacy(dry_run != 0, paused != 0)),
                         auto_refresh: row.get(3)?,
+                        total_price_markup_pct: row.get(6)?,
                     })
                 },
             )
@@ -665,6 +669,9 @@ impl Store {
         if let Some(value) = patch.auto_refresh {
             settings.auto_refresh = value;
         }
+        if let Some(value) = patch.total_price_markup_pct {
+            settings.total_price_markup_pct = value;
+        }
         self.state.settings = settings;
         self.write_settings()
             .map_err(|e| format!("could not persist settings: {e}"))
@@ -896,14 +903,16 @@ impl Store {
         let (dry_run, paused) = settings.legacy_flags();
         self.db.execute(
             "UPDATE settings SET delay_per_order = ?1, max_orders_per_minute = ?2,
-                    dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6 WHERE id = 1",
+                    dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6,
+                    total_price_markup_pct = ?7 WHERE id = 1",
             params![
                 settings.delay_per_order,
                 settings.max_orders_per_minute,
                 dry_run as i64,
                 settings.auto_refresh as i64,
                 paused as i64,
-                settings.mode.as_str()
+                settings.mode.as_str(),
+                settings.total_price_markup_pct
             ],
         )?;
         Ok(())
@@ -982,14 +991,16 @@ impl Store {
         let (dry_run, paused) = settings.legacy_flags();
         tx.execute(
             "UPDATE settings SET delay_per_order = ?1, max_orders_per_minute = ?2,
-                    dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6 WHERE id = 1",
+                    dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6,
+                    total_price_markup_pct = ?7 WHERE id = 1",
             params![
                 settings.delay_per_order,
                 settings.max_orders_per_minute,
                 dry_run as i64,
                 settings.auto_refresh as i64,
                 paused as i64,
-                settings.mode.as_str()
+                settings.mode.as_str(),
+                settings.total_price_markup_pct
             ],
         )
         .map_err(|e| format!("could not write settings: {e}"))?;
@@ -2817,6 +2828,7 @@ mod tests {
             store.upsert_config(target("6319f7baa8ce530569ed16b9"), None);
             let patch = validation::SettingsPatch {
                 mode: Some(Mode::Off),
+                total_price_markup_pct: Some(7.5),
                 ..Default::default()
             };
             store.patch_settings(patch).unwrap();
@@ -2826,6 +2838,7 @@ mod tests {
         assert_eq!(store.state.configs.len(), 1);
         assert_eq!(store.state.configs[0].item_id, "6319f7baa8ce530569ed16b9");
         assert_eq!(store.state.settings.mode, Mode::Off);
+        assert_eq!(store.state.settings.total_price_markup_pct, 7.5);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

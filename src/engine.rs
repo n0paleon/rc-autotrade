@@ -24,7 +24,7 @@ use crate::depth::{Fill, estimate_fill_price_sorted};
 use crate::events::{Kind, UpstreamEvent, normalize_upstream_event};
 use crate::logger::Logger;
 use crate::model::{MarketSnapshot, Mode, OrderEntry, PriceBand, Target};
-use crate::rules::{Action, Plan, plan_order, round_price};
+use crate::rules::{Action, Plan, apply_total_price_markup, plan_order, round_price};
 use crate::store::{Store, now_ms};
 use crate::timings::Timings;
 use crate::trend::{FillRef, Point, TrendOptions, TrendSignal, build_trend};
@@ -128,6 +128,13 @@ pub struct OrderIntent {
     pub unit_price: f64,
     pub target_price: f64,
     pub notional: f64,
+    /// Headroom percentage copied from the runtime settings when the order was
+    /// planned. The purchase request scales its `totalPrice` by this so the
+    /// marketplace can complete the order instead of filling it partially.
+    pub total_price_markup_pct: f64,
+    /// `totalPrice` sent in the purchase request, in raw micro-RLT. Equal to
+    /// `unit_price_raw * qty` when the markup is 0.
+    pub total_price_raw: f64,
     pub doubled: bool,
     /// Set on a follow-up order the engine fired locally from a partial fill,
     /// without waiting for the next market frame. Such an order is a guess about
@@ -1106,6 +1113,13 @@ impl Engine {
 
         let qty = qty.max(1);
         let notional = round_price(unit_price * qty as f64);
+        // The listing total plus the configured fulfillment headroom. Reading
+        // it here, at plan time, keeps the request, the log line and the
+        // broadcast describing the same cap even if the setting changes while
+        // the request is in flight.
+        let total_price_markup_pct = settings.total_price_markup_pct;
+        let total_price_raw =
+            apply_total_price_markup(price_raw * qty as f64, total_price_markup_pct);
         let timings = Timings {
             v: 1,
             signal_at: Some(signal_at as f64),
@@ -1133,6 +1147,8 @@ impl Engine {
             unit_price,
             target_price: config.target_price,
             notional,
+            total_price_markup_pct,
+            total_price_raw,
             doubled,
             optimistic: follow_up,
             at: now,
@@ -1160,6 +1176,8 @@ impl Engine {
                     "unitPrice": intent.unit_price,
                     "targetPrice": intent.target_price,
                     "notional": intent.notional,
+                    "totalPriceRaw": intent.total_price_raw,
+                    "markupPct": intent.total_price_markup_pct,
                     "at": intent.at,
                     "timings": intent.timings,
                     "reason": "dry-run",
@@ -1225,18 +1243,26 @@ impl Engine {
                 "unitPrice": submitted.unit_price,
                 "targetPrice": submitted.target_price,
                 "notional": submitted.notional,
+                "totalPriceRaw": submitted.total_price_raw,
+                "markupPct": submitted.total_price_markup_pct,
                 "at": submitted.at,
                 "timings": submitted.timings,
                 "optimistic": submitted.optimistic,
             }),
         });
-        let marker = if submitted.optimistic {
-            " [LOCAL REARM]"
+        let mut marker = if submitted.optimistic {
+            " [LOCAL REARM]".to_string()
         } else if submitted.doubled {
-            " [HIGH STOCK ×2]"
+            " [HIGH STOCK ×2]".to_string()
         } else {
-            ""
+            String::new()
         };
+        if submitted.total_price_markup_pct > 0.0 {
+            marker.push_str(&format!(
+                " [+{}% HEADROOM]",
+                submitted.total_price_markup_pct
+            ));
+        }
         self.logger.info(
             "order",
             format!(
@@ -1325,6 +1351,8 @@ impl Engine {
                     "unitPrice": intent.unit_price,
                     "targetPrice": intent.target_price,
                     "notional": intent.notional,
+                    "totalPriceRaw": intent.total_price_raw,
+                    "markupPct": intent.total_price_markup_pct,
                     "at": intent.at,
                     "timings": timings,
                     "orderId": order_id,
@@ -2941,6 +2969,29 @@ mod tests {
         );
         // A market tick must be emitted before the submit intent.
         assert_eq!(market_payloads(&events).len(), 1);
+    }
+
+    #[test]
+    fn applies_the_total_price_markup_to_the_submitted_order() {
+        let mut h = harness();
+        h.store
+            .patch_settings(validation::SettingsPatch {
+                total_price_markup_pct: Some(10.0),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let events =
+            h.engine
+                .handle_frame(&mut h.store, &market_frame(90_000, 10), 1_000_001, true);
+        let intents = submissions(&events);
+        assert_eq!(intents.len(), 1);
+        // 10 × 0.09 RLT = 900_000 micro-RLT, plus 10% headroom.
+        assert_eq!(intents[0].total_price_markup_pct, 10.0);
+        assert_eq!(intents[0].total_price_raw, 990_000.0);
+        // The expected spend (and every profit calculation downstream) stays
+        // on the listing price; only the request ceiling is inflated.
+        assert!((intents[0].notional - 0.9).abs() < 1e-12);
     }
 
     #[test]

@@ -658,6 +658,9 @@ pub fn parse_backup(raw: &Value, now: i64) -> ParseOutcome {
             if let Some(value) = patch.auto_refresh {
                 settings.auto_refresh = value;
             }
+            if let Some(value) = patch.total_price_markup_pct {
+                settings.total_price_markup_pct = value;
+            }
         }
         Err(_) => {
             warnings
@@ -950,14 +953,16 @@ pub fn restore_backup(
     let (dry_run, paused) = settings.legacy_flags();
     tx.execute(
         "UPDATE settings SET delay_per_order = ?1, max_orders_per_minute = ?2,
-                dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6 WHERE id = 1",
+                dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6,
+                total_price_markup_pct = ?7 WHERE id = 1",
         params![
             settings.delay_per_order,
             settings.max_orders_per_minute,
             dry_run as i64,
             settings.auto_refresh as i64,
             paused as i64,
-            settings.mode.as_str()
+            settings.mode.as_str(),
+            settings.total_price_markup_pct
         ],
     )
     .map_err(|error| format!("could not restore settings: {error}"))?;
@@ -1279,7 +1284,7 @@ mod tests {
             "data": {
                 "createdAt": NOW,
                 "reportSince": NOW,
-                "settings": { "delayPerOrder": 250 },
+                "settings": { "delayPerOrder": 250, "totalPriceMarkupPct": 12.5 },
                 "stats": { "since": NOW },
                 "targets": [
                     {
@@ -1320,6 +1325,7 @@ mod tests {
         let value = parsed.value.unwrap();
         assert_eq!(value.targets.len(), 1);
         assert_eq!(value.settings.delay_per_order, 250);
+        assert_eq!(value.settings.total_price_markup_pct, 12.5);
         assert_eq!(value.report_products.len(), 1);
         assert_eq!(value.report_products[0].fills, 1);
         assert_eq!(value.report_products[0].qty, 2);

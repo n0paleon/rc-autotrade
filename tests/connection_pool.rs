@@ -84,6 +84,7 @@ async fn the_warm_probe_and_purchases_share_one_connection() {
         item_type: "miner".into(),
         qty: 1,
         unit_price_raw: 1.0,
+        total_price_markup_pct: 0.0,
     };
     let result = api.purchase(&Credentials::default(), &request).await;
     assert!(result.ok, "purchase should succeed: {result:?}");
@@ -109,6 +110,7 @@ async fn purchases_report_a_new_then_a_reused_socket() {
         item_type: "miner".into(),
         qty: 1,
         unit_price_raw: 1.0,
+        total_price_markup_pct: 0.0,
     };
 
     let first = api.purchase(&Credentials::default(), &request).await;
@@ -190,6 +192,7 @@ async fn a_foreign_lookup_does_not_flip_a_reused_purchase() {
         item_type: "miner".into(),
         qty: 1,
         unit_price_raw: 1.0,
+        total_price_markup_pct: 0.0,
     };
 
     let first = api.purchase(&Credentials::default(), &request).await;

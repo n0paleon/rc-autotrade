@@ -15,6 +15,7 @@ A headless Rollercoin marketplace sniper with an arcade-style control deck built
 ## Features
 
 - **Headless worker.** Connects to `nws.rollercoin.com` over WebSocket, listens to every market frame, matches events against your targets, and sends `purchase-item` requests over HTTPS.
+- **Fulfillment headroom.** An adjustable total-price markup (CONFIG → Runtime config, default 0%) raises the request's `totalPrice` ceiling — at 10%, a 1.000000 RLT total is sent as 1.100000 RLT — so the marketplace can fill the whole order instead of a partial slice. It never changes the plan or the quantity, and 0 keeps the exact listing total.
 - **Access-key control plane.** The worker exposes HTTP and WebSocket endpoints protected by a bearer key. The key is generated once on first boot or pinned through `WORKER_TOKEN`.
 - **Dynamic targets.** Add, edit, delete, arm, and disarm targets from the UI without restarting, then filter the fleet by arm state (active/inactive), item type, or label. Labels and rarity colors are resolved automatically from `item-info`.
 - **Charts and success rate.** Every chart is a line chart. A price card shows a fixed 1D view in 30-minute buckets; click it to open a full-size view with 1–7 day ranges, 1m–1d buckets, a price axis, crosshair readout, and a target line.
@@ -269,14 +270,30 @@ Optional. Defaults to `true`. It arms or disarms the target.
 The **MAX SPEND PER FILL** value in the target form is a UI-only calculation. It is not sent to the worker and not stored in the database.
 
 ```text
-maxSpendPerFill = targetPrice x desiredQty x 2
+maxSpendPerFill = targetPrice x desiredQty x 2 x (1 + totalPriceMarkupPct / 100)
 actual cost = unitPrice x qty
 ```
 
-- It represents the worst case: price at the ceiling and high-stock doubling active.
+- It represents the worst case: price at the ceiling, high-stock doubling active, and the marketplace taking the whole total-price headroom.
 - The actual cost is always at most this value while the target is valid.
 - Lowering `highStockThreshold` does not lower this value because the factor 2 is always included.
 - The worker does not check the balance. If the balance is lower, the marketplace may reject the purchase and the target enters backoff.
+
+### Fulfillment headroom: `totalPriceMarkupPct`
+
+`totalPrice` in the `purchase-item` request is the ceiling the marketplace may spend to fill `totalCount` units. Sending exactly `unitPriceRaw x qty` leaves no room for the book to move between the market frame and the purchase, so the matching engine can only fill part of the request. The worker can inflate that ceiling by a percentage:
+
+```text
+totalPrice = round(unitPriceRaw x qty x (1 + totalPriceMarkupPct / 100))
+```
+
+- It is a **global runtime setting**, not a target field. Set it in **CONFIG → Runtime config → Total price markup (%)**, or send `PATCH /api/settings` with `{ "totalPriceMarkupPct": 10 }`.
+- `0` (the default) sends the exact listing total and leaves the payload identical to the pre-feature request. Values are allowed from `0` to `100` with at most two decimals.
+- At `10`, a listing total of `1.000000` RLT is sent as a `1.100000` RLT cap. This is what lets the marketplace complete the order instead of filling a partial slice.
+- Only the request ceiling changes. `plan_order()`, the quantity, high-stock doubling, `targetPrice` and the early-rearm follow-ups are unchanged.
+- The extra amount is headroom, not a surcharge: Rollercoin still matches from the cheapest listings. However, a deeper book can now fill at a higher unit price, so the actual fill may cost up to the marked-up cap and profit can be lower (or negative) than the target-price calculation suggests.
+- A follow-up fired by the early-rearm path uses the same setting because it goes through the normal order submission path.
+- The exact body sent is stored in the loot row (`rawEvents.purchaseRequest`), so the markup actually used on an order is auditable after the fact.
 
 ### Runtime gates
 
@@ -363,6 +380,7 @@ With `allowPartialOrder = false`, the stock 40 row would be skipped with `stock-
 | Part | Location |
 | --- | --- |
 | Pure buy decision | `plan_order()` in `src/rules.rs` |
+| Fulfillment headroom | `apply_total_price_markup()` in `src/rules.rs`, used by `PurchaseRequest::payload()` in `src/api.rs` |
 | Target validation | `validate_target()` in `src/validation.rs` |
 | Runtime gates and order submission | `handle_frame()` and `handle_market()` in `src/engine.rs` |
 | Purchase result handling | `on_purchase_result()` in `src/engine.rs` |

@@ -553,6 +553,7 @@ mod tests {
                 item_type: "miner".into(),
                 qty: 10,
                 unit_price_raw: 90_000.0,
+                total_price_markup_pct: 0.0,
             })
             .await;
         assert!(result.ok);

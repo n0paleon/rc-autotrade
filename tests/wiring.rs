@@ -102,6 +102,10 @@ async fn purchase(
     calls.fetch_add(1, Ordering::SeqCst);
     assert_eq!(headers["authorization"], "Bearer test-token");
     assert_eq!(body["totalCount"], 10);
+    // 10 × 90_000 micro-RLT = 900_000 with the 10% fulfillment headroom the
+    // test configures below, so the marketplace sees a 990_000 cap and may
+    // complete the whole order instead of filling it partially.
+    assert_eq!(body["totalPrice"].as_f64(), Some(990_000.0));
     Json(json!({ "success": true, "data": { "usersPurchaseOrder": ORDER_ID } }))
 }
 
@@ -169,6 +173,12 @@ async fn feed_to_fill_round_trip() {
         None,
     );
     store.flush().expect("flush");
+    store
+        .patch_settings(rollercoin_worker::validation::SettingsPatch {
+            total_price_markup_pct: Some(10.0),
+            ..Default::default()
+        })
+        .expect("markup setting");
     store
         .apply_session_patch(rollercoin_worker::validation::SessionPatch {
             access_token: Some("test-token".into()),

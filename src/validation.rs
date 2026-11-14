@@ -383,6 +383,7 @@ pub struct SettingsPatch {
     pub max_orders_per_minute: Option<i64>,
     pub mode: Option<Mode>,
     pub auto_refresh: Option<bool>,
+    pub total_price_markup_pct: Option<f64>,
 }
 
 impl SettingsPatch {
@@ -491,6 +492,28 @@ pub fn validate_settings(input: &Value) -> Result<SettingsPatch, FieldErrors> {
                 &mut errors,
                 "autoRefresh",
                 "autoRefresh must be true or false.".to_string(),
+            ),
+        }
+    }
+
+    if let Some(raw) = source.get("totalPriceMarkupPct") {
+        let scale = 10_f64.powf(Limits::MARKUP_DECIMALS);
+        match to_number(raw) {
+            Some(value)
+                if (Limits::MARKUP_MIN..=Limits::MARKUP_MAX).contains(&value)
+                    && (value * scale - (value * scale).round()).abs() < 1e-9 =>
+            {
+                patch.total_price_markup_pct = Some(value)
+            }
+            _ => merge_error(
+                &mut errors,
+                "totalPriceMarkupPct",
+                format!(
+                    "Total price markup must be between {} and {} % with at most {} decimals.",
+                    Limits::MARKUP_MIN,
+                    Limits::MARKUP_MAX,
+                    Limits::MARKUP_DECIMALS
+                ),
             ),
         }
     }
@@ -667,6 +690,31 @@ mod tests {
         assert_eq!(patch.delay_per_order, Some(500));
         assert_eq!(patch.mode, Some(Mode::Shadow));
         assert!(validate_settings(&json!({ "delayPerOrder": 10 })).is_err());
+    }
+
+    #[test]
+    fn validates_the_total_price_markup() {
+        let patch = validate_settings(&json!({ "totalPriceMarkupPct": 10 })).unwrap();
+        assert_eq!(patch.total_price_markup_pct, Some(10.0));
+        let patch = validate_settings(&json!({ "totalPriceMarkupPct": 7.25 })).unwrap();
+        assert_eq!(patch.total_price_markup_pct, Some(7.25));
+        // 0 is meaningful: it keeps the exact listing total.
+        let patch = validate_settings(&json!({ "totalPriceMarkupPct": 0 })).unwrap();
+        assert_eq!(patch.total_price_markup_pct, Some(0.0));
+
+        for invalid in [
+            json!({ "totalPriceMarkupPct": -0.5 }),
+            json!({ "totalPriceMarkupPct": 100.01 }),
+            json!({ "totalPriceMarkupPct": 1.234 }),
+            json!({ "totalPriceMarkupPct": "abc" }),
+            json!({ "totalPriceMarkupPct": null }),
+        ] {
+            let errors = validate_settings(&invalid).unwrap_err();
+            assert!(
+                errors.contains_key("totalPriceMarkupPct"),
+                "accepted {invalid}"
+            );
+        }
     }
 
     #[test]
