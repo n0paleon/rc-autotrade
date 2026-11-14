@@ -11,7 +11,7 @@
 //!   guess made by a separate probe task.
 //!
 //! Attribution is per request, not global: [`DnsRecorder::begin`] opens a
-//! window, and while the HTTP call is polled the task-local [`REQUEST_ID`]
+//! window, and while the HTTP call is polled the task-local `REQUEST_ID`
 //! tells the resolver which window a lookup belongs to. Concurrent purchases,
 //! the warm probe and label enrichment therefore cannot leak samples into each
 //! other. Lookups outside any window are ignored.
@@ -24,6 +24,8 @@ use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+use crate::lock::lock;
 
 /// Whether the purchase had to open a connection or could reuse a pooled one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -107,10 +109,7 @@ impl DnsRecorder {
     /// when dropped, so cancelled or timed-out calls do not accumulate state.
     pub fn begin(self: &Arc<Self>) -> DnsRequestGuard {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst) + 1;
-        self.requests
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(id, DnsSnapshot::default());
+        lock(&self.requests).insert(id, DnsSnapshot::default());
         DnsRequestGuard {
             recorder: Arc::clone(self),
             id,
@@ -118,12 +117,7 @@ impl DnsRecorder {
     }
 
     fn snapshot(&self, id: u64) -> DnsSnapshot {
-        self.requests
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&id)
-            .cloned()
-            .unwrap_or_default()
+        lock(&self.requests).get(&id).cloned().unwrap_or_default()
     }
 
     fn with_current<F: FnOnce(&mut DnsSnapshot)>(&self, update: F) {
@@ -132,10 +126,7 @@ impl DnsRecorder {
             // window must not pollute a real request's sample.
             return;
         };
-        let mut requests = self
-            .requests
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut requests = lock(&self.requests);
         if let Some(snapshot) = requests.get_mut(&id) {
             update(snapshot);
         }
@@ -182,11 +173,7 @@ impl DnsRequestGuard {
 
 impl Drop for DnsRequestGuard {
     fn drop(&mut self) {
-        self.recorder
-            .requests
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&self.id);
+        lock(&self.recorder.requests).remove(&self.id);
     }
 }
 

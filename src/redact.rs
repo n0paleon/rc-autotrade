@@ -1,5 +1,4 @@
-//! Credential redaction for logs and stored errors, ported from
-//! `src/shared/redact.js`.
+//! Credential redaction for logs and stored errors.
 //!
 //! The market feed receives its JWT as `?token=...`, so a failed WebSocket
 //! handshake would otherwise print a live session token in the worker terminal

@@ -1,4 +1,4 @@
-//! Console + in-memory + socket logger, ported from `src/worker/logger.js`.
+//! Console + in-memory + socket logger.
 //!
 //! The control deck receives every line through a sink installed by the HTTP
 //! server, and clients that connect late still get the tail of the ring buffer.
@@ -10,7 +10,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
+use crate::clock::now_ms;
 use crate::constants::LOG_BUFFER_SIZE;
+use crate::lock::lock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
@@ -73,13 +75,6 @@ fn clock_hms() -> String {
     )
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 impl Logger {
     pub fn new(level: &str) -> Self {
         Self {
@@ -91,12 +86,6 @@ impl Logger {
         }
     }
 
-    pub fn set_level(&self, level: &str) {
-        if let Ok(mut guard) = self.threshold.lock() {
-            *guard = Level::parse(level);
-        }
-    }
-
     pub fn set_sink(&self, sink: Sink) {
         if let Ok(mut guard) = self.sink.lock() {
             *guard = Some(sink);
@@ -105,10 +94,7 @@ impl Logger {
 
     /// Most recent `limit` entries, oldest first.
     pub fn recent(&self, limit: usize) -> Vec<Value> {
-        let guard = match self.buffer.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let guard = lock(&self.buffer);
         let skip = guard.len().saturating_sub(limit);
         guard.iter().skip(skip).cloned().collect()
     }
@@ -130,13 +116,13 @@ impl Logger {
     }
 
     fn emit(&self, level: Level, scope: &str, message: &str) {
-        let threshold = *self.threshold.lock().unwrap_or_else(|e| e.into_inner());
+        let threshold = *lock(&self.threshold);
         if level < threshold {
             return;
         }
 
         let id = {
-            let mut guard = self.next_id.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = lock(&self.next_id);
             let id = *guard;
             *guard += 1;
             id
@@ -150,7 +136,7 @@ impl Logger {
         });
 
         {
-            let mut buffer = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+            let mut buffer = lock(&self.buffer);
             buffer.push_back(entry.clone());
             while buffer.len() > LOG_BUFFER_SIZE {
                 buffer.pop_front();
@@ -182,7 +168,7 @@ impl Logger {
 
         // Clone the sink and release the lock before calling it: a slow client
         // must never deadlock the frame loop.
-        let sink = self.sink.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let sink = lock(&self.sink).clone();
         if let Some(sink) = sink {
             sink(entry);
         }

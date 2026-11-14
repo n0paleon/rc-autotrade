@@ -1,5 +1,4 @@
-//! Raw marketplace event snapshots kept with loot rows, ported from
-//! `src/shared/raw-events.js`.
+//! Raw marketplace event snapshots kept with loot rows.
 //!
 //! Large frames are stored as an explicit preview so an unusually deep book
 //! cannot turn the permanent loot log into an unbounded event archive.

@@ -1,4 +1,4 @@
-//! Depth-aware fill price, ported from `src/shared/depth.js`.
+//! Depth-aware fill price.
 //!
 //! The cheapest ask alone is a poor market reference: a quantity-1 listing can
 //! sit far below the level a real order would fill at. This computes the
@@ -48,11 +48,11 @@ pub fn sort_levels(levels: &mut [Listing]) {
 
 /// Estimates the average unit price for `qty` units from the visible ladder.
 ///
-/// Returns `None` when nothing could be filled, matching the JavaScript
-/// function so the engine can keep treating `null` as "no reference".
+/// Returns `None` when nothing could be filled, so the engine can treat the
+/// missing reference as "no reference" instead of a zero price.
 pub fn estimate_fill_price(listings: &[Listing], rest: Option<Listing>, qty: i64) -> Option<Fill> {
     let mut levels: Vec<Listing> = listings.to_vec();
-    // Same ordering as the JS: cheapest first, deeper level first on ties.
+    // Cheapest first, deeper level first on ties.
     sort_levels(&mut levels);
     estimate_fill_price_sorted(&levels, rest, qty)
 }
@@ -81,14 +81,14 @@ pub fn estimate_fill_price_sorted(
     }
 
     let mut approx = false;
-    if remaining > 0 {
-        if let Some(tail) = rest {
-            let take = remaining.min(tail.quantity);
-            cost += take as f64 * tail.price;
-            filled += take;
-            remaining -= take;
-            approx = true;
-        }
+    if remaining > 0
+        && let Some(tail) = rest
+    {
+        let take = remaining.min(tail.quantity);
+        cost += take as f64 * tail.price;
+        filled += take;
+        remaining -= take;
+        approx = true;
     }
 
     if filled <= 0 || cost <= 0.0 {

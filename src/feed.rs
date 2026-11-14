@@ -43,8 +43,4 @@ impl FeedHandle {
             FeedHandle::Mock(handle) => handle.stop().await,
         }
     }
-
-    pub fn is_mock(&self) -> bool {
-        matches!(self, FeedHandle::Mock(_))
-    }
 }

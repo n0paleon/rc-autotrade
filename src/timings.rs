@@ -1,4 +1,4 @@
-//! Per-order latency marks, ported from `src/shared/timings.js`.
+//! Per-order latency marks.
 //!
 //! Stored as JSON in `orders.timings`; every timestamp is an absolute epoch
 //! millisecond on the worker clock. The shape is versioned so old rows keep
@@ -6,20 +6,6 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-const TIME_KEYS: [&str; 11] = [
-    "signalAt",
-    "handleAt",
-    "orderAt",
-    "dispatchAt",
-    "sendAt",
-    "responseAt",
-    "completeAt",
-    "acceptedAt",
-    "fillAt",
-    "fillHandledAt",
-    "failedAt",
-];
 
 fn version() -> u8 {
     1
@@ -136,12 +122,11 @@ impl Timings {
     /// request, so those rows fall back to the retry's own `response_at`. Rows
     /// without a TTFB sample use the same fallback.
     pub fn ttfb_at(&self) -> Option<f64> {
-        if self.attempts.unwrap_or(1) <= 1 {
-            if let (Some(send_at), Some(ttfb_ms)) = (self.send_at, self.ttfb_ms) {
-                if ttfb_ms >= 0.0 {
-                    return Some(send_at + ttfb_ms);
-                }
-            }
+        if self.attempts.unwrap_or(1) <= 1
+            && let (Some(send_at), Some(ttfb_ms)) = (self.send_at, self.ttfb_ms)
+            && ttfb_ms >= 0.0
+        {
+            return Some(send_at + ttfb_ms);
         }
         self.response_at
     }

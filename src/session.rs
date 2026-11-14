@@ -1,10 +1,10 @@
-//! Session freshness helpers, ported from `src/worker/session.js`.
+//! Session freshness helpers.
 //!
 //! The scheduler (interval, coalescing, event emission) lives in the wiring so
 //! this module stays pure and testable: given a stored session and `now`,
 //! decide whether a refresh is due, and apply a refresh result to the store.
 //!
-//! Timing rules, copied 1:1:
+//! Timing rules:
 //! * refresh when the JWT expires within 2 minutes, but never more often than
 //!   once per 30 seconds (Rollercoin issues ~10 minute tokens, so "expires
 //!   within 10 minutes" would otherwise refresh on every tick);
@@ -195,7 +195,18 @@ mod tests {
     }
 }
 
-/// Bridge merge rules from `server.js #mergePushedSession`.
+/// Patch that mirrors a userscript push: the access token always, the refresh
+/// token only when the push carries one, and the bridge source.
+fn bridge_patch(access_token: &str, refresh_token: &str) -> crate::validation::SessionPatch {
+    crate::validation::SessionPatch {
+        access_token: Some(access_token.to_string()),
+        refresh_token: (!refresh_token.is_empty()).then(|| refresh_token.to_string()),
+        source: Some("bridge".into()),
+        ..Default::default()
+    }
+}
+
+/// Bridge merge rules.
 ///
 /// A userscript pushes the browser's token; accept it when the worker has none,
 /// when the current token is expired, or when the incoming one expires clearly
@@ -212,13 +223,7 @@ pub fn merge_pushed(
     let session = store.state.session.clone();
 
     if session.access_token.is_empty() {
-        let mut patch = crate::validation::SessionPatch::default();
-        patch.access_token = Some(incoming_access.to_string());
-        if !incoming_refresh.is_empty() {
-            patch.refresh_token = Some(incoming_refresh.to_string());
-        }
-        patch.source = Some("bridge".into());
-        let _ = store.apply_session_patch(patch);
+        let _ = store.apply_session_patch(bridge_patch(incoming_access, incoming_refresh));
         return true;
     }
 
@@ -247,13 +252,7 @@ pub fn merge_pushed(
         return false;
     }
 
-    let mut patch = crate::validation::SessionPatch::default();
-    patch.access_token = Some(incoming_access.to_string());
-    if !incoming_refresh.is_empty() {
-        patch.refresh_token = Some(incoming_refresh.to_string());
-    }
-    patch.source = Some("bridge".into());
-    let _ = store.apply_session_patch(patch);
+    let _ = store.apply_session_patch(bridge_patch(incoming_access, incoming_refresh));
     true
 }
 
