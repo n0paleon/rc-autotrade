@@ -518,6 +518,8 @@ pub struct ItemActivityRow {
 }
 
 /// Frames and ids for one item type across the whole requested range.
+/// Computed before the category/search filters, so the deck can keep every
+/// category badge and menu entry visible while the table is narrowed.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemTypeTotal {
@@ -528,8 +530,9 @@ pub struct ItemTypeTotal {
 
 /// One page of the monitor plus the totals that describe the entire range.
 ///
-/// The totals are computed before paging, so the per-type summary in the header
-/// does not change as the reader moves between pages.
+/// The totals are computed before filtering and paging, so the per-type summary
+/// in the header does not change as the reader selects a category or moves
+/// between pages.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ItemActivityReport {
     /// The requested page, already ranked and sliced.

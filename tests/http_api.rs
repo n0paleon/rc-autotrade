@@ -874,6 +874,17 @@ async fn item_activity_ranks_ids_outside_the_fleet_and_names_them_from_item_info
         filtered["activity"]["totalEvents"], 7,
         "the totals follow the type filter"
     );
+    // The header badges do not: they keep one count per type across the whole
+    // range, so the rack badge stays visible while the table shows parts only.
+    let filtered_totals = filtered["activity"]["typeTotals"].as_array().unwrap();
+    assert_eq!(filtered_totals.len(), 2);
+    assert_eq!(
+        filtered_totals
+            .iter()
+            .find(|total| total["itemType"] == "rack")
+            .expect("rack total")["events"],
+        2
+    );
 
     let rack: Value = client
         .get(format!("{base}/api/item-activity?days=1&itemType=rack"))

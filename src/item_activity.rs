@@ -44,8 +44,9 @@ pub struct ActivityView {
     pub page: usize,
     pub pages: usize,
     pub has_more: bool,
-    /// Frames and ids per item type, summed over the whole range. The header
-    /// summary uses this, so it does not shrink when the reader pages forward.
+    /// Frames and ids per item type, summed over the whole range before the
+    /// category/search filters. The header summary uses this, so it does not
+    /// shrink when the reader pages forward or selects a category.
     pub type_totals: Vec<crate::model::ItemTypeTotal>,
     pub rows: Vec<crate::model::ItemActivityRow>,
     /// Ids in the response whose name still has to be looked up.

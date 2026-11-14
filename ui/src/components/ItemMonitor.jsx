@@ -5,6 +5,7 @@ import {
   ACTIVITY_RANGES,
   categoryLabel,
   categoryOf,
+  categoryOptions,
   DEFAULT_ACTIVITY_RANGE,
   nextBatch,
   rangeForPreset,
@@ -218,32 +219,32 @@ export function ItemMonitor({ request, notify }) {
     };
   }, [load]);
 
-  // The category menu must list every type in the range, not just the types on
-  // the current page — otherwise paging would silently change the filters the
-  // reader can pick. `typeTotals` is computed over the whole range for exactly
-  // this reason.
-  const options = useMemo(
-    () =>
-      (meta?.typeTotals || [])
-        .map((total) => ({ key: String(total.itemType || "unknown"), count: Number(total.items) || 0 }))
-        .filter((option) => option.count > 0)
-        .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key)),
-    [meta]
-  );
+  // The category menu is built from the same range-wide type totals as the
+  // header badges. Those totals are computed before the filters, so selecting
+  // one category keeps every other category in the menu instead of making the
+  // reader go back to "all" to find it again.
+  const breakdown = useMemo(() => typeBreakdown(meta?.typeTotals), [meta]);
+  const options = useMemo(() => {
+    const menu = categoryOptions(meta?.typeTotals);
+    // An old feed type that the current range no longer reports still needs an
+    // option, otherwise the select would lose its own selected value.
+    if (!category || menu.some((option) => option.key === category)) return menu;
+    return [...menu, { key: category, count: 0 }];
+  }, [category, meta]);
   // Filtering and ranking happen in the worker, so the rows it returns are
   // already ordered.
   const filtered = rows;
   const summary = useMemo(() => summarizeActivity(filtered), [filtered]);
   // The header summary comes from the range-wide totals, so it describes every
   // product in the window — not just the rows loaded so far.
-  const breakdown = useMemo(() => typeBreakdown(meta?.typeTotals), [meta]);
   const totalRows = meta?.totalRows ?? 0;
   const shown = filtered.length;
   // The rows already held are the cursor of the next request; the helper keeps
   // the "is there more" rule in one place with the tests that cover it.
   const { hasMore } = nextBatch({ shown, total: totalRows });
-  // Denominator for the share column: every frame counted in the range, so the
-  // rows add up to about 100% and 180 of 2 176 reads 8% rather than 100%.
+  // Denominator for the share column: every frame that matched the active
+  // category/search filters, so the rows add up to about 100% and 180 of 2 176
+  // reads 8% rather than 100%.
   const totalEvents = meta?.totalEvents ?? 0;
   const loading = status === "loading";
   const empty = !loading && filtered.length === 0;
@@ -284,26 +285,22 @@ export function ItemMonitor({ request, notify }) {
             another column of the table. */}
         <div
           className="flex min-w-0 flex-wrap items-center gap-1.5"
-          aria-label="Frames per item type in the selected range"
+          aria-label="Frames per item type in the selected range, independent of the category and search filters"
         >
-          {breakdown.length === 0 ? null : (
-            <>
-              <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
-                Frames by type
-              </span>
-              {breakdown.map((total) => (
-                <span
-                  key={total.key}
-                  className="type-badge gap-1"
-                  data-type={total.key}
-                  title={`${formatInt(total.events)} frames across ${formatInt(total.items)} product${total.items === 1 ? "" : "s"}`}
-                >
-                  {itemTypeLabel(total.key)}
-                  <b className="tabular-nums">{formatInt(total.events)}</b>
-                </span>
-              ))}
-            </>
-          )}
+          <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+            Frames by type
+          </span>
+          {breakdown.map((total) => (
+            <span
+              key={total.key}
+              className="type-badge gap-1"
+              data-type={total.key}
+              title={`${formatInt(total.events)} frames across ${formatInt(total.items)} product${total.items === 1 ? "" : "s"} in this range, regardless of the active filters`}
+            >
+              {itemTypeLabel(total.key)}
+              <b className="tabular-nums">{formatInt(total.events)}</b>
+            </span>
+          ))}
         </div>
         <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
           <Segmented label="Range" value={range} onChange={setRange} options={ACTIVITY_RANGES} />
@@ -342,7 +339,7 @@ export function ItemMonitor({ request, notify }) {
           value={category}
           onChange={(event) => pickCategory(event.target.value)}
           aria-label="Filter item activity by product category"
-          title="Only products the feed has reported in the current range are listed"
+          title="Every category stays listed; the counts cover the whole range regardless of the active filter"
         >
           <option value="">Category: all</option>
           {options.map((option) => (
@@ -352,7 +349,7 @@ export function ItemMonitor({ request, notify }) {
           ))}
         </select>
         <span className="flex flex-wrap items-center gap-2 font-mono text-[11px] uppercase tracking-[0.08em] text-faint sm:ml-auto">
-          <span title="Every RLT market frame counted for every item id in this range, including ids below the row cap">
+          <span title="Every RLT market frame counted for the products matching the active category/search filters in this range, including ids below the row cap">
             Frames{" "}
             <strong className="tabular-nums text-info">
               {formatInt(totalEvents || summary.total)}
@@ -393,8 +390,8 @@ export function ItemMonitor({ request, notify }) {
                   <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
                     <th scope="col" className="px-4 py-2 font-medium">Product</th>
                     <th scope="col" className="px-3 py-2 font-medium" title="Item type reported by the market feed or item-info">Type</th>
-                    <th scope="col" className="px-3 py-2 font-medium" title="Market frames seen in the selected range">Frames</th>
-                    <th scope="col" className="px-3 py-2 font-medium" title="This product's share of all market frames counted in the range. Every row of the range adds up to about 100%.">Share</th>
+                    <th scope="col" className="px-3 py-2 font-medium" title="Market frames seen in the selected range and matching the active filters">Frames</th>
+                    <th scope="col" className="px-3 py-2 font-medium" title="This product's share of all market frames that matched the active filters. Every row adds up to about 100%.">Share</th>
                     <th scope="col" className="px-3 py-2 font-medium" title="Frames seen in the last 24 hours, regardless of the range filter">Last 24h</th>
                     <th scope="col" className="px-3 py-2 font-medium">Last seen</th>
                     <th scope="col" className="px-4 py-2 font-medium" title="Open the product on the Rollercoin marketplace">Market</th>

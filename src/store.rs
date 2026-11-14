@@ -2189,6 +2189,9 @@ impl Store {
     /// Pagination happens **after** ranking and after the per-type totals are
     /// summed, so page 2 is the next slice of the same ordering and the type
     /// summary always describes the whole range rather than the current page.
+    /// The per-type totals are also summed before the category and search
+    /// filters are applied: the deck keeps one badge per known type on screen,
+    /// and those counts must not vanish while the table is narrowed.
     pub fn item_activity(&self, query: &ItemActivityQuery, now: i64) -> ItemActivityReport {
         let since = if query.since > 0 {
             query.since
@@ -2253,10 +2256,15 @@ impl Store {
             }
         }
 
+        // Build every row first: the per-type totals are a summary of the whole
+        // range, not of the current category or search filter. They have to be
+        // summed before the filters narrow the table so the header badges and
+        // the category menu keep the same shape (and the same counts) while the
+        // reader is looking at one category.
         let mut rows: Vec<ItemActivityRow> = aggregates
             .into_iter()
             .filter(|(_, aggregate)| aggregate.events > 0)
-            .filter_map(|(item_id, aggregate)| {
+            .map(|(item_id, aggregate)| {
                 let catalog = self.catalog.get(item_id);
                 // The type a frame was counted under wins over the catalogue.
                 // Frames are grouped by the type the feed reported, so using
@@ -2271,20 +2279,11 @@ impl Store {
                 } else {
                     aggregate.item_type.clone()
                 };
-                if !wanted_type.is_empty() && item_type != wanted_type {
-                    return None;
-                }
                 let label = catalog.map(|item| item.label.clone()).unwrap_or_default();
-                if !term.is_empty()
-                    && !label.to_ascii_lowercase().contains(&term)
-                    && !item_id.contains(&term)
-                {
-                    return None;
-                }
                 let tracked = self.find_config(item_id).is_some();
                 let first_at = (aggregate.first_at != i64::MAX).then_some(aggregate.first_at);
                 let last_at = (aggregate.last_at != i64::MIN).then_some(aggregate.last_at);
-                Some(ItemActivityRow {
+                ItemActivityRow {
                     item_id: item_id.to_string(),
                     item_type,
                     label,
@@ -2295,21 +2294,13 @@ impl Store {
                     first_at,
                     last_at,
                     tracked,
-                })
+                }
             })
             .collect();
 
-        rows.sort_by(|a, b| {
-            b.events
-                .cmp(&a.events)
-                .then(b.events_24h.cmp(&a.events_24h))
-                // A stable tiebreak keeps the table from reshuffling between
-                // polls when two ids moved exactly as often.
-                .then_with(|| a.item_id.cmp(&b.item_id))
-        });
-
-        // Totals describe every row in the range, not the page being served.
-        let total_events: i64 = rows.iter().map(|row| row.events).sum();
+        // Totals describe every row in the range, before the filters narrow the
+        // table and before paging. The deck renders one badge per known type,
+        // so these counts must not disappear when one category is selected.
         let mut type_totals: BTreeMap<String, ItemTypeTotal> = BTreeMap::new();
         for row in &rows {
             let entry = type_totals
@@ -2322,6 +2313,29 @@ impl Store {
             entry.events += row.events;
             entry.items += 1;
         }
+
+        rows.retain(|row| {
+            if !wanted_type.is_empty() && row.item_type != wanted_type {
+                return false;
+            }
+            if term.is_empty() {
+                return true;
+            }
+            row.label.to_ascii_lowercase().contains(&term) || row.item_id.contains(&term)
+        });
+
+        rows.sort_by(|a, b| {
+            b.events
+                .cmp(&a.events)
+                .then(b.events_24h.cmp(&a.events_24h))
+                // A stable tiebreak keeps the table from reshuffling between
+                // polls when two ids moved exactly as often.
+                .then_with(|| a.item_id.cmp(&b.item_id))
+        });
+
+        // These totals describe every row that matched the filters, not just
+        // the page being served.
+        let total_events: i64 = rows.iter().map(|row| row.events).sum();
         let total_rows = rows.len();
         let page: Vec<ItemActivityRow> = rows.into_iter().skip(offset).take(limit).collect();
 
@@ -3388,6 +3402,17 @@ mod tests {
         );
         assert_eq!(by_type.rows.len(), 1);
         assert_eq!(by_type.total_events, 4, "the type filter scopes the totals");
+        // The header badges keep the whole range: narrowing the table to miners
+        // must not make the rack and parts counts disappear.
+        let types: Vec<(&str, i64)> = by_type
+            .type_totals
+            .iter()
+            .map(|total| (total.item_type.as_str(), total.events))
+            .collect();
+        assert_eq!(
+            types,
+            vec![("miner", 4), ("mutation_component", 7), ("rack", 2)]
+        );
         assert_eq!(by_type.rows[0].label, "Epic Hashboard");
         assert_eq!(by_type.rows[0].rarity.as_deref(), Some("Epic"));
         assert_eq!(by_type.rows[0].rarity_color.as_deref(), Some("a52bff"));
@@ -3533,13 +3558,18 @@ mod tests {
             },
             now,
         );
-        // Only the four miners count toward the totals or the ranking.
+        // Only the four miners count toward the ranking and the filtered
+        // totals. The type summary still describes the whole range, so the
+        // badges do not shrink while one category is selected.
         assert_eq!(report.total_rows, 4);
         assert_eq!(report.rows.len(), 2);
         assert_eq!(report.rows[0].item_id, "t-3");
-        assert_eq!(report.type_totals.len(), 1);
-        assert_eq!(report.type_totals[0].item_type, "miner");
-        assert_eq!(report.type_totals[0].items, 4);
+        let types: Vec<(&str, i64, i64)> = report
+            .type_totals
+            .iter()
+            .map(|total| (total.item_type.as_str(), total.events, total.items))
+            .collect();
+        assert_eq!(types, vec![("miner", 10, 4), ("rack", 11, 2)]);
         assert_eq!(report.total_events, 1 + 2 + 3 + 4);
     }
 
