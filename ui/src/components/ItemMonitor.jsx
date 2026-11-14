@@ -123,12 +123,13 @@ export function ItemMonitor({ request, notify }) {
   }, [draft]);
 
   const preset = ACTIVITY_RANGES.find((item) => item.key === range) || ACTIVITY_RANGES[0];
-  // The window is derived from the selected preset, so a refresh (timer or the
-  // manual button) always re-reads the range the user is looking at.
-  const window = useMemo(() => rangeForPreset(preset.key), [preset.key]);
 
   const fetchPage = useCallback(
     async (offset) => {
+      // Recomputed per request instead of once per range choice: a rolling
+      // window has to move with the clock, otherwise the 30 s poll would keep
+      // re-reading the same frozen hour and the counts would never advance.
+      const window = rangeForPreset(preset.key);
       const params = new URLSearchParams({
         since: String(window.since),
         until: String(window.until),
@@ -138,13 +139,13 @@ export function ItemMonitor({ request, notify }) {
       if (category) params.set("itemType", category);
       if (query) params.set("q", query);
       const data = await requestRef.current(`/api/item-activity?${params.toString()}`);
-      return data?.activity || {};
+      return { activity: data?.activity || {}, window };
     },
-    [category, query, window.since, window.until]
+    [category, preset.key, query]
   );
 
   const describe = useCallback(
-    (activity) => ({
+    (activity, window) => ({
       totalEvents: Number(activity.totalEvents) || 0,
       totalRows: Number(activity.totalRows) || 0,
       typeTotals: Array.isArray(activity.typeTotals) ? activity.typeTotals : [],
@@ -152,7 +153,7 @@ export function ItemMonitor({ request, notify }) {
       since: Number(activity.since) || window.since,
       until: Number(activity.until) || window.until
     }),
-    [window.since, window.until]
+    []
   );
 
   // Refreshes the first page in place. Any extra pages the reader loaded are
@@ -161,10 +162,10 @@ export function ItemMonitor({ request, notify }) {
   const load = useCallback(async () => {
     const generation = ++generationRef.current;
     try {
-      const activity = await fetchPage(0);
+      const { activity, window } = await fetchPage(0);
       if (generation !== generationRef.current) return;
       setRows(Array.isArray(activity.rows) ? activity.rows : []);
-      setMeta(describe(activity));
+      setMeta(describe(activity, window));
       setError("");
       setStatus("ready");
       setRefreshedAt(Date.now());
@@ -181,7 +182,7 @@ export function ItemMonitor({ request, notify }) {
     const generation = generationRef.current;
     setLoadingMore(true);
     try {
-      const activity = await fetchPage(rows.length);
+      const { activity, window } = await fetchPage(rows.length);
       if (generation !== generationRef.current) return;
       const next = Array.isArray(activity.rows) ? activity.rows : [];
       setRows((previous) => {
@@ -190,7 +191,7 @@ export function ItemMonitor({ request, notify }) {
         const seen = new Set(previous.map((row) => row.itemId));
         return [...previous, ...next.filter((row) => !seen.has(row.itemId))];
       });
-      setMeta(describe(activity));
+      setMeta(describe(activity, window));
       setError("");
     } catch (caught) {
       if (generation !== generationRef.current) return;
@@ -248,7 +249,10 @@ export function ItemMonitor({ request, notify }) {
   const totalEvents = meta?.totalEvents ?? 0;
   const loading = status === "loading";
   const empty = !loading && filtered.length === 0;
-  const caption = rangeCaption(window.since, window.until);
+  // Follow the window the last response was computed for, so the caption
+  // advances with each poll instead of freezing at the moment of the mount.
+  const captionWindow = meta ?? rangeForPreset(preset.key);
+  const caption = rangeCaption(captionWindow.since, captionWindow.until);
 
   const pickCategory = useCallback((value) => setCategory(value), []);
 
