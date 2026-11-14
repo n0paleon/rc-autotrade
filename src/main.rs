@@ -15,6 +15,7 @@ use rollercoin_worker::config::Config;
 use rollercoin_worker::constants::{APP_NAME, APP_VERSION};
 use rollercoin_worker::engine::Engine;
 use rollercoin_worker::latency::LatencyTracker;
+use rollercoin_worker::lock::lock;
 use rollercoin_worker::logger::Logger;
 use rollercoin_worker::runtime::Worker;
 use rollercoin_worker::server::AppState;
@@ -119,11 +120,7 @@ async fn run() -> Result<(), String> {
         let mut ticker = tokio::time::interval(std::time::Duration::from_secs(15));
         loop {
             ticker.tick().await;
-            prune_state
-                .engine
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .prune_pending();
+            lock(&prune_state.engine).prune_pending();
         }
     });
 
@@ -160,15 +157,9 @@ async fn run() -> Result<(), String> {
     worker.stop().await;
 
     {
-        let mut store = shutdown_state
-            .store
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut store = lock(&shutdown_state.store);
         {
-            let mut engine = shutdown_state
-                .engine
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut engine = lock(&shutdown_state.engine);
             engine.flush_market_cache(&store);
         }
         store.close();

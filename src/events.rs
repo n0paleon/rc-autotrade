@@ -1,4 +1,4 @@
-//! Upstream frame normaliser, ported from `src/worker/events.js`.
+//! Upstream frame normaliser.
 //!
 //! The Rollercoin socket is unofficial: field names drift between
 //! `item_id`/`itemId`, `list`/`orders`, etc. This module turns whichever shape
@@ -6,6 +6,8 @@
 
 use serde::Serialize;
 use serde_json::Value;
+
+use crate::constants::PRICE_SCALE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,7 +28,7 @@ impl Listing {
         Some(Self {
             price_raw,
             quantity: quantity.floor() as i64,
-            unit_price: price_raw / 1_000_000.0,
+            unit_price: price_raw / PRICE_SCALE,
         })
     }
 }
@@ -160,7 +162,7 @@ fn parse_allowed_price(raw: Option<&Value>) -> Option<f64> {
     if !value.is_finite() || value < 0.0 {
         return None;
     }
-    Some(value / 1_000_000.0)
+    Some(value / PRICE_SCALE)
 }
 
 fn parse_rest(raw: Option<&Value>) -> Option<Listing> {
@@ -296,7 +298,7 @@ pub fn normalize_upstream_event(frame: &Value) -> UpstreamEvent {
                 0.0
             },
             unit_price: if price_raw.is_finite() && count > 0.0 {
-                price_raw / 1_000_000.0 / count
+                price_raw / PRICE_SCALE / count
             } else {
                 0.0
             },

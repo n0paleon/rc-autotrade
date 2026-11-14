@@ -1,4 +1,4 @@
-//! Latency tracker, ported from `src/worker/latency.js`.
+//! Latency tracker.
 //!
 //! Four passive channels — `http`, `keepalive`, `wsHandshake`, `wsPing` — each
 //! keeping a bounded rolling sample so the deck can show last/avg/p50/p95/min/
@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 
 use serde_json::{Value, json};
 
-use crate::rules::js_round;
+use crate::num::round_to;
 
 pub const DEFAULT_CAPACITY: usize = 120;
 pub const MAX_CAPACITY: usize = 600;
@@ -83,12 +83,12 @@ impl std::fmt::Debug for LatencyTracker {
 }
 
 fn round1(value: f64) -> f64 {
-    js_round(value * 10.0) / 10.0
+    round_to(value, 1)
 }
 
 fn clamp_sample(value: f64) -> Option<f64> {
     if value.is_finite() && value >= 0.0 {
-        Some(js_round(value * 10.0) / 10.0)
+        Some(round_to(value, 1))
     } else {
         None
     }

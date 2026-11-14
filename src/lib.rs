@@ -1,17 +1,13 @@
-//! Rust port of the Turu.RC worker.
+//! Turu.RC worker backend.
 //!
 //! The modules are exposed as a library so integration tests and the
 //! `examples/` benchmarks can drive the same code the binary runs.
-
-// The port is incremental: `rules`, `depth`, `timings`, `trend` and `redact`
-// are fully tested but only the engine round calls some of them. Drop this
-// allow once the engine, gateway and API modules are wired in.
-#![allow(dead_code)]
 
 pub mod api;
 pub mod backup;
 pub mod benchmark;
 pub mod blocking;
+pub mod clock;
 pub mod config;
 pub mod constants;
 pub mod db;
@@ -26,9 +22,11 @@ pub mod item_activity;
 pub mod item_info;
 pub mod keepalive;
 pub mod latency;
+pub mod lock;
 pub mod logger;
 pub mod mock;
 pub mod model;
+pub mod num;
 pub mod raw_events;
 pub mod redact;
 pub mod rules;

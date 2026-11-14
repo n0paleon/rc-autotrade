@@ -1,22 +1,22 @@
-//! Item label/rarity resolver, ported from `src/worker/item-info.js`.
+//! Item label/rarity resolver.
 //!
 //! Calls the marketplace `item-info` endpoint, composes a `Rarity Name` label
 //! and writes it back to the target. Miner payloads carry no `rarityGroup`, so
-//! rarity is derived from `data.level` the same way the JS worker does.
+//! rarity is derived from `data.level`.
 //!
-//! Difference from the JS version: in-flight de-duplication is not implemented
-//! (the wire path awaits one enrichment at a time and the HTTP endpoint is
-//! user-triggered), so two concurrent requests can both hit upstream.
+//! In-flight de-duplication is not implemented: the wire path awaits one
+//! enrichment at a time and the HTTP endpoint is user-triggered, so two
+//! concurrent requests can both hit upstream.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::UNIX_EPOCH;
 
 use serde_json::Value;
 
 use crate::api::{ApiClient, Credentials, ItemInfoResult};
+use crate::clock::now_ms;
+use crate::lock::lock;
 use crate::logger::Logger;
-use crate::store::Store;
 
 pub const DEFAULT_TTL_MS: i64 = 10 * 60 * 1000;
 pub const FAILURE_COOLDOWN_MS: i64 = 5 * 60 * 1000;
@@ -43,13 +43,6 @@ fn miner_color(rarity: &str) -> &'static str {
         "Unreal" => "ff3b6b",
         _ => "",
     }
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 fn clean(value: &str) -> String {
@@ -114,16 +107,17 @@ pub fn normalize_item_info(data: &Value, item_id: &str, fallback_type: &str) -> 
         .trim_start_matches('#')
         .to_string();
 
-    if raw_rarity.is_empty() && item_type == "miner" {
-        if let Some(level) = data.get("level").and_then(Value::as_f64) {
-            let index = level as i64;
-            if level.fract() == 0.0 && (0..MINER_LEVEL_RARITIES.len() as i64).contains(&index) {
-                let derived = MINER_LEVEL_RARITIES[index as usize];
-                if !derived.is_empty() {
-                    raw_rarity = derived.to_string();
-                    if hex_color(&raw_color).is_none() {
-                        raw_color = miner_color(derived).to_string();
-                    }
+    if raw_rarity.is_empty()
+        && item_type == "miner"
+        && let Some(level) = data.get("level").and_then(Value::as_f64)
+    {
+        let index = level as i64;
+        if level.fract() == 0.0 && (0..MINER_LEVEL_RARITIES.len() as i64).contains(&index) {
+            let derived = MINER_LEVEL_RARITIES[index as usize];
+            if !derived.is_empty() {
+                raw_rarity = derived.to_string();
+                if hex_color(&raw_color).is_none() {
+                    raw_color = miner_color(derived).to_string();
                 }
             }
         }
@@ -221,11 +215,11 @@ impl ItemInfoService {
     ) -> Result<ItemInfo, String> {
         let key = Self::cache_key(item_id, item_type);
         if !fresh {
-            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(cached) = cache.get(&key) {
-                if now_ms() - cached.at < self.ttl_ms {
-                    return Ok(cached.value.clone());
-                }
+            let cache = lock(&self.cache);
+            if let Some(cached) = cache.get(&key)
+                && now_ms() - cached.at < self.ttl_ms
+            {
+                return Ok(cached.value.clone());
             }
         }
 
@@ -243,33 +237,30 @@ impl ItemInfoService {
                 .api
                 .fetch_item_info(credentials, item_id, candidate, "RLT")
                 .await;
-            if result.ok {
-                if let Some(data) = result.data {
-                    let value = normalize_item_info(&data, item_id, candidate);
-                    let at = now_ms();
-                    let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-                    cache.insert(
-                        key.clone(),
-                        Cached {
-                            at,
-                            value: value.clone(),
-                        },
-                    );
-                    cache.insert(
-                        Self::cache_key(item_id, candidate),
-                        Cached {
-                            at,
-                            value: value.clone(),
-                        },
-                    );
-                    trim_to_limit(&mut cache, CACHE_MAX_ENTRIES, |cached| cached.at);
-                    drop(cache);
-                    self.failed_at
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .remove(&key);
-                    return Ok(value);
-                }
+            if result.ok
+                && let Some(data) = result.data
+            {
+                let value = normalize_item_info(&data, item_id, candidate);
+                let at = now_ms();
+                let mut cache = lock(&self.cache);
+                cache.insert(
+                    key.clone(),
+                    Cached {
+                        at,
+                        value: value.clone(),
+                    },
+                );
+                cache.insert(
+                    Self::cache_key(item_id, candidate),
+                    Cached {
+                        at,
+                        value: value.clone(),
+                    },
+                );
+                trim_to_limit(&mut cache, CACHE_MAX_ENTRIES, |cached| cached.at);
+                drop(cache);
+                lock(&self.failed_at).remove(&key);
+                return Ok(value);
             }
             let type_miss = is_type_miss(&result);
             last_error = result
@@ -283,12 +274,12 @@ impl ItemInfoService {
         }
 
         let last = {
-            let failed = self.failed_at.lock().unwrap_or_else(|e| e.into_inner());
+            let failed = lock(&self.failed_at);
             failed.get(&key).copied().unwrap_or(0)
         };
         if now_ms() - last > FAILURE_COOLDOWN_MS {
             let now = now_ms();
-            let mut failed = self.failed_at.lock().unwrap_or_else(|e| e.into_inner());
+            let mut failed = lock(&self.failed_at);
             failed.retain(|_, at| now - *at <= FAILED_MAX_AGE_MS);
             failed.insert(key, now);
             trim_to_limit(&mut failed, CACHE_MAX_ENTRIES, |at| *at);
@@ -303,6 +294,7 @@ impl ItemInfoService {
 
     /// Resolves an item without touching the target list (used by the UI when
     /// previewing an id that has not been added yet).
+    /// Resolves an item without writing it to the store.
     pub async fn preview(
         &self,
         credentials: &Credentials,
@@ -310,29 +302,6 @@ impl ItemInfoService {
         item_type: &str,
     ) -> Result<ItemInfo, String> {
         self.load(credentials, item_id, item_type, false).await
-    }
-
-    /// Resolves an item and writes `label`/`itemType`/`rarityColor` to the store.
-    pub async fn enrich(
-        &self,
-        store: &mut Store,
-        credentials: &Credentials,
-        item_id: &str,
-        item_type: &str,
-        fresh: bool,
-    ) -> Result<ItemInfo, String> {
-        let value = self.load(credentials, item_id, item_type, fresh).await?;
-        let changed = store.apply_item_info(
-            item_id,
-            &value.label,
-            &value.item_type,
-            value.rarity_color.as_deref(),
-        );
-        if changed {
-            self.logger
-                .info("item-info", format!("{item_id} => {}", value.label));
-        }
-        Ok(value)
     }
 }
 
@@ -407,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn type_miss_detection_matches_the_javascript_rules() {
+    fn type_miss_detection() {
         assert!(is_type_miss(&ItemInfoResult {
             ok: false,
             status: 404,

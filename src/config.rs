@@ -1,6 +1,5 @@
 //! Environment configuration.
 //!
-//! Differences from the old Bun worker are deliberate and documented:
 //! * the data directory defaults to `./data`; override it with `RC_DATA_DIR`
 //!   (or `DATA_DIR`) to keep several instances apart.
 //! * `.env` is parsed here instead of mutating the process environment, so
@@ -196,8 +195,8 @@ mod tests {
 
     #[test]
     fn clamps_keepalive_and_sample_intervals() {
-        // The clamping logic is inline in `load`; assert the constants agree
-        // with the JS worker so a future refactor keeps them in sync.
+        // The clamping logic is inline in `load`; assert the documented bounds
+        // so a future refactor keeps them in sync.
         assert_eq!(30_000_i64.clamp(5_000, 600_000), 30_000);
         assert_eq!(1_000_i64.clamp(500, 60_000), 1_000);
     }

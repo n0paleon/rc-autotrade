@@ -31,9 +31,8 @@ fn fail(label: &str, detail: impl AsRef<str>) {
 }
 
 fn rustls_config() -> Arc<rustls::ClientConfig> {
-    let rustls_native_certs::CertificateResult {
-        certs, errors, ..
-    } = rustls_native_certs::load_native_certs();
+    let rustls_native_certs::CertificateResult { certs, errors, .. } =
+        rustls_native_certs::load_native_certs();
     if !errors.is_empty() {
         eprintln!("  warn  native certs load: {errors:?}");
     }

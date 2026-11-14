@@ -6,6 +6,9 @@
 pub const APP_NAME: &str = "TURU.RC";
 pub const APP_VERSION: &str = "1.0.0";
 
+/// Browser identity sent by every upstream HTTP and WebSocket request.
+pub const USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
 use crate::model::Mode;
 
 /// Rollercoin reports marketplace prices in micro-RLT (1 RLT = 1_000_000).
@@ -104,12 +107,6 @@ pub const ITEM_ACTIVITY_LIMIT: usize = 250;
 /// table, so a full range no longer has to fit in one response.
 pub const ITEM_ACTIVITY_PAGE_SIZE: usize = 25;
 
-/// Same cap for the drop-in activity reader used by the read-only CLI probe.
-pub const ITEM_ACTIVITY_CLI_LIMIT: usize = 5_000;
-
-/// How many upstream events we keep as a rolling sample for the feed.
-pub const EVENT_SAMPLE_SIZE: usize = 60;
-
 /// Control-socket telemetry cadence. Every `TELEMETRY_INTERVAL_SECS` the
 /// socket pushes `gateway` (which carries `marketEventCount`), `system`,
 /// `latency` and `benchmark` together. Pushing `gateway` per frame re-rendered
@@ -170,7 +167,6 @@ impl Limits {
     pub const LABEL_MAX: usize = 48;
     pub const CONFIGS_MAX: usize = 100;
     pub const BODY_BYTES: usize = 256 * 1024;
-    pub const HISTORY_MAX: usize = MAX_HISTORY;
 }
 
 /// Order status codes used by the upstream fill frames.
@@ -181,15 +177,17 @@ pub const ORDER_STATUS_FAILED: i64 = 2;
 mod tests {
     use super::*;
 
+    // The defaults are compile-time constants; this test is a tripwire that the
+    // shipped values stay safe, so clippy's constant-folding warning does not
+    // apply.
+    #[allow(clippy::assertions_on_constants)]
     #[test]
-    fn defaults_are_safe_and_match_the_javascript_worker() {
+    fn defaults_are_safe() {
         assert_eq!(DEFAULT_SETTINGS.delay_per_order, 200);
         assert_eq!(DEFAULT_SETTINGS.max_orders_per_minute, 60);
         assert_eq!(DEFAULT_SETTINGS.mode, Mode::Live);
         assert!(DEFAULT_SETTINGS.auto_refresh);
         assert_eq!(DEFAULT_SETTINGS.total_price_markup_pct, 0.0);
-        assert_eq!(PRICE_SCALE, 1_000_000.0);
-        assert_eq!(MAX_HISTORY, 200);
     }
 
     #[test]

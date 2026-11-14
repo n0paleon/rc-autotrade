@@ -1,34 +1,17 @@
-//! Pure order planning, ported 1:1 from `src/shared/rules.js`.
+//! Pure order planning.
 //!
 //! Keeping this file dependency-free is deliberate: it is the one place that
 //! decides whether money is spent, so it must stay trivially testable and
-//! auditable next to the JavaScript original.
+//! auditable.
 
 use crate::constants::{Limits, PRICE_SCALE};
+use crate::num::js_round;
 use serde::Serialize;
-
-/// `Math.round` in JavaScript rounds half **up** (towards +∞), while Rust's
-/// `f64::round` rounds half away from zero. Profits can be negative, so the
-/// difference is observable and worth matching exactly.
-#[inline]
-pub fn js_round(value: f64) -> f64 {
-    (value + 0.5).floor()
-}
 
 /// Rounds to the 6-decimal RLT precision used everywhere in the worker.
 #[inline]
 pub fn round_price(value: f64) -> f64 {
     js_round((value + f64::EPSILON) * PRICE_SCALE) / PRICE_SCALE
-}
-
-/// Converts a raw micro-RLT integer (as sent by Rollercoin) to RLT.
-#[inline]
-pub fn micro_to_rlt(raw: f64) -> f64 {
-    if raw.is_finite() {
-        raw / PRICE_SCALE
-    } else {
-        f64::NAN
-    }
 }
 
 /// Adds the configured fulfillment headroom to a purchase request's
@@ -79,8 +62,8 @@ pub enum Action {
     Skip,
 }
 
-/// Mirrors the JavaScript object: absent fields are omitted so the wire shape
-/// stays identical (`{action:"skip", reason:"paused"}`).
+/// Omits absent optional fields so the wire shape stays stable
+/// (`{action:"skip", reason:"paused"}`).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Plan {
     pub action: Action,
@@ -172,6 +155,7 @@ pub fn plan_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::num::js_round;
 
     fn input() -> PlanInput {
         PlanInput {
@@ -236,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    fn rounds_like_javascript() {
+    fn rounds_half_up_towards_positive_infinity() {
         assert_eq!(round_price(0.1234567), 0.123457);
         assert_eq!(round_price(0.1 * 3.0), 0.3);
         assert_eq!(js_round(-2.5), -2.0); // Math.round(-2.5) === -2

@@ -57,6 +57,11 @@ Rollercoin session — two of either will duplicate orders.
 
 ## 3. Module map
 
+> Historical porting record. The single-file modules below have since been split
+> into directories (`src/engine/`, `src/store/`, `src/server/`, `src/api/`,
+> `src/backup/`, `src/runtime/`, …) with one responsibility per file. The
+> current layout is documented in `README.md` under **Development**.
+
 | Origin (JS, removed) | Rust | Status |
 | --- | --- | --- |
 | `src/shared/constants.js` | `src/constants.rs` | ported |
@@ -70,7 +75,7 @@ Rollercoin session — two of either will duplicate orders.
 | `src/worker/logger.js` | `src/logger.rs` | ported + tests |
 | `src/worker/db.js` + `schema.js` | `src/db.rs` | ported + tests |
 | `src/worker/store.js` | `src/store.rs` | ported (core) + tests |
-| `src/worker/server.js` (HTTP/WS) | `src/server.rs` | partial — see §4 |
+| `src/worker/server.js` (HTTP/WS) | `src/server.rs` | ported — see §4 |
 | `src/shared/trend.js` | `src/trend.rs` | ported + parity fixtures + benchmark |
 | `src/worker/events.js` | `src/events.rs` | ported + tests |
 | `src/worker/engine.js` | `src/engine.rs` | ported (event-driven) + tests |
@@ -321,7 +326,7 @@ mixed every `orders.raw_events.priceEvent` (real upstream frames that produced a
 order) with one synthetic frame per stored `price_points` row for active targets.
 
 Current regression coverage for the same behaviour lives in the Rust tests:
-trend fixtures (`src/trend.rs`) pin the model's numbers, and the engine suite
+trend fixtures (`src/trend/`) pin the model's numbers, and the engine suite
 covers gates, dry-run quantities, pending fills and duplicate suppression.
 `examples/replay.rs` can still replay a JSON frame list through the engine if you
 keep one around.

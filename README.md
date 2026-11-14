@@ -112,7 +112,7 @@ Changes to the UI require only `bun run build` because `dist/` is read per reque
 
 ## Order execution
 
-Every matching market frame produces one decision for its target. The engine evaluates only the **cheapest listing** priced in `RLT` and passes its unit price and stock to `plan_order()` in `src/rules.rs`. That function returns either a `buy` plan with a quantity or a `skip` plan with a reason. Runtime gates in `src/engine.rs` then decide whether the buy may be submitted.
+Every matching market frame produces one decision for its target. The engine evaluates only the **cheapest listing** priced in `RLT` and passes its unit price and stock to `plan_order()` in `src/rules.rs`. That function returns either a `buy` plan with a quantity or a `skip` plan with a reason. Runtime gates in `src/engine/market.rs` then decide whether the buy may be submitted.
 
 The engine never averages listings, combines multiple listings, or cancels an order. Every quantity decision comes from the cheapest listing in the current frame.
 
@@ -297,7 +297,7 @@ totalPrice = round(unitPriceRaw x qty x (1 + totalPriceMarkupPct / 100))
 
 ### Runtime gates
 
-After `plan_order()` returns a `buy` plan, `src/engine.rs` still applies runtime gates before submission:
+After `plan_order()` returns a `buy` plan, `src/engine/market.rs` still applies runtime gates before submission:
 
 - `inflight` blocks a target that already has an order in progress.
 - `blocked_until` blocks a target after a rejected purchase. Backoff starts at 5 seconds, then 10, 20, and 40 seconds.
@@ -380,10 +380,10 @@ With `allowPartialOrder = false`, the stock 40 row would be skipped with `stock-
 | Part | Location |
 | --- | --- |
 | Pure buy decision | `plan_order()` in `src/rules.rs` |
-| Fulfillment headroom | `apply_total_price_markup()` in `src/rules.rs`, used by `PurchaseRequest::payload()` in `src/api.rs` |
-| Target validation | `validate_target()` in `src/validation.rs` |
-| Runtime gates and order submission | `handle_frame()` and `handle_market()` in `src/engine.rs` |
-| Purchase result handling | `on_purchase_result()` in `src/engine.rs` |
+| Fulfillment headroom | `apply_total_price_markup()` in `src/rules.rs`, used by `PurchaseRequest::payload()` in `src/api/types.rs` |
+| Target validation | `validate_target()` in `src/validation/target.rs` |
+| Runtime gates and order submission | `handle_frame()` / `handle_market()` in `src/engine/market.rs`, `place_order()` in `src/engine/order.rs` |
+| Purchase result handling | `on_purchase_result()` in `src/engine/result.rs` |
 
 ## Development
 
@@ -410,17 +410,20 @@ dist/           UI build output
 scripts/        development orchestration
 ```
 
-Backend modules you will touch most often:
+Backend modules you will touch most often (each module is a directory with one
+responsibility per file; no file exceeds 500 lines):
 
 | Responsibility | Module |
 | --- | --- |
-| Order matching and execution | `src/engine.rs` |
+| Order matching and execution | `src/engine/` |
 | Pure buy rules | `src/rules.rs` |
-| Market WebSocket feed | `src/gateway.rs` |
-| SQLite state and history | `src/store.rs` |
-| HTTP and WebSocket control plane | `src/server.rs` |
-| Trend and depth model | `src/trend.rs`, `src/depth.rs` |
-| Item activity ranking and name resolution | `src/item_activity.rs` |
+| Market WebSocket feed | `src/gateway/` |
+| SQLite state and history | `src/store/` |
+| HTTP and WebSocket control plane | `src/server/` |
+| Upstream HTTP client | `src/api/` |
+| Trend and depth model | `src/trend/`, `src/depth.rs` |
+| Item activity ranking and name resolution | `src/item_activity/` |
+| Validation | `src/validation/` |
 
 Backend tests use temporary directories and random ports, so they need no account or network access. UI tests live in `ui/test/`.
 
