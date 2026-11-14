@@ -16,6 +16,7 @@ import {
 import { useWorker, URL_KEY, readStoredToken, isRemembered } from "./useWorker.js";
 import { useToasts } from "./useToasts.js";
 import { useMediaQuery, useNow } from "./lib/hooks.js";
+import { feedAtBottom, feedScrollIntent } from "./lib/feed.js";
 import {
   cardState,
   fixedPrice,
@@ -1778,6 +1779,13 @@ function FeedPanel({ logs, onClear, notify }) {
   const [frozen, setFrozen] = useState([]);
   const [unread, setUnread] = useState(0);
   const feedRef = useRef(null);
+  // A `scroll` event is not proof that the user scrolled: the browser also
+  // fires one when the capped window drops its oldest row (scroll anchoring)
+  // and when a resize reflows the lines. Only a real gesture may pause the
+  // tail, so remember when the wheel, touch, scrollbar or keyboard was used.
+  const lastScrollTopRef = useRef(0);
+  const gestureUntilRef = useRef(0);
+  const mouseDownRef = useRef(false);
   // The scrollback is capped: 400 mounted log lines cost layout on every
   // worker event and the oldest ones are far outside the visible screen.
   const FEED_WINDOW = 120;
@@ -1799,13 +1807,9 @@ function FeedPanel({ logs, onClear, notify }) {
     scrollToLatest();
   }, [logs, paused, tailing, frozen.length, scrollToLatest]);
 
-  const handleFeedScroll = () => {
-    if (paused) return;
-    const feed = feedRef.current;
-    if (!feed) return;
-    const atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 24;
-    if (atBottom !== tailing) setTailing(atBottom);
-  };
+  const markScrollGesture = useCallback(() => {
+    gestureUntilRef.current = Date.now() + 400;
+  }, []);
 
   const enableTail = useCallback(() => {
     if (paused) {
@@ -1816,6 +1820,66 @@ function FeedPanel({ logs, onClear, notify }) {
     setTailing(true);
     requestAnimationFrame(scrollToLatest);
   }, [paused, scrollToLatest]);
+
+  useEffect(() => {
+    const release = () => {
+      mouseDownRef.current = false;
+    };
+    window.addEventListener("pointerup", release);
+    window.addEventListener("pointercancel", release);
+    return () => {
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", release);
+    };
+  }, []);
+
+  const handleFeedScroll = () => {
+    if (paused) return;
+    const feed = feedRef.current;
+    if (!feed) return;
+    const top = feed.scrollTop;
+    const previous = lastScrollTopRef.current;
+    lastScrollTopRef.current = top;
+    const gesture = mouseDownRef.current || Date.now() < gestureUntilRef.current;
+    const intent = feedScrollIntent({
+      top,
+      previous,
+      gesture,
+      atBottom: feedAtBottom(feed),
+      tailing
+    });
+    if (intent === "pause") setTailing(false);
+    else if (intent === "resume") setTailing(true);
+  };
+
+  const handleFeedWheel = (event) => {
+    if (paused || event.deltaY === 0) return;
+    markScrollGesture();
+    // A wheel-down at the bottom has no remaining scroll distance, so there
+    // is no `scroll` event to re-arm from; treat it as a request to follow.
+    if (event.deltaY > 0 && !tailing && feedAtBottom(feedRef.current)) enableTail();
+  };
+
+  const handleFeedTouchMove = () => {
+    if (!paused) markScrollGesture();
+  };
+
+  const handleFeedKeyDown = (event) => {
+    if (paused) return;
+    if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) {
+      markScrollGesture();
+    }
+  };
+
+  const handleFeedPointerDown = (event) => {
+    if (paused) return;
+    // Overlay scrollbars press through to the log row below, so any mouse
+    // press is a possible scrollbar drag. The direction check keeps a plain
+    // text selection from pausing the feed.
+    if (event.pointerType === "mouse") {
+      mouseDownRef.current = true;
+    }
+  };
 
   const toggleTail = () => {
     if (isTailing) {
@@ -1879,7 +1943,12 @@ function FeedPanel({ logs, onClear, notify }) {
           role="log"
           aria-live="polite"
           aria-label="Worker event log"
+          tabIndex={0}
           onScroll={handleFeedScroll}
+          onWheel={handleFeedWheel}
+          onTouchMove={handleFeedTouchMove}
+          onKeyDown={handleFeedKeyDown}
+          onPointerDown={handleFeedPointerDown}
         >
           {shown.length === 0 ? <div className="px-3 py-2 font-mono text-[12px] text-faint">[SYS] Waiting for events…</div> : null}
           {shown.map((entry) => (

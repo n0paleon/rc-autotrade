@@ -1411,12 +1411,12 @@
   }
 
   .price-tick[data-dir="up"] {
-    color: var(--color-danger);
+    color: var(--color-signal);
     animation: price-tick-up var(--motion-state) var(--ease-pixel-3);
   }
 
   .price-tick[data-dir="down"] {
-    color: var(--color-signal);
+    color: var(--color-danger);
     animation: price-tick-down var(--motion-state) var(--ease-pixel-3);
   }
 
