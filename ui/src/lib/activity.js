@@ -6,15 +6,15 @@
  * fetching lives here so it can be unit-tested without React:
  *
  * * the fixed range presets and the local-calendar boundaries they imply;
- * * category options derived from the rows, so the filter only ever offers
- *   categories the table can actually show;
+ * * the type breakdown, which keeps every known category visible with a zero
+ *   count so the header and its filter do not change shape with the data;
  * * the name fallback chain (resolved label → short id) and the row formatting
  *   the table renders;
  * * the marketplace URL, copied from `format.js` so a link can be built for an
  *   arbitrary row without importing the whole formatter surface.
  */
 
-import { itemTypeLabel, marketplaceUrl } from "./format.js";
+import { ITEM_TYPE_ORDER, itemTypeLabel, marketplaceUrl } from "./format.js";
 
 /**
  * The ranges the panel offers. These are rolling windows measured back from
@@ -72,20 +72,17 @@ export function categoryLabel(key) {
 /**
  * Category options for the filter select.
  *
- * Derived from the rows the worker returned instead of a hard-coded list: the
- * feed's types drift, and offering a category that can never match would look
- * like a broken filter. The counts come along so each option says how much it
- * would show, and the list is ordered by volume.
+ * Both the menu and the header use the same range-wide type totals, which are
+ * computed before the filters: every known category stays in the list with its
+ * whole-range product count, even when the count is zero. That keeps the filter
+ * usable while it is narrowing the table — picking "miners" must not remove
+ * "racks" from the menu and force a trip back through "all".
  */
-export function categoryOptions(rows) {
-  const counts = new Map();
-  for (const row of Array.isArray(rows) ? rows : []) {
-    const key = categoryOf(row);
-    counts.set(key, (counts.get(key) || 0) + 1);
-  }
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([key, count]) => ({ key, count }));
+export function categoryOptions(typeTotals) {
+  return typeBreakdown(typeTotals).map((total) => ({
+    key: total.key,
+    count: total.items
+  }));
 }
 
 /**
@@ -162,21 +159,32 @@ export function summarizeActivity(rows) {
 }
 
 /**
- * The per-type breakdown shown beside the panel title.
+ * The per-type breakdown shown beside the panel title and in its category menu.
  *
- * The worker sends `typeTotals` computed over the whole range before paging, so
- * this is the one number on screen that does not change as the reader moves
- * between pages. `labels` come from the same vocabulary as the Type column.
+ * The worker sends `typeTotals` computed over the whole range before any
+ * category or search filter, so these numbers stay put while the table is
+ * narrowed. Every known type is rendered even when the range counted nothing
+ * for it: a zero badge is information, while a badge that disappears makes the
+ * header jump around. Types the feed has introduced since this build are kept
+ * after the known list instead of being dropped.
  */
 export function typeBreakdown(typeTotals) {
-  return (Array.isArray(typeTotals) ? typeTotals : [])
-    .map((total) => ({
-      key: String(total?.itemType || "unknown"),
-      events: Number(total?.events) || 0,
-      items: Number(total?.items) || 0
-    }))
-    .filter((total) => total.items > 0)
-    .sort((a, b) => b.events - a.events || a.key.localeCompare(b.key));
+  const totals = new Map();
+  for (const total of Array.isArray(typeTotals) ? typeTotals : []) {
+    const key = String(total?.itemType || "").trim().toLowerCase() || "unknown";
+    const entry = totals.get(key) || { key, events: 0, items: 0 };
+    entry.events += Number(total?.events) || 0;
+    entry.items += Number(total?.items) || 0;
+    totals.set(key, entry);
+  }
+  const known = ITEM_TYPE_ORDER.map(
+    (key) => totals.get(key) || { key, events: 0, items: 0 }
+  );
+  const extra = [...totals.keys()]
+    .filter((key) => !ITEM_TYPE_ORDER.includes(key))
+    .sort((a, b) => a.localeCompare(b))
+    .map((key) => totals.get(key));
+  return [...known, ...extra];
 }
 
 /**

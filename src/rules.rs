@@ -31,6 +31,35 @@ pub fn micro_to_rlt(raw: f64) -> f64 {
     }
 }
 
+/// Adds the configured fulfillment headroom to a purchase request's
+/// `totalPrice`.
+///
+/// The marketplace fills an order from the cheapest listings upwards and treats
+/// `totalPrice` as the ceiling it may spend. Sending exactly `unitPrice × qty`
+/// therefore leaves no room for the book to move between the market frame and
+/// the purchase, which is what produces partial fills. Scaling the ceiling by
+/// `markup_pct` buys the order room to complete: at 10%, a `1.000000` total is
+/// sent as `1.100000`.
+///
+/// `total_price` is in raw micro-RLT and the result is rounded to the smallest
+/// unit Rollercoin quotes. A non-positive or non-finite markup is ignored, so
+/// `0` leaves the payload byte-identical to the pre-feature request.
+#[inline]
+pub fn apply_total_price_markup(total_price: f64, markup_pct: f64) -> f64 {
+    if !total_price.is_finite() || total_price <= 0.0 {
+        return total_price;
+    }
+    if !markup_pct.is_finite() || markup_pct <= 0.0 {
+        return total_price;
+    }
+    let scaled = total_price * (1.0 + markup_pct / 100.0);
+    if scaled.is_finite() {
+        scaled.round()
+    } else {
+        total_price
+    }
+}
+
 /// The subset of a target the planner needs. Taken by value so the planner
 /// never touches the store and stays cheap to call on the frame path.
 #[derive(Debug, Clone, Copy)]
@@ -212,5 +241,22 @@ mod tests {
         assert_eq!(round_price(0.1 * 3.0), 0.3);
         assert_eq!(js_round(-2.5), -2.0); // Math.round(-2.5) === -2
         assert_eq!(js_round(2.5), 3.0);
+    }
+
+    #[test]
+    fn total_price_markup_is_opt_in_and_rounds_to_micro_rlt() {
+        // Disabled or invalid markup leaves the exact listing total alone.
+        assert_eq!(apply_total_price_markup(1_000_000.0, 0.0), 1_000_000.0);
+        assert_eq!(apply_total_price_markup(1_000_000.0, f64::NAN), 1_000_000.0);
+        assert_eq!(apply_total_price_markup(1_000_000.0, -5.0), 1_000_000.0);
+        assert_eq!(apply_total_price_markup(0.0, 10.0), 0.0);
+        assert!(apply_total_price_markup(f64::NAN, 10.0).is_nan());
+
+        // 1.000000 RLT at 10% becomes the 1.100000 RLT ceiling.
+        assert_eq!(apply_total_price_markup(1_000_000.0, 10.0), 1_100_000.0);
+        assert_eq!(apply_total_price_markup(900_000.0, 10.0), 990_000.0);
+        // Fractional micro-RLT is rounded to the smallest quoted unit.
+        assert_eq!(apply_total_price_markup(999_999.0, 7.5), 1_074_999.0);
+        assert_eq!(apply_total_price_markup(1.0, 10.0), 1.0);
     }
 }

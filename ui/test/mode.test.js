@@ -18,6 +18,9 @@ test("defaults to live, matching the backend", () => {
   assert.equal(DEFAULT_SETTINGS.mode, "live");
   assert.equal(DEFAULT_SETTINGS.dryRun, undefined);
   assert.equal(DEFAULT_SETTINGS.paused, undefined);
+  // Fulfillment headroom ships off so an upgrade cannot silently raise the
+  // price ceiling of every order.
+  assert.equal(DEFAULT_SETTINGS.totalPriceMarkupPct, 0);
 });
 
 test("reads the new mode field", () => {

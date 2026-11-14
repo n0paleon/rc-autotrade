@@ -725,6 +725,7 @@ async fn run_purchase(state: Arc<AppState>, mut intent: OrderIntent) {
         item_type: intent.item_type.clone(),
         qty: intent.qty,
         unit_price_raw: intent.unit_price_raw,
+        total_price_markup_pct: intent.total_price_markup_pct,
     };
     let request_payload = request.payload();
 

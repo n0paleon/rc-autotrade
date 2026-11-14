@@ -679,6 +679,31 @@ async fn settings_patch_accepts_mode_and_the_legacy_aliases() {
         .unwrap();
     assert_eq!(invalid.status(), 422);
 
+    // Fulfillment headroom: the deck writes it through the same patch route,
+    // and the accepted value comes back in the settings object.
+    let body: Value = client
+        .patch(format!("{base}/api/settings"))
+        .bearer_auth(TOKEN)
+        .json(&json!({ "totalPriceMarkupPct": 10 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["settings"]["totalPriceMarkupPct"], 10.0);
+
+    let out_of_range = client
+        .patch(format!("{base}/api/settings"))
+        .bearer_auth(TOKEN)
+        .json(&json!({ "totalPriceMarkupPct": 101 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(out_of_range.status(), 422);
+    let body: Value = out_of_range.json().await.unwrap();
+    assert!(body["fields"]["totalPriceMarkupPct"].as_str().is_some());
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -848,6 +873,17 @@ async fn item_activity_ranks_ids_outside_the_fleet_and_names_them_from_item_info
     assert_eq!(
         filtered["activity"]["totalEvents"], 7,
         "the totals follow the type filter"
+    );
+    // The header badges do not: they keep one count per type across the whole
+    // range, so the rack badge stays visible while the table shows parts only.
+    let filtered_totals = filtered["activity"]["typeTotals"].as_array().unwrap();
+    assert_eq!(filtered_totals.len(), 2);
+    assert_eq!(
+        filtered_totals
+            .iter()
+            .find(|total| total["itemType"] == "rack")
+            .expect("rack total")["events"],
+        2
     );
 
     let rack: Value = client

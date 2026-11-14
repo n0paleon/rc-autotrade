@@ -12,7 +12,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   delayPerOrder: 200,
   maxOrdersPerMinute: 60,
   mode: "live",
-  autoRefresh: true
+  autoRefresh: true,
+  totalPriceMarkupPct: 0
 });
 
 /**
@@ -61,7 +62,7 @@ export const TELEMETRY_PUSH_MS = 3000;
 
 /**
  * A gap this long without a fresh `marketEventCount` means the marketplace
- * feed stalled, so the `/s` readout starts decaying instead of holding a stale
+ * feed stalled, so the `/min` readout starts decaying instead of holding a stale
  * rate. Kept a little above the push cadence: the counter updates in steps, and
  * decaying before the next step arrives would make the number flicker.
  */
@@ -79,6 +80,8 @@ export const LIMITS = Object.freeze({
   delayMax: 60_000,
   ordersPerMinuteMin: 1,
   ordersPerMinuteMax: 600,
+  markupMin: 0,
+  markupMax: 100,
   labelMax: 48,
   configsMax: 100,
   bodyBytes: 256 * 1024,

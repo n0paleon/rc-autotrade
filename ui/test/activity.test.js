@@ -17,7 +17,7 @@ import {
   summarizeActivity,
   typeBreakdown
 } from "../src/lib/activity.js";
-import { itemTypeLabel } from "../src/lib/format.js";
+import { ITEM_TYPE_ORDER, itemTypeLabel } from "../src/lib/format.js";
 
 const DAY_MS = 86_400_000;
 
@@ -64,19 +64,29 @@ test("rangeSpansDays distinguishes a day from a multi-day window", () => {
   assert.equal(rangeSpansDays(start, start + DAY_MS), true);
   assert.equal(rangeSpansDays(NaN, start), false);
 });
-test("category options are derived from the rows and ordered by volume", () => {
+test("category options keep every known type and its whole-range count", () => {
   const options = categoryOptions([
-    ...rows,
-    { itemId: "ddd", itemType: "rack", events: 1, hours: 1 },
-    { itemId: "eee", itemType: "", events: 1, hours: 1 }
+    { itemType: "rack", events: 11, items: 2 },
+    { itemType: "miner", events: 10, items: 4 },
+    { itemType: "weird_new_type", events: 1, items: 1 }
   ]);
+  // Static vocabulary first, then feed types this build does not know yet.
   assert.deepEqual(
     options.map((option) => option.key),
-    ["rack", "miner", "mutation_component", "unknown"]
+    [...ITEM_TYPE_ORDER, "weird_new_type"]
   );
-  assert.equal(options[0].count, 2);
-  assert.deepEqual(categoryOptions([]), []);
-  assert.deepEqual(categoryOptions(undefined), []);
+  assert.equal(options.find((option) => option.key === "rack").count, 2);
+  // A category with no activity keeps a zero option, so selecting another
+  // category never removes it from the menu.
+  assert.equal(options.find((option) => option.key === "battery").count, 0);
+  assert.deepEqual(
+    categoryOptions([]).map((option) => option.key),
+    [...ITEM_TYPE_ORDER]
+  );
+  assert.deepEqual(
+    categoryOptions(undefined).map((option) => option.key),
+    [...ITEM_TYPE_ORDER]
+  );
 });
 
 test("category labels reuse the fleet vocabulary", () => {
@@ -217,24 +227,40 @@ test("the panel offers the four short rolling ranges", () => {
   assert.ok(!ACTIVITY_RANGES.some((preset) => /custom/i.test(preset.key)));
 });
 
-test("type breakdown sums the range and filters empty types", () => {
+test("type breakdown keeps every known type, even at zero, and appends new ones", () => {
   const breakdown = typeBreakdown([
     { itemType: "rack", events: 5, items: 1 },
     { itemType: "miner", events: 40, items: 3 },
     { itemType: "battery", events: 0, items: 0 }
   ]);
+  // The order is the fleet's static vocabulary, not the current volume, so the
+  // header does not reshuffle while a filter narrows the table.
   assert.deepEqual(
     breakdown.map((total) => total.key),
-    ["miner", "rack"]
+    [...ITEM_TYPE_ORDER]
   );
-  assert.equal(breakdown[0].events, 40);
-  assert.equal(breakdown[0].items, 3);
-  // A type with no frames is not a summary row.
-  assert.ok(!breakdown.some((total) => total.key === "battery"));
-  assert.deepEqual(typeBreakdown(null), []);
-  assert.deepEqual(typeBreakdown([{ itemType: "", events: 2, items: 1 }]).map((t) => t.key), [
-    "unknown"
-  ]);
+  const miners = breakdown.find((total) => total.key === "miner");
+  assert.equal(miners.events, 40);
+  assert.equal(miners.items, 3);
+  // A type with no frames still gets a badge; that keeps the component's shape
+  // predictable instead of letting categories disappear.
+  const batteries = breakdown.find((total) => total.key === "battery");
+  assert.equal(batteries.events, 0);
+  assert.equal(batteries.items, 0);
+  // A type the feed introduces after this build is kept after the known list.
+  const extra = typeBreakdown([{ itemType: "seed_pack", events: 4, items: 1 }]);
+  assert.equal(extra.at(-1).key, "seed_pack");
+  assert.equal(extra.at(-1).events, 4);
+  // A malformed/missing total still yields the five known zero badges.
+  assert.deepEqual(
+    typeBreakdown(null).map((total) => total.key),
+    [...ITEM_TYPE_ORDER]
+  );
+  assert.ok(
+    typeBreakdown([{ itemType: "", events: 2, items: 1 }]).some(
+      (total) => total.key === "unknown" && total.events === 2
+    )
+  );
 });
 
 test("the next batch cursor is the number of rows already held", () => {

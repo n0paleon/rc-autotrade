@@ -323,15 +323,17 @@ impl Store {
         self.db
             .execute(
                 "INSERT OR IGNORE INTO settings
-                 (id, delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused, mode)
-                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+                 (id, delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused, mode,
+                  total_price_markup_pct)
+                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     defaults.delay_per_order,
                     defaults.max_orders_per_minute,
                     dry_run as i64,
                     defaults.auto_refresh as i64,
                     paused as i64,
-                    defaults.mode.as_str()
+                    defaults.mode.as_str(),
+                    defaults.total_price_markup_pct
                 ],
             )
             .map_err(|e| format!("could not seed settings: {e}"))?;
@@ -376,7 +378,8 @@ impl Store {
         let settings_row = self
             .db
             .query_row(
-                "SELECT delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused, mode
+                "SELECT delay_per_order, max_orders_per_minute, dry_run, auto_refresh, paused, mode,
+                        total_price_markup_pct
                  FROM settings WHERE id = 1",
                 [],
                 |row| {
@@ -391,6 +394,7 @@ impl Store {
                         mode: Mode::parse(&mode)
                             .unwrap_or_else(|| Mode::from_legacy(dry_run != 0, paused != 0)),
                         auto_refresh: row.get(3)?,
+                        total_price_markup_pct: row.get(6)?,
                     })
                 },
             )
@@ -665,6 +669,9 @@ impl Store {
         if let Some(value) = patch.auto_refresh {
             settings.auto_refresh = value;
         }
+        if let Some(value) = patch.total_price_markup_pct {
+            settings.total_price_markup_pct = value;
+        }
         self.state.settings = settings;
         self.write_settings()
             .map_err(|e| format!("could not persist settings: {e}"))
@@ -896,14 +903,16 @@ impl Store {
         let (dry_run, paused) = settings.legacy_flags();
         self.db.execute(
             "UPDATE settings SET delay_per_order = ?1, max_orders_per_minute = ?2,
-                    dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6 WHERE id = 1",
+                    dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6,
+                    total_price_markup_pct = ?7 WHERE id = 1",
             params![
                 settings.delay_per_order,
                 settings.max_orders_per_minute,
                 dry_run as i64,
                 settings.auto_refresh as i64,
                 paused as i64,
-                settings.mode.as_str()
+                settings.mode.as_str(),
+                settings.total_price_markup_pct
             ],
         )?;
         Ok(())
@@ -982,14 +991,16 @@ impl Store {
         let (dry_run, paused) = settings.legacy_flags();
         tx.execute(
             "UPDATE settings SET delay_per_order = ?1, max_orders_per_minute = ?2,
-                    dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6 WHERE id = 1",
+                    dry_run = ?3, auto_refresh = ?4, paused = ?5, mode = ?6,
+                    total_price_markup_pct = ?7 WHERE id = 1",
             params![
                 settings.delay_per_order,
                 settings.max_orders_per_minute,
                 dry_run as i64,
                 settings.auto_refresh as i64,
                 paused as i64,
-                settings.mode.as_str()
+                settings.mode.as_str(),
+                settings.total_price_markup_pct
             ],
         )
         .map_err(|e| format!("could not write settings: {e}"))?;
@@ -2178,6 +2189,9 @@ impl Store {
     /// Pagination happens **after** ranking and after the per-type totals are
     /// summed, so page 2 is the next slice of the same ordering and the type
     /// summary always describes the whole range rather than the current page.
+    /// The per-type totals are also summed before the category and search
+    /// filters are applied: the deck keeps one badge per known type on screen,
+    /// and those counts must not vanish while the table is narrowed.
     pub fn item_activity(&self, query: &ItemActivityQuery, now: i64) -> ItemActivityReport {
         let since = if query.since > 0 {
             query.since
@@ -2242,10 +2256,15 @@ impl Store {
             }
         }
 
+        // Build every row first: the per-type totals are a summary of the whole
+        // range, not of the current category or search filter. They have to be
+        // summed before the filters narrow the table so the header badges and
+        // the category menu keep the same shape (and the same counts) while the
+        // reader is looking at one category.
         let mut rows: Vec<ItemActivityRow> = aggregates
             .into_iter()
             .filter(|(_, aggregate)| aggregate.events > 0)
-            .filter_map(|(item_id, aggregate)| {
+            .map(|(item_id, aggregate)| {
                 let catalog = self.catalog.get(item_id);
                 // The type a frame was counted under wins over the catalogue.
                 // Frames are grouped by the type the feed reported, so using
@@ -2260,20 +2279,11 @@ impl Store {
                 } else {
                     aggregate.item_type.clone()
                 };
-                if !wanted_type.is_empty() && item_type != wanted_type {
-                    return None;
-                }
                 let label = catalog.map(|item| item.label.clone()).unwrap_or_default();
-                if !term.is_empty()
-                    && !label.to_ascii_lowercase().contains(&term)
-                    && !item_id.contains(&term)
-                {
-                    return None;
-                }
                 let tracked = self.find_config(item_id).is_some();
                 let first_at = (aggregate.first_at != i64::MAX).then_some(aggregate.first_at);
                 let last_at = (aggregate.last_at != i64::MIN).then_some(aggregate.last_at);
-                Some(ItemActivityRow {
+                ItemActivityRow {
                     item_id: item_id.to_string(),
                     item_type,
                     label,
@@ -2284,21 +2294,13 @@ impl Store {
                     first_at,
                     last_at,
                     tracked,
-                })
+                }
             })
             .collect();
 
-        rows.sort_by(|a, b| {
-            b.events
-                .cmp(&a.events)
-                .then(b.events_24h.cmp(&a.events_24h))
-                // A stable tiebreak keeps the table from reshuffling between
-                // polls when two ids moved exactly as often.
-                .then_with(|| a.item_id.cmp(&b.item_id))
-        });
-
-        // Totals describe every row in the range, not the page being served.
-        let total_events: i64 = rows.iter().map(|row| row.events).sum();
+        // Totals describe every row in the range, before the filters narrow the
+        // table and before paging. The deck renders one badge per known type,
+        // so these counts must not disappear when one category is selected.
         let mut type_totals: BTreeMap<String, ItemTypeTotal> = BTreeMap::new();
         for row in &rows {
             let entry = type_totals
@@ -2311,6 +2313,29 @@ impl Store {
             entry.events += row.events;
             entry.items += 1;
         }
+
+        rows.retain(|row| {
+            if !wanted_type.is_empty() && row.item_type != wanted_type {
+                return false;
+            }
+            if term.is_empty() {
+                return true;
+            }
+            row.label.to_ascii_lowercase().contains(&term) || row.item_id.contains(&term)
+        });
+
+        rows.sort_by(|a, b| {
+            b.events
+                .cmp(&a.events)
+                .then(b.events_24h.cmp(&a.events_24h))
+                // A stable tiebreak keeps the table from reshuffling between
+                // polls when two ids moved exactly as often.
+                .then_with(|| a.item_id.cmp(&b.item_id))
+        });
+
+        // These totals describe every row that matched the filters, not just
+        // the page being served.
+        let total_events: i64 = rows.iter().map(|row| row.events).sum();
         let total_rows = rows.len();
         let page: Vec<ItemActivityRow> = rows.into_iter().skip(offset).take(limit).collect();
 
@@ -2817,6 +2842,7 @@ mod tests {
             store.upsert_config(target("6319f7baa8ce530569ed16b9"), None);
             let patch = validation::SettingsPatch {
                 mode: Some(Mode::Off),
+                total_price_markup_pct: Some(7.5),
                 ..Default::default()
             };
             store.patch_settings(patch).unwrap();
@@ -2826,6 +2852,7 @@ mod tests {
         assert_eq!(store.state.configs.len(), 1);
         assert_eq!(store.state.configs[0].item_id, "6319f7baa8ce530569ed16b9");
         assert_eq!(store.state.settings.mode, Mode::Off);
+        assert_eq!(store.state.settings.total_price_markup_pct, 7.5);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3375,6 +3402,17 @@ mod tests {
         );
         assert_eq!(by_type.rows.len(), 1);
         assert_eq!(by_type.total_events, 4, "the type filter scopes the totals");
+        // The header badges keep the whole range: narrowing the table to miners
+        // must not make the rack and parts counts disappear.
+        let types: Vec<(&str, i64)> = by_type
+            .type_totals
+            .iter()
+            .map(|total| (total.item_type.as_str(), total.events))
+            .collect();
+        assert_eq!(
+            types,
+            vec![("miner", 4), ("mutation_component", 7), ("rack", 2)]
+        );
         assert_eq!(by_type.rows[0].label, "Epic Hashboard");
         assert_eq!(by_type.rows[0].rarity.as_deref(), Some("Epic"));
         assert_eq!(by_type.rows[0].rarity_color.as_deref(), Some("a52bff"));
@@ -3520,13 +3558,18 @@ mod tests {
             },
             now,
         );
-        // Only the four miners count toward the totals or the ranking.
+        // Only the four miners count toward the ranking and the filtered
+        // totals. The type summary still describes the whole range, so the
+        // badges do not shrink while one category is selected.
         assert_eq!(report.total_rows, 4);
         assert_eq!(report.rows.len(), 2);
         assert_eq!(report.rows[0].item_id, "t-3");
-        assert_eq!(report.type_totals.len(), 1);
-        assert_eq!(report.type_totals[0].item_type, "miner");
-        assert_eq!(report.type_totals[0].items, 4);
+        let types: Vec<(&str, i64, i64)> = report
+            .type_totals
+            .iter()
+            .map(|total| (total.item_type.as_str(), total.events, total.items))
+            .collect();
+        assert_eq!(types, vec![("miner", 10, 4), ("rack", 11, 2)]);
         assert_eq!(report.total_events, 1 + 2 + 3 + 4);
     }
 

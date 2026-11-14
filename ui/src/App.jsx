@@ -45,7 +45,8 @@ import {
   drawPixelAvatar,
   formatMs,
   latencyChannelLabel,
-  latencyClass
+  latencyClass,
+  applyTotalPriceMarkup
 } from "./lib/format.js";
 import { sound } from "./lib/sound.js";
 import { countTargetsByStatus, filterTargets } from "./lib/targets.js";
@@ -106,6 +107,7 @@ function TargetPriceChart({ history, targetPrice, itemId, request, label }) {
   );
 }
 
+/** Smoothed market-event rate, in events per minute. */
 function useEventRate(count) {
   const [rate, setRate] = useState(0);
   const reference = useRef({ count: 0, at: 0 });
@@ -115,7 +117,7 @@ function useEventRate(count) {
     if (previous.at && Number.isFinite(count) && count >= previous.count) {
       const dt = (now - previous.at) / 1000;
       if (dt >= 0.4) {
-        const instant = (count - previous.count) / dt;
+        const instant = ((count - previous.count) / dt) * 60;
         setRate((current) => (current ? current * 0.6 + instant * 0.4 : instant));
       }
     }
@@ -453,7 +455,7 @@ function Ticker({ configs, mock }) {
   );
 }
 
-function Hud({ snapshot, eps, marketEvents }) {
+function Hud({ snapshot, epm, marketEvents }) {
   const now = useNow(1000);
   const stats = snapshot.stats || {};
   const configs = snapshot.configs || [];
@@ -518,7 +520,7 @@ function Hud({ snapshot, eps, marketEvents }) {
           {formatInt(marketEvents)}
         </div>
         <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
-          <span id="stat-eps">{eps.toFixed(1)}</span>/s · <span id="stat-uptime">{formatUptime(now - (snapshot.startedAt || now))}</span>
+          <span id="stat-epm">{epm.toFixed(1)}</span>/min · <span id="stat-uptime">{formatUptime(now - (snapshot.startedAt || now))}</span>
         </div>
       </article>
       <article data-accent="violet" className="stat-tile">
@@ -2126,6 +2128,7 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
   const mode = modeOf(settings);
   const [delay, setDelay] = useState(String(settings.delayPerOrder ?? 200));
   const [maxOrders, setMaxOrders] = useState(String(settings.maxOrdersPerMinute ?? 60));
+  const [markup, setMarkup] = useState(String(settings.totalPriceMarkupPct ?? 0));
   const [saving, setSaving] = useState(false);
   const [modesBusy, setModesBusy] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
@@ -2133,7 +2136,14 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
   useEffect(() => {
     setDelay(String(settings.delayPerOrder ?? 200));
     setMaxOrders(String(settings.maxOrdersPerMinute ?? 60));
-  }, [settings.delayPerOrder, settings.maxOrdersPerMinute]);
+    setMarkup(String(settings.totalPriceMarkupPct ?? 0));
+  }, [settings.delayPerOrder, settings.maxOrdersPerMinute, settings.totalPriceMarkupPct]);
+
+  const markupNumber = Number(markup);
+  const markupPreview =
+    Number.isFinite(markupNumber) && markupNumber > 0
+      ? `Preview: a ${fixedPrice(1)} RLT total becomes ${fixedPrice(applyTotalPriceMarkup(1, markupNumber))} RLT.`
+      : "0 sends the exact listing total.";
 
   const changeMode = async (next) => {
     if (next === mode) return;
@@ -2151,11 +2161,15 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
     try {
       await worker.saveSettings({
         delayPerOrder: Number(delay),
-        maxOrdersPerMinute: Number(maxOrders)
+        maxOrdersPerMinute: Number(maxOrders),
+        totalPriceMarkupPct: Number(markup)
       });
       notify("info", "CONFIG UPDATED", "Worker settings applied.");
     } catch (error) {
-      notify("error", "CONFIG FAILED", error.message);
+      const details = Object.entries(error.fields || {})
+        .map(([field, message]) => `${field}: ${message}`)
+        .join(" · ");
+      notify("error", "CONFIG FAILED", details || error.message);
     } finally {
       setSaving(false);
     }
@@ -2190,6 +2204,15 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
               <span>Max orders / min</span>
               <input className="input" type="number" inputMode="numeric" step="1" min="1" max="600" value={maxOrders} onChange={(event) => setMaxOrders(event.target.value)} />
               <small>Hard burst protection.</small>
+            </label>
+            <label className="field @[30rem]:col-span-2">
+              <span>Total price markup (%)</span>
+              <input className="input" type="number" inputMode="decimal" step="0.01" min="0" max="100" value={markup} onChange={(event) => setMarkup(event.target.value)} />
+              <small>
+                Extra headroom on the purchase <code className="text-ink-dim">totalPrice</code> so the marketplace can
+                fill the whole order instead of a partial slice. The plan, quantity and target price are unchanged;
+                the fill can cost up to this marked-up cap. {markupPreview}
+              </small>
             </label>
           </div>
           <button className="btn btn-primary btn-sm btn-block" type="submit" disabled={saving} data-busy={saving ? "true" : undefined} aria-busy={saving}>
@@ -2369,7 +2392,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       : Number(recentOrderCount);
 
   const marketEvents = Number(snapshot.gateway?.marketEventCount ?? snapshot.gateway?.eventCount ?? 0) || 0;
-  const eps = useEventRate(marketEvents);
+  const epm = useEventRate(marketEvents);
   const baseUrl = worker.getConnection().baseUrl;
   const reportByItem = useMemo(() => {
     const map = {};
@@ -2543,7 +2566,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       />
       <Ticker configs={snapshot.configs || []} mock={snapshot.worker?.mock} />
       <div className="deck-enter deck-enter-2 mx-auto w-full max-w-[1600px] px-3 pt-4 sm:px-4 lg:px-6">
-        <Hud snapshot={snapshot} eps={eps} marketEvents={marketEvents} />
+        <Hud snapshot={snapshot} epm={epm} marketEvents={marketEvents} />
       </div>
       <div className="deck-enter deck-enter-3 mx-auto mt-4 w-full max-w-[1600px] px-3 sm:px-4 lg:px-6">
         <MemoActivityChart request={worker.request} />
@@ -2625,6 +2648,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           onClose={() => setModal(null)}
           worker={worker}
           notify={notify}
+          markupPct={snapshot.settings?.totalPriceMarkupPct ?? 0}
         />
       ) : null}
       {modal?.type === "session" ? (

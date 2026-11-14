@@ -134,12 +134,16 @@ impl Mode {
 /// Runtime settings. `mode` is the only trading switch; the old `dryRun` and
 /// `paused` keys are still accepted on input, echoed on output, and mirrored
 /// into the two legacy columns so a pre-v8 reader still sees sane flags.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Settings {
     pub delay_per_order: i64,
     pub max_orders_per_minute: i64,
     pub mode: Mode,
     pub auto_refresh: bool,
+    /// Percentage of headroom added to the purchase request's `totalPrice`.
+    /// It only changes the price ceiling sent upstream, never the plan, the
+    /// quantity or the target-price gate.
+    pub total_price_markup_pct: f64,
 }
 
 impl Default for Settings {
@@ -150,6 +154,7 @@ impl Default for Settings {
             max_orders_per_minute: defaults.max_orders_per_minute,
             mode: Mode::default(),
             auto_refresh: defaults.auto_refresh,
+            total_price_markup_pct: defaults.total_price_markup_pct,
         }
     }
 }
@@ -169,11 +174,12 @@ impl Serialize for Settings {
     {
         use serde::ser::SerializeMap;
         let (dry_run, paused) = self.legacy_flags();
-        let mut map = serializer.serialize_map(Some(6))?;
+        let mut map = serializer.serialize_map(Some(7))?;
         map.serialize_entry("delayPerOrder", &self.delay_per_order)?;
         map.serialize_entry("maxOrdersPerMinute", &self.max_orders_per_minute)?;
         map.serialize_entry("mode", &self.mode)?;
         map.serialize_entry("autoRefresh", &self.auto_refresh)?;
+        map.serialize_entry("totalPriceMarkupPct", &self.total_price_markup_pct)?;
         // Read-only mirrors: they keep an older deck or backup reader working
         // and are ignored whenever `mode` is present.
         map.serialize_entry("dryRun", &dry_run)?;
@@ -200,6 +206,10 @@ impl<'de> Deserialize<'de> for Settings {
             paused: Option<bool>,
             #[serde(default = "default_true")]
             auto_refresh: bool,
+            /// Added after schema v8; an older document simply means "no
+            /// headroom", which is the pre-feature behaviour.
+            #[serde(default)]
+            total_price_markup_pct: f64,
         }
 
         let wire = Wire::deserialize(deserializer)?;
@@ -217,6 +227,7 @@ impl<'de> Deserialize<'de> for Settings {
             max_orders_per_minute: wire.max_orders_per_minute,
             mode: wire.mode.unwrap_or(mode),
             auto_refresh: wire.auto_refresh,
+            total_price_markup_pct: wire.total_price_markup_pct,
         })
     }
 }
@@ -507,6 +518,8 @@ pub struct ItemActivityRow {
 }
 
 /// Frames and ids for one item type across the whole requested range.
+/// Computed before the category/search filters, so the deck can keep every
+/// category badge and menu entry visible while the table is narrowed.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ItemTypeTotal {
@@ -517,8 +530,9 @@ pub struct ItemTypeTotal {
 
 /// One page of the monitor plus the totals that describe the entire range.
 ///
-/// The totals are computed before paging, so the per-type summary in the header
-/// does not change as the reader moves between pages.
+/// The totals are computed before filtering and paging, so the per-type summary
+/// in the header does not change as the reader selects a category or moves
+/// between pages.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ItemActivityReport {
     /// The requested page, already ranked and sliced.
@@ -540,6 +554,7 @@ mod tests {
         assert_eq!(json["maxOrdersPerMinute"], 60);
         assert_eq!(json["mode"], "live");
         assert_eq!(json["autoRefresh"], true);
+        assert_eq!(json["totalPriceMarkupPct"], 0.0);
         // Legacy mirrors, read-only for the deck but present for old readers.
         assert_eq!(json["dryRun"], false);
         assert_eq!(json["paused"], false);
@@ -555,6 +570,10 @@ mod tests {
         .unwrap();
         assert_eq!(settings.mode, Mode::Shadow, "silence is not live");
         assert!(settings.auto_refresh);
+        assert_eq!(
+            settings.total_price_markup_pct, 0.0,
+            "an older document has no price headroom"
+        );
 
         let paused: Settings = serde_json::from_value(serde_json::json!({
             "delayPerOrder": 200, "maxOrdersPerMinute": 60, "paused": true, "dryRun": true

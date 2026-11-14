@@ -27,6 +27,21 @@ export function formatSignedRlt(value) {
   return `${number >= 0 ? "+" : "-"}${Math.abs(number).toFixed(6)}`;
 }
 
+/**
+ * Mirrors `rules::apply_total_price_markup` at display precision: the worker
+ * scales the request's `totalPrice` by `1 + pct / 100` and rounds the raw
+ * micro-RLT result. The deck only needs the same factor for a preview, so it
+ * keeps 6 decimals of RLT instead of rounding to whole micro-units.
+ */
+export function applyTotalPriceMarkup(total, markupPct) {
+  const base = Number(total);
+  const pct = Number(markupPct);
+  if (!Number.isFinite(base) || base <= 0) return base;
+  if (!Number.isFinite(pct) || pct <= 0) return base;
+  const scaled = base * (1 + pct / 100);
+  return Number.isFinite(scaled) ? Math.round(scaled * 1e6) / 1e6 : base;
+}
+
 export function formatInt(value) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(0, Math.floor(number)).toLocaleString("en-US") : "0";

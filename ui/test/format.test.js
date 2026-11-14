@@ -2,6 +2,7 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 
 import {
+  applyTotalPriceMarkup,
   formatBytes,
   formatPercent,
   formatPreciseMs,
@@ -17,6 +18,21 @@ import {
   thresholdClass,
   utilizationClass
 } from "../src/lib/format.js";
+
+test("applies the total price markup used by the target preview", () => {
+  // 0% is the exact listing total.
+  assert.equal(applyTotalPriceMarkup(1, 0), 1);
+  assert.equal(applyTotalPriceMarkup(0.9, 0), 0.9);
+  // 10% turns 1.000000 RLT into the 1.100000 RLT request cap.
+  assert.equal(applyTotalPriceMarkup(1, 10), 1.1);
+  assert.equal(applyTotalPriceMarkup(0.9, 10), 0.99);
+  // Worst-case max spend: target 0.1 × 20 qty × 2 doubling × 1.1.
+  assert.equal(applyTotalPriceMarkup(0.1 * 20 * 2, 10), 4.4);
+  // Invalid and non-positive inputs are ignored, matching the worker.
+  assert.equal(applyTotalPriceMarkup(1, -5), 1);
+  assert.equal(applyTotalPriceMarkup(1, Number.NaN), 1);
+  assert.equal(applyTotalPriceMarkup(0, 10), 0);
+});
 
 test("maps every itemType id to a human readable label", () => {
   assert.equal(itemTypeLabel("miner"), "miners");

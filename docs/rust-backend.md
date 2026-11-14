@@ -105,7 +105,7 @@ Rollercoin session — two of either will duplicate orders.
 | `DELETE /api/history` | ✅ | wipes the loot log + profit report and resets stats, engine counters and latency samples |
 | `GET /api/report` | ✅ | same derived columns |
 | `GET /api/events` | ➕ | Rust-only: marketplace-command counts (listing/price updates and fulfillment results) per 5-minute bucket for `?days=1..7`; the deck sums them into the chart timeframe in local time |
-| `GET /api/item-activity` | ➕ | Rust-only: market-frame counts **per item id** in 5-minute buckets over `?days=1..30` or an explicit `?since=&until=`. Takes `itemType` and `q` filters plus `limit` (default 25, max 250) and `offset`; answers a ranked page with `events`, `events24h` and a `tracked` fleet flag, alongside range-wide `totalRows`, `totalEvents` and `typeTotals` computed before paging. Ids never added to the target fleet are included; names come from the `item_catalog` cache, and a bounded, rotating batch of unresolved ids is looked up through `item-info` on each response |
+| `GET /api/item-activity` | ➕ | Rust-only: market-frame counts **per item id** in 5-minute buckets over `?days=1..30` or an explicit `?since=&until=`. Takes `itemType` and `q` filters plus `limit` (default 25, max 250) and `offset`; answers a ranked page with `events`, `events24h` and a `tracked` fleet flag, alongside range-wide `totalRows`, `totalEvents` and `typeTotals` computed before filtering and paging. Ids never added to the target fleet are included; names come from the `item_catalog` cache, and a bounded, rotating batch of unresolved ids is looked up through `item-info` on each response |
 | `GET /api/price-history` | ➕ | Rust-only: one duration-weighted median close per minute plus its held and raw low/high bands for a single `itemId` over `?days=1..7`; the deck buckets them in local time and merges the live 24h window |
 | `GET /api/session` | ✅ | same preview/expires fields |
 | `POST /api/session` | ✅ | validated, `changed` flag |
@@ -679,9 +679,14 @@ than the market.
 Paging happens after ranking, so the next batch continues the same order rather
 than re-sorting a new subset. `totalRows`, `totalEvents` and `typeTotals` are
 computed before the slice, which is what lets the header summary and the share
-column stay still while the reader loads more rows. The deck uses the cursor
-style of the loot log — rows accumulate and a **Load more** button asks for the
-next batch — so `offset` is simply how many rows are already held.
+column stay still while the reader loads more rows. `typeTotals` is also summed
+before the category and search filters: the deck keeps one badge per known type
+on screen, so selecting a category must not make the other categories vanish
+from the header or from the filter menu. `totalRows` and `totalEvents` still
+describe the filtered table, and the deck renders a zero badge for known types
+the range did not count. The deck uses the cursor style of the loot log — rows
+accumulate and a **Load more** button asks for the next batch — so `offset` is
+simply how many rows are already held.
 `limit` defaults to `ITEM_ACTIVITY_PAGE_SIZE` (25) and caps at
 `ITEM_ACTIVITY_LIMIT` (250); an `offset` past the end returns an empty page that
 still reports the real `totalRows`.
