@@ -2057,13 +2057,13 @@ function FeedPanel({ logs, onClear, notify, epm, logLevel }) {
         </span>
         <span className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
           {paused && unread > 0 ? <span className="text-gold">{formatInt(unread)} buffered</span> : null}
-          {!paused && !tailing ? <span className="text-info">Scroll held</span> : null}
           <span
             className="inline-flex items-center gap-1.5 whitespace-nowrap bg-info/10 px-1.5 font-semibold tabular-nums text-info"
             id="feed-epm"
             title="All lines appended to the live system log per minute, system and market events alike"
           >
-            {epm.toFixed(1)} events/min
+            <span className="inline-block min-w-[calc(6ch+0.48em)] text-right">{epm.toFixed(1)}</span>
+            <span>events/min</span>
           </span>
         </span>
       </div>
