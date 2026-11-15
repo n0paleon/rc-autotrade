@@ -131,6 +131,10 @@ fn normalize_product(
         fills: whole(entry.get("fills"), 0, 1_000_000_000),
         failed: whole(entry.get("failed"), 0, 1_000_000_000),
         qty: whole(entry.get("qty"), 0, 1_000_000_000),
+        // Absent in backups written before the column existed: those rows keep
+        // 0 rather than guessing from `failed`, which would need stock data the
+        // aggregate never stored.
+        failed_qty: whole(entry.get("failedQty"), 0, 1_000_000_000),
         spent_rlt: non_negative(entry.get("spentRlt"), 0.0),
         profit_rlt: signed(entry.get("profitRlt"), 0.0),
         first_at: time_or(entry.get("firstAt"), now),

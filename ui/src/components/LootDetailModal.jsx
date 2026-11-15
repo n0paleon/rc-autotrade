@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { ModalShell } from "./ModalShell.jsx";
 import {
@@ -78,11 +78,11 @@ function ttfbHint(t) {
 function Metric({ label, value, text, hint, tone = "text-ink" }) {
   return (
     <div className="border-2 border-line/70 bg-night-950/60 px-3 py-2.5">
-      <p className="font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-faint">{label}</p>
+      <p className="font-mono text-micro font-bold uppercase tracking-[0.08em] text-faint">{label}</p>
       <p className={`mt-1 font-mono text-[18px] tabular-nums ${tone}`}>
         {text ?? (value == null ? "—" : formatPreciseMs(value))}
       </p>
-      {hint ? <p className="mt-0.5 text-[12px] leading-snug text-faint">{hint}</p> : null}
+      {hint ? <p className="mt-0.5 text-meta leading-snug text-faint">{hint}</p> : null}
     </div>
   );
 }
@@ -90,25 +90,29 @@ function Metric({ label, value, text, hint, tone = "text-ink" }) {
 function RawEventPayload({ label, payload, missingText }) {
   return (
     <details className="border-2 border-line/60">
-      <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-faint hover:text-ink-dim">
+      <summary className="sum-disclosure">
         {label}
       </summary>
       <div className="border-t border-line/60 px-3 py-2">
         {payload ? (
           <>
             {payload.__truncatedForStorage ? (
-              <p className="mb-2 text-[12px] text-warn">
+              <p className="mb-2 text-meta text-warn">
                 Payload was {formatInt(payload.originalBytes)} bytes; showing a bounded preview.
               </p>
             ) : null}
-            <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-ink-dim">
+            <pre
+              tabIndex={0}
+              aria-label={`${label} payload`}
+              className="max-h-[320px] overflow-auto whitespace-pre-wrap break-all font-mono text-micro leading-relaxed text-ink-dim"
+            >
               {payload.__truncatedForStorage
                 ? payload.preview || "No preview available."
                 : JSON.stringify(payload, null, 2)}
             </pre>
           </>
         ) : (
-          <p className="text-[12px] leading-relaxed text-faint">{missingText}</p>
+          <p className="text-body leading-relaxed text-faint">{missingText}</p>
         )}
       </div>
     </details>
@@ -223,6 +227,15 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
   const [detail, setDetail] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [detailError, setDetailError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const timelineRef = useRef(null);
+
+  // Retry replaces the focused button with a loading state; park focus on the
+  // heading that survives both branches so the keyboard does not fall to body.
+  const retryDetail = () => {
+    setAttempt((value) => value + 1);
+    timelineRef.current?.focus({ preventScroll: true });
+  };
 
   // Lists only carry the columns a row renders. A live order event still
   // arrives with its frames inline, so only fetch when they are missing.
@@ -251,7 +264,7 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
     return () => {
       cancelled = true;
     };
-  }, [summary?.id, summary?.rawEvents, request]);
+  }, [attempt, summary?.id, summary?.rawEvents, request]);
 
   const entry =
     detail && detail.id === summary.id ? { ...summary, ...detail } : summary;
@@ -292,7 +305,7 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
 
   return (
     <ModalShell
-      title={`Loot telemetry · ${entry.label || shortId(entry.itemId)}`}
+      title={`Loot · ${entry.label || shortId(entry.itemId)}`}
       onClose={onClose}
       wide
     >
@@ -302,10 +315,10 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
             <p className="truncate font-sans text-[17px] font-bold text-ink">
               {entry.label || shortId(entry.itemId)}
             </p>
-            <p className="mt-0.5 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+            <p className="mt-0.5 font-mono text-label uppercase tracking-[0.08em] text-faint">
               {formatTime(entry.at)} · order {entry.orderId ? shortId(entry.orderId) : "—"}
             </p>
-            <p className="mt-0.5 break-all font-mono text-[11px] text-faint" title={entry.itemId}>
+            <p className="mt-0.5 break-all font-mono text-micro text-faint" title={entry.itemId}>
               item {entry.itemId || "—"}
             </p>
           </div>
@@ -316,13 +329,13 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
           </span>
         </div>
 
-        <div className="grid grid-cols-2 gap-x-4 gap-y-2 border-2 border-line/70 bg-night-950/40 px-3 py-3 font-mono text-[12px] sm:grid-cols-3">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-2 border-2 border-line/70 bg-night-950/40 px-3 py-3 font-mono text-label sm:grid-cols-3">
           <div title="Quantity requested (sent to order)">
-            <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Sent</p>
+            <p className="text-micro uppercase tracking-[0.08em] text-faint">Sent</p>
             <p className="text-ink-dim">{formatInt(entry.requestedQty ?? entry.qty)}</p>
           </div>
           <div title="Quantity actually obtained">
-            <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Got</p>
+            <p className="text-micro uppercase tracking-[0.08em] text-faint">Got</p>
             <p className="text-ink-dim">{formatInt(entry.qty)}</p>
           </div>
           <div
@@ -334,31 +347,31 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
                   : "Stock available when the signal triggered this order"
             }
           >
-            <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Ready</p>
+            <p className="text-micro uppercase tracking-[0.08em] text-faint">Ready</p>
             <p className={`font-bold ${entry.stockAtTrigger != null && entry.stockAtTrigger !== (entry.requestedQty ?? entry.qty) ? "text-warn" : "text-ink-dim"}`}>
               {entry.stockAtTrigger == null ? "—" : formatInt(entry.stockAtTrigger)}
             </p>
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Unit</p>
+            <p className="text-micro uppercase tracking-[0.08em] text-faint">Unit</p>
             <p className="text-ink-dim">{fixedPrice(entry.unitPrice)} RLT</p>
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Total</p>
+            <p className="text-micro uppercase tracking-[0.08em] text-faint">Total</p>
             <p className="text-ink-dim">{fixedPrice(entry.totalPrice)} RLT</p>
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Profit</p>
+            <p className="text-micro uppercase tracking-[0.08em] text-faint">Profit</p>
             <p className={entry.profitRlt > 0 ? "text-gold" : entry.profitRlt < 0 ? "text-danger" : "text-ink-dim"}>
               {entry.status === "failed" ? "0.000000" : formatSignedRlt(entry.profitRlt)}
             </p>
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Target</p>
+            <p className="text-micro uppercase tracking-[0.08em] text-faint">Target</p>
             <p className="text-ink-dim">{fixedPrice(entry.targetPrice)} RLT</p>
           </div>
           <div>
-            <p className="text-[11px] uppercase tracking-[0.08em] text-faint">Order id</p>
+            <p className="text-micro uppercase tracking-[0.08em] text-faint">Order id</p>
             <p className="break-all text-ink-dim" title={entry.orderId || undefined}>
               {entry.orderId || "—"}
             </p>
@@ -367,10 +380,10 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
 
         {entry.status === "failed" ? (
           <div className="border-2 border-danger/50 bg-danger/10 px-3 py-2">
-            <p className="font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-danger">
+            <p className="font-mono text-micro font-bold uppercase tracking-[0.08em] text-danger">
               Failure reason
             </p>
-            <p className="mt-0.5 text-[13px] text-ink-dim">
+            <p className="mt-0.5 text-body text-ink-dim">
               {entry.message || entry.note || "failed"}
             </p>
           </div>
@@ -378,10 +391,10 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
 
         <div className="border-2 border-line bg-night-950/50 p-3 sm:p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="panel-title text-[13px]">
+            <h3 ref={timelineRef} tabIndex={-1} className="panel-title text-body">
               <span className="led bg-gold" /> Latency debugger
             </h3>
-            <span className="font-mono text-[12px] tabular-nums text-faint">
+            <span className="font-mono text-label tabular-nums text-faint">
               {span == null ? "no timing data" : `${formatPreciseMs(span)} total span`}
             </span>
           </div>
@@ -428,7 +441,7 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
               </div>
 
               {bottleneck ? (
-                <p className="mt-3 border-l-2 border-warn bg-warn/5 px-2.5 py-1.5 text-[12px] leading-relaxed text-muted">
+                <p className="mt-3 border-l-2 border-warn bg-warn/5 px-2.5 py-1.5 text-meta leading-relaxed text-muted">
                   Largest stage: <span className="text-warn">{bottleneck.label}</span>{" "}
                   <span className="font-mono tabular-nums">
                     {formatPreciseMs(bottleneck.ms)}
@@ -462,18 +475,18 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
                   >
                     <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 ${stage.color}`} aria-hidden="true" />
                     <div className="min-w-0">
-                      <p className="text-[13px] leading-snug text-ink-dim">{stage.label}</p>
-                      <p className="text-[12px] leading-snug text-faint">{stage.hint}</p>
+                      <p className="text-body leading-snug text-ink-dim">{stage.label}</p>
+                      <p className="text-meta leading-snug text-faint">{stage.hint}</p>
                     </div>
                     <div className="text-right">
                       <p
-                        className={`font-mono text-[13px] tabular-nums ${
+                        className={`font-mono text-meta tabular-nums ${
                           bottleneck && stage.key === bottleneck.key ? "text-warn" : "text-ink-dim"
                         }`}
                       >
                         {formatPreciseMs(stage.ms)}
                       </p>
-                      <p className="font-mono text-[11px] tabular-nums text-faint">
+                      <p className="font-mono text-micro tabular-nums text-faint">
                         {span > 0 ? `${Math.round((stage.ms / span) * 100)}%` : ""}
                       </p>
                     </div>
@@ -482,11 +495,11 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
               </ul>
 
               <details className="mt-3 border-2 border-line/60">
-                <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-faint hover:text-ink-dim">
+                <summary className="sum-disclosure">
                   Raw timestamps
                 </summary>
                 <div className="border-t border-line/60 px-3 py-2">
-                  <dl className="grid gap-x-5 gap-y-1 font-mono text-[12px] sm:grid-cols-2">
+                  <dl className="grid gap-x-5 gap-y-1 font-mono text-label sm:grid-cols-2">
                     {rawMarks.map(([label, value]) => (
                       <div className="flex justify-between gap-3" key={label}>
                         <dt className="text-faint">{label}</dt>
@@ -494,7 +507,7 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
                       </div>
                     ))}
                   </dl>
-                  <p className="mt-2 border-t border-line/40 pt-2 font-mono text-[11px] leading-relaxed text-faint">
+                  <p className="mt-2 border-t border-line/40 pt-2 font-mono text-micro leading-relaxed text-faint">
                     Frame: {t.signalCmd || "—"} · attempt{t.attempts === 1 ? "" : "s"}:{" "}
                     {t.attempts || "—"}
                     {t.unauthorized ? " · 401 refresh" : ""}
@@ -503,7 +516,7 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
                 </div>
               </details>
 
-              <p className="mt-3 text-[11px] leading-relaxed text-faint">
+              <p className="mt-3 max-w-[65ch] text-meta leading-relaxed text-faint">
                 TTFB is Time To First Byte: measured inside the HTTP client from dispatch until
                 the first response byte arrives. For an HTTP response that first byte is the
                 response head, so the TTFB tile and the TTFB stage describe the same instant;
@@ -516,22 +529,28 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
             </>
           ) : loadingDetail ? (
             <div className="mt-3 border-2 border-line/60 bg-night-900/50 px-3 py-3">
-              <p className="text-[13px] text-muted">Loading latency marks…</p>
+              <p className="text-body text-muted">Loading latency marks…</p>
             </div>
           ) : detailError ? (
             <div className="mt-3 border-2 border-line/60 bg-night-900/50 px-3 py-3">
-              <p className="text-[13px] text-muted">
-                Could not load this entry&apos;s telemetry from the worker. Reopen the row to
-                retry.
+              <p className="text-body text-muted">
+                Could not load this entry&apos;s telemetry from the worker.
               </p>
+              <button
+                className="btn btn-ghost btn-sm mt-2"
+                type="button"
+                onClick={retryDetail}
+              >
+                Retry
+              </button>
             </div>
           ) : (
             <div className="mt-3 border-2 border-line/60 bg-night-900/50 px-3 py-3">
-              <p className="text-[13px] text-muted">
+              <p className="text-body text-muted">
                 This loot entry predates the latency debugger, so only the end-to-end number is
                 available.
               </p>
-              <p className="mt-1 font-mono text-[13px] tabular-nums text-ink-dim">
+              <p className="mt-1 font-mono text-meta tabular-nums text-ink-dim">
                 Signal → fulfillment: {entry.latencyMs != null ? `${Math.round(entry.latencyMs)}ms` : "—"}
               </p>
             </div>
@@ -540,7 +559,7 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
       </div>
 
       <section className="border-2 border-line bg-night-950/50 p-3 sm:p-4">
-        <h3 className="panel-title text-[13px]">
+        <h3 className="panel-title text-body">
           <span className="led bg-info" /> Raw payloads
         </h3>
         <div className="mt-3 space-y-2">

@@ -69,20 +69,19 @@ function ExpandIcon({ className = "h-3 w-3" }) {
 
 function ProTabs({ label, options, value, onChange }) {
   return (
-    <div className="flex items-center gap-2">
-      <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-[#5d6b7f]">{label}</span>
+    <div className="flex min-w-0 max-w-full items-center gap-2">
+      <span className="font-mono text-micro uppercase tracking-[0.16em] text-[#5d6b7f]">{label}</span>
       <div
-        className="flex items-center gap-px border border-[#1d2a38] bg-[#0d141d] p-px"
-        role="tablist"
+        className="flex min-w-0 flex-wrap items-center gap-px border border-[#1d2a38] bg-[#0d141d] p-px"
+        role="group"
         aria-label={label}
       >
         {options.map((option) => (
           <button
             key={option.key}
             type="button"
-            role="tab"
-            aria-selected={value === option.key}
-            className={`h-6 min-w-7 px-2 font-mono text-[10px] uppercase tracking-[0.06em] transition-colors ${
+            aria-pressed={value === option.key}
+            className={`seg-tab ${
               value === option.key
                 ? "bg-[#1e2c3d] text-[#e8eef7]"
                 : "text-[#6f8199] hover:bg-[#121b26] hover:text-[#c6d1e0]"
@@ -191,7 +190,7 @@ function Preview({ series, p95, onExpand }) {
         : ["dataMin", "dataMax"];
 
   return (
-    <div className="border-2 border-line bg-night-950/60 p-2.5">
+    <div className="chart-mount border-2 border-line bg-night-950/60 p-2.5">
       <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
         <span className="flex items-center gap-1.5 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
           <span className="led bg-info" aria-hidden="true" /> Order latency
@@ -421,27 +420,27 @@ function Detail({ request, benchmark, onCollapse }) {
   }
 
   return (
-    <div className="pro-surface flex min-h-full flex-col">
+    <div className="pro-surface tab-panel flex min-h-full flex-col">
       <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 border-b border-[#16202b] px-4 pb-3.5 pt-4 sm:px-5">
         <div className="min-w-0">
-          <p className="truncate font-mono text-[10px] uppercase tracking-[0.16em] text-[#5d6b7f]">
+          <p className="truncate font-mono text-micro uppercase tracking-[0.16em] text-[#5d6b7f]">
             Order latency · {period.label}/{frame.label} · {stage.label}
           </p>
           <div className="mt-1.5 flex items-end gap-2">
             <span className="font-mono text-[30px] leading-none tabular-nums" style={{ color: PRO.avg }}>
               {headline.avg == null ? "—" : formatPreciseMs(headline.avg)}
             </span>
-            <span className="pb-0.5 font-mono text-[10px] uppercase tracking-[0.1em] text-[#5d6b7f]">
+            <span className="pb-0.5 font-mono text-micro uppercase tracking-[0.1em] text-[#5d6b7f]">
               avg
             </span>
           </div>
-          <p className="mt-1 font-mono text-[12px] tabular-nums text-[#8fa0b8]">
+          <p className="mt-1 font-mono text-label tabular-nums text-[#8fa0b8]">
             P95 <b style={{ color: PRO.p95 }}>{formatPreciseMs(headline.p95)}</b>
             <span className="text-[#5d6b7f]"> · </span>
             Jitter <b className="text-[#c6d1e0]">{formatPreciseMs(headline.jitter)}</b>
             <span className="text-[#5d6b7f]"> · {formatInt(headline.orders || 0)} orders in bucket</span>
           </p>
-          <p className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.08em] text-[#5d6b7f]">
+          <p className="mt-0.5 font-mono text-micro uppercase tracking-[0.08em] text-[#5d6b7f]">
             Newest bucket · whole window avg {summary.avg == null ? "—" : formatPreciseMs(summary.avg)}
           </p>
         </div>
@@ -449,12 +448,12 @@ function Detail({ request, benchmark, onCollapse }) {
         <div className="flex shrink-0 flex-col items-end gap-2 font-mono">
           <button
             type="button"
-            className="border border-[#223040] px-2 py-1 text-[10px] uppercase tracking-[0.1em] text-[#8fa0b8] transition-colors hover:bg-[#121b26] hover:text-[#e8eef7]"
+            className="pro-back inline-flex items-center border border-[#223040] px-2 py-1 text-micro uppercase tracking-[0.1em] text-[#8fa0b8] transition-colors hover:bg-[#121b26] hover:text-[#e8eef7]"
             onClick={() => onCollapse(false)}
           >
             ← Back to monitor
           </button>
-          <p className="text-[10px] leading-snug text-[#6f8199]">
+          <p className="text-micro leading-snug text-[#6f8199]">
             {lastOrder ? `Last order ${relTime(lastOrder)}` : "Waiting for the first order"}
           </p>
         </div>
@@ -466,8 +465,8 @@ function Detail({ request, benchmark, onCollapse }) {
             key={name}
             className={`bg-[#080c12] px-4 py-2${hideOnMobile ? " max-sm:hidden" : ""}`}
           >
-            <p className="font-mono text-[9px] uppercase tracking-[0.14em] text-[#5d6b7f]">{name}</p>
-            <p className="mt-0.5 truncate font-mono text-[12px] tabular-nums text-[#c6d1e0]">{value}</p>
+            <p className="font-mono text-micro uppercase tracking-[0.14em] text-[#5d6b7f]">{name}</p>
+            <p className="mt-0.5 truncate font-mono text-label tabular-nums text-[#c6d1e0]">{value}</p>
           </div>
         ))}
       </div>
@@ -584,7 +583,7 @@ function Detail({ request, benchmark, onCollapse }) {
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-[#16202b] px-4 py-2 font-mono text-[9px] uppercase tracking-[0.12em] text-[#5d6b7f] sm:px-5">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-[#16202b] px-4 py-2 font-mono text-micro uppercase tracking-[0.12em] text-[#5d6b7f] sm:px-5">
         <span>
           {formatInt(points.length)} buckets · {frame.label} · local time
         </span>

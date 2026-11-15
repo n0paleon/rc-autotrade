@@ -196,13 +196,16 @@ function deriveBackupReport(data, since) {
         fills: 0,
         failed: 0,
         qty: 0,
+        failedQty: 0,
         spentRlt: 0,
         profitRlt: 0,
         firstAt: Number(order?.at) || Date.now(),
         lastAt: Number(order?.at) || Date.now()
       };
-      if (order?.status === "failed") product.failed += 1;
-      else {
+      if (order?.status === "failed") {
+        product.failed += 1;
+        product.failedQty += Math.max(0, Number(order?.requestedQty ?? order?.qty) || 0);
+      } else {
         product.fills += 1;
         product.qty += Number(order?.qty) || 0;
         product.spentRlt += Number(order?.totalPrice) || 0;
@@ -220,6 +223,7 @@ function deriveBackupReport(data, since) {
 
   const items = products.map((product) => {
     const qty = Number(product.qty) || 0;
+    const failedQty = Number(product.failedQty) || 0;
     const spentRlt = Number(product.spentRlt) || 0;
     const profitRlt = Number(product.profitRlt) || 0;
     const fills = Number(product.fills) || 0;
@@ -227,6 +231,8 @@ function deriveBackupReport(data, since) {
     const completed = fills + failed;
     return {
       ...product,
+      qty,
+      failedQty,
       avgBuy: qty > 0 ? spentRlt / qty : 0,
       marginPct: spentRlt > 0 ? Math.round((profitRlt / spentRlt) * 1000) / 10 : null,
       successPct: completed > 0 ? Math.round((fills / completed) * 100) : null
@@ -236,10 +242,11 @@ function deriveBackupReport(data, since) {
     sum.fills += Number(item.fills) || 0;
     sum.failed += Number(item.failed) || 0;
     sum.qty += Number(item.qty) || 0;
+    sum.failedQty += Number(item.failedQty) || 0;
     sum.spentRlt += Number(item.spentRlt) || 0;
     sum.profitRlt += Number(item.profitRlt) || 0;
     return sum;
-  }, { products: items.length, fills: 0, failed: 0, qty: 0, spentRlt: 0, profitRlt: 0, marginPct: null });
+  }, { products: items.length, fills: 0, failed: 0, qty: 0, failedQty: 0, spentRlt: 0, profitRlt: 0, marginPct: null });
   totals.products = items.length;
   totals.marginPct = totals.spentRlt > 0
     ? Math.round((totals.profitRlt / totals.spentRlt) * 1000) / 10
@@ -1051,7 +1058,7 @@ export function useWorker({ notify }) {
           report: {
             since: resetAt,
             items: [],
-            totals: { products: 0, fills: 0, failed: 0, qty: 0, spentRlt: 0, profitRlt: 0, marginPct: null }
+            totals: { products: 0, fills: 0, failed: 0, qty: 0, failedQty: 0, spentRlt: 0, profitRlt: 0, marginPct: null }
           },
           history: [],
           historyTotal: 0,

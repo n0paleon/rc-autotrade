@@ -13,6 +13,9 @@ const MODE_TONE = {
   live: "text-signal"
 };
 
+/** How long the menu keeps its closing frame; matches `menu-out`. */
+const MENU_EXIT_MS = 110;
+
 /**
  * The one trading-mode control. It replaces the old header button *and* the
  * runtime panel's segmented control, so "off / shadow / live" is chosen the
@@ -25,8 +28,11 @@ const MODE_TONE = {
  */
 export function ModeMenu({ mode, busy, onChange, variant = "header" }) {
   const [open, setOpen] = useState(false);
+  const [closing, setClosing] = useState(false);
   const triggerRef = useRef(null);
   const menuRef = useRef(null);
+  const closeTimer = useRef(null);
+  const closingRef = useRef(false);
   const [anchor, setAnchor] = useState(null);
   const menuId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const active = MODES.find((entry) => entry.id === mode) || MODES[0];
@@ -42,10 +48,28 @@ export function ModeMenu({ mode, busy, onChange, variant = "header" }) {
     setAnchor({ top: rect.bottom + 6, left, width });
   }, []);
 
+  // Keep the menu mounted for one short exit frame, so dismissing it reads as
+  // folding back toward the trigger instead of vanishing mid-click.
   const close = useCallback((restoreFocus = false) => {
-    setOpen(false);
+    if (closingRef.current) return;
+    closingRef.current = true;
+    setClosing(true);
     if (restoreFocus) triggerRef.current?.focus();
+    closeTimer.current = window.setTimeout(() => {
+      closingRef.current = false;
+      setOpen(false);
+      setClosing(false);
+    }, MENU_EXIT_MS);
   }, []);
+
+  const openMenu = useCallback(() => {
+    clearTimeout(closeTimer.current);
+    closingRef.current = false;
+    setClosing(false);
+    setOpen(true);
+  }, []);
+
+  useEffect(() => () => clearTimeout(closeTimer.current), []);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -74,12 +98,15 @@ export function ModeMenu({ mode, busy, onChange, variant = "header" }) {
     };
   }, [open, place, close]);
 
-  // Focus the selected row so the menu is usable from the keyboard straight away.
+  // Focus the selected row so the menu is usable from the keyboard straight
+  // away. The portal only exists once `anchor` is measured, so that state has
+  // to be part of the trigger: keying this on `open` alone leaves focus on the
+  // trigger while the menu floats underneath it.
   useEffect(() => {
-    if (!open) return;
+    if (!open || !anchor) return;
     const selected = menuRef.current?.querySelector('[aria-checked="true"]');
     selected?.focus();
-  }, [open]);
+  }, [open, anchor]);
 
   const choose = (next) => {
     close(true);
@@ -87,10 +114,23 @@ export function ModeMenu({ mode, busy, onChange, variant = "header" }) {
   };
 
   const onMenuKeyDown = (event) => {
-    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-    event.preventDefault();
+    if (event.key === "Tab") {
+      // The menu lives in a portal at the end of <body>; letting Tab run from
+      // there would drop focus out of the page. Close and hand focus back to
+      // the trigger instead.
+      event.preventDefault();
+      close(true);
+      return;
+    }
     const items = [...(menuRef.current?.querySelectorAll('[role="menuitemradio"]') || [])];
     if (items.length === 0) return;
+    if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      items[event.key === "Home" ? 0 : items.length - 1]?.focus();
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    event.preventDefault();
     const index = items.indexOf(document.activeElement);
     const step = event.key === "ArrowDown" ? 1 : -1;
     const next = (index + step + items.length) % items.length;
@@ -103,21 +143,30 @@ export function ModeMenu({ mode, busy, onChange, variant = "header" }) {
   // the button (which made "live" look like a secondary, inert action).
   const triggerClass =
     variant === "header"
-      ? "btn btn-primary btn-sm max-sm:w-10 max-sm:px-0"
+      ? "btn btn-primary btn-sm max-sm:w-11 max-sm:px-0"
       : "btn btn-primary btn-sm w-full justify-between";
 
   return (
     <>
       <button
         ref={triggerRef}
-        className={triggerClass}
+        className={`${triggerClass}${busy ? " cursor-progress opacity-60" : ""}`}
         type="button"
-        onClick={() => (open ? close() : setOpen(true))}
-        disabled={busy}
+        onClick={() => {
+          if (busy) return;
+          open ? close() : openMenu();
+        }}
+        onKeyDown={(event) => {
+          if (busy) return;
+          if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+          event.preventDefault();
+          openMenu();
+        }}
+        aria-disabled={busy || undefined}
         data-busy={busy ? "true" : undefined}
         aria-busy={busy}
         aria-haspopup="menu"
-        aria-expanded={open}
+        aria-expanded={open && !closing}
         aria-controls={open ? menuId : undefined}
         aria-label={`Trading mode: ${active.label}. Change mode`}
         title={`Trading mode: ${active.label}. ${active.hint}`}
@@ -126,7 +175,7 @@ export function ModeMenu({ mode, busy, onChange, variant = "header" }) {
         <span className="hidden sm:inline">{busy ? "…" : active.short}</span>
         <Icon
           name="i-caret-down"
-          className={`h-2.5 w-2.5 transition-transform${open ? " rotate-180" : ""}`}
+          className={`h-2.5 w-2.5 chevron${open ? " rotate-180" : ""}`}
         />
       </button>
       {open && anchor
@@ -137,7 +186,7 @@ export function ModeMenu({ mode, busy, onChange, variant = "header" }) {
               role="menu"
               aria-label="Trading mode"
               onKeyDown={onMenuKeyDown}
-              className="panel fixed z-[80] overflow-hidden py-1"
+              className={`panel mode-menu fixed z-[80] overflow-hidden py-1${closing ? " is-closing" : ""}`}
               style={{ top: `${anchor.top}px`, left: `${anchor.left}px`, width: `${anchor.width}px` }}
             >
               {MODES.map((entry) => {
@@ -152,13 +201,16 @@ export function ModeMenu({ mode, busy, onChange, variant = "header" }) {
                     type="button"
                     role="menuitemradio"
                     aria-checked={selected}
-                    aria-disabled={blocked}
-                    disabled={blocked}
-                    onClick={() => choose(entry.id)}
+                    aria-disabled={blocked || undefined}
+                    onClick={() => {
+                      if (!blocked) choose(entry.id);
+                    }}
                     title={blocked ? "Pass through shadow first" : entry.hint}
-                    className={`flex w-full items-start gap-2 px-3 py-2 text-left transition-colors hover:bg-night-850 focus-visible:bg-night-850 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ${
-                      selected ? "bg-night-850/70" : ""
-                    }`}
+                    className={`flex w-full items-start gap-2 px-3 py-2 text-left transition-colors focus-visible:bg-night-850 ${
+                      blocked
+                        ? "cursor-not-allowed opacity-40"
+                        : "hover:bg-night-850"
+                    } ${selected ? "bg-night-850/70" : ""}`}
                   >
                     <Icon
                       name={MODE_ICON[entry.id]}

@@ -56,6 +56,7 @@ pub(super) fn aggregate_products(orders: &[OrderEntry]) -> Vec<ReportProduct> {
             fills: 0,
             failed: 0,
             qty: 0,
+            failed_qty: 0,
             spent_rlt: 0.0,
             profit_rlt: 0.0,
             first_at: order.at,
@@ -65,6 +66,10 @@ pub(super) fn aggregate_products(orders: &[OrderEntry]) -> Vec<ReportProduct> {
         entry.last_at = entry.last_at.max(order.at);
         if order.status == "failed" {
             entry.failed += 1;
+            // The attempted count, which is exactly what a failed order missed.
+            // Legacy rows carry it in `requested_qty` too (the migration moved
+            // it there before zeroing `qty`).
+            entry.failed_qty += order.requested_qty.unwrap_or(order.qty).max(0);
         } else {
             entry.fills += 1;
             entry.qty += order.qty.max(0);

@@ -177,9 +177,9 @@ pub fn restore_backup(
     for product in &products {
         tx.execute(
             "INSERT INTO report_products
-             (product_key, item_id, label, fills, failed, qty, spent_rlt, profit_rlt,
+             (product_key, item_id, label, fills, failed, qty, failed_qty, spent_rlt, profit_rlt,
               first_at, last_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 product.product_key,
                 product.item_id,
@@ -187,6 +187,7 @@ pub fn restore_backup(
                 product.fills,
                 product.failed,
                 product.qty,
+                product.failed_qty,
                 product.spent_rlt,
                 product.profit_rlt,
                 product.first_at,

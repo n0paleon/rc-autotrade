@@ -39,6 +39,33 @@ fn records_orders_in_history_and_report() {
 }
 
 #[test]
+fn missed_quantity_tracks_the_attempted_units_of_failed_orders() {
+    let mut store = store("missed-qty");
+    let at = now_ms();
+    let mut partial = make_entry("o1", "item-1", "Hashboard", "filled", 2, at);
+    // Asked for 5, got 2: only the filled units count towards `qty`.
+    partial.requested_qty = Some(5);
+    partial.total_price = 0.2;
+    store.add_history(partial).unwrap();
+    // A rejection has no fulfillment result, so every attempted unit missed.
+    let mut rejected = make_entry("o2", "item-1", "Hashboard", "failed", 0, at + 1);
+    rejected.requested_qty = Some(3);
+    store.add_history(rejected).unwrap();
+    let mut empty = make_entry("o3", "item-1", "Hashboard", "failed", 0, at + 2);
+    empty.requested_qty = Some(0);
+    store.add_history(empty).unwrap();
+
+    let report = store.report_view();
+    assert_eq!(report.items[0].qty, 2, "only fulfilled units are bought");
+    assert_eq!(
+        report.items[0].failed_qty, 3,
+        "0 + 3 attempted units missed"
+    );
+    assert_eq!(report.totals.failed_qty, 3);
+    assert_eq!(report.totals.failed, 2);
+}
+
+#[test]
 fn reset_stats_wipes_the_loot_log_and_profit_report() {
     let dir = temp_dir("reset-stats");
     let logger = Arc::new(Logger::new("error"));

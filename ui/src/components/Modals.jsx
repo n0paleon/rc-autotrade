@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Icon, ModalShell, ToggleRow, useModalClose } from "./ModalShell.jsx";
 import { applyTotalPriceMarkup, fixedPrice, shortId } from "../lib/format.js";
+import { tabKeyDown } from "../lib/hooks.js";
 
 export async function copyText(text) {
   try {
@@ -27,6 +28,13 @@ export async function copyText(text) {
 function FieldError({ id, message }) {
   if (!message) return null;
   return <em id={id} className="field-error" role="alert">{message}</em>;
+}
+
+/** Land the keyboard on the first field the form rejected, once it renders. */
+function focusFirstInvalid(form) {
+  requestAnimationFrame(() => {
+    form?.querySelector('[aria-invalid="true"]')?.focus();
+  });
 }
 
 function validateTargetLocally(target) {
@@ -74,6 +82,7 @@ export function TargetModal({ config, onClose, worker, notify, markupPct = 0 }) 
   const [allowPartialOrder, setAllowPartialOrder] = useState(config?.allowPartialOrder !== false);
   const [active, setActive] = useState(config?.active !== false);
   const [errors, setErrors] = useState({});
+  const [formError, setFormError] = useState("");
   const [busy, setBusy] = useState(false);
   const [auto, setAuto] = useState({
     state: config ? (config.label ? "ready" : "loading") : "idle",
@@ -148,6 +157,7 @@ export function TargetModal({ config, onClose, worker, notify, markupPct = 0 }) 
 
   const submit = async (event) => {
     event.preventDefault();
+    const form = event.currentTarget;
     const target = {
       itemId: itemId.trim(),
       itemType: itemType || "mutation_component",
@@ -160,23 +170,25 @@ export function TargetModal({ config, onClose, worker, notify, markupPct = 0 }) 
     };
     const localErrors = validateTargetLocally(target);
     setErrors(localErrors);
-    if (Object.keys(localErrors).length > 0) return;
+    setFormError("");
+    if (Object.keys(localErrors).length > 0) {
+      focusFirstInvalid(form);
+      return;
+    }
 
     setBusy(true);
-    const saving = worker.saveTarget(target, config?.itemId);
-    close();
     try {
-      await saving;
+      await worker.saveTarget(target, config?.itemId);
+      close();
       notify("success", editing ? "TARGET UPDATED" : "TARGET DEPLOYED", auto.label || shortId(target.itemId));
     } catch (error) {
       if (error.fields && Object.keys(error.fields).length > 0) {
-        const details = Object.entries(error.fields)
-          .map(([field, message]) => `${field}: ${message}`)
-          .join(" · ");
-        notify("error", "CHECK THE FIELDS", details);
+        setErrors(error.fields);
+        focusFirstInvalid(form);
       } else {
-        notify("error", "SAVE FAILED", error.message);
+        setFormError(error.message || "The worker could not save this target.");
       }
+      setBusy(false);
     }
   };
 
@@ -197,6 +209,12 @@ export function TargetModal({ config, onClose, worker, notify, markupPct = 0 }) 
       }
     >
       <form id="target-form" className="modal-body" noValidate autoComplete="off" onSubmit={submit}>
+        {formError ? (
+          <p className="flex items-start gap-2 border-2 border-danger/50 bg-danger/5 p-2.5 text-body leading-relaxed text-danger" role="alert">
+            <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>{formError}</span>
+          </p>
+        ) : null}
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="field sm:col-span-2">
             <span>Item ID / marketplace URL</span>
@@ -207,12 +225,18 @@ export function TargetModal({ config, onClose, worker, notify, markupPct = 0 }) 
               onChange={(event) => setItemId(event.target.value)}
               placeholder="Paste item ID or marketplace URL"
               readOnly={editing}
+              autoComplete="off"
+              autoCapitalize="none"
               spellCheck="false"
               aria-invalid={Boolean(errors.itemId)}
               aria-describedby={errors.itemId ? "target-itemId-error" : undefined}
               required
             />
-            <small>Paste the ID or the full Rollercoin marketplace URL. The label is resolved automatically.</small>
+            <small>
+              {editing
+                ? "Item ID is fixed after deployment. Delete the target to point this slot at a different item."
+                : "Paste the ID or the full Rollercoin marketplace URL. The label is resolved automatically."}
+            </small>
             <FieldError id="target-itemId-error" message={errors.itemId} />
           </label>
 
@@ -230,7 +254,7 @@ export function TargetModal({ config, onClose, worker, notify, markupPct = 0 }) 
                 ) : null}
                 {auto.state === "warn" ? (
                   <button
-                    className="font-mono text-[13px] uppercase tracking-[0.1em] text-gold underline-offset-2 hover:underline"
+                    className="tap-pad inline-flex min-h-6 items-center px-1 font-mono text-[13px] uppercase tracking-[0.1em] text-gold underline-offset-2 hover:underline"
                     type="button"
                     onClick={() => lookupRef.current?.()}
                   >
@@ -240,7 +264,7 @@ export function TargetModal({ config, onClose, worker, notify, markupPct = 0 }) 
               </span>
             </div>
             <strong className="mt-1 block text-[14px] font-medium text-ink">{auto.label}</strong>
-            <small className="mt-0.5 block text-[13px] leading-snug text-faint">
+            <small className="mt-0.5 block text-meta leading-snug text-faint">
               From Rollercoin item-info: rarity + item name. Falls back to the item name when rarity is absent.
             </small>
           </div>
@@ -357,10 +381,13 @@ export function SessionModal({ session, onClose, worker, notify }) {
   const [cookie, setCookie] = useState("");
   const [clearCookie, setClearCookie] = useState(false);
   const [errors, setErrors] = useState({});
+  const [formError, setFormError] = useState("");
   const [busy, setBusy] = useState(false);
 
   const submit = async (event) => {
     event.preventDefault();
+    const form = event.currentTarget;
+    setFormError("");
     const body = {};
     if (accessToken.trim()) body.accessToken = accessToken.trim();
     if (refreshToken.trim()) body.refreshToken = refreshToken.trim();
@@ -368,10 +395,12 @@ export function SessionModal({ session, onClose, worker, notify }) {
     if (clearCookie) body.clearCookie = true;
     if (!session.hasAccessToken && !body.accessToken && !clearCookie) {
       setErrors({ accessToken: "Paste an access token first." });
+      focusFirstInvalid(form);
       return;
     }
     if (Object.keys(body).length === 0) {
       setErrors({ accessToken: "Nothing to update — paste a token or clear the form." });
+      focusFirstInvalid(form);
       return;
     }
     setBusy(true);
@@ -382,8 +411,9 @@ export function SessionModal({ session, onClose, worker, notify }) {
     } catch (error) {
       if (error.fields && Object.keys(error.fields).length > 0) {
         setErrors(error.fields);
+        focusFirstInvalid(form);
       } else {
-        notify("error", "SESSION FAILED", error.message);
+        setFormError(error.message || "The worker could not save this session.");
       }
       setBusy(false);
     }
@@ -406,11 +436,17 @@ export function SessionModal({ session, onClose, worker, notify }) {
       }
     >
       <form id="session-form" className="modal-body" noValidate autoComplete="off" onSubmit={submit}>
-        <p className="text-[13px] leading-relaxed text-muted">
+        <p className="text-copy text-muted">
           Grab the tokens from a logged-in rollercoin.com tab: DevTools → Application → Local Storage →{" "}
           <code className="text-ink-dim">token</code> and <code className="text-ink-dim">refreshToken</code>. The
           browser bridge can keep them in sync automatically.
         </p>
+        {formError ? (
+          <p className="flex items-start gap-2 border-2 border-danger/50 bg-danger/5 p-2.5 text-body leading-relaxed text-danger" role="alert">
+            <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>{formError}</span>
+          </p>
+        ) : null}
         <label className="field">
           <span>Access token</span>
           <textarea
@@ -584,8 +620,10 @@ export function BridgeModal({ onClose, getConnection, notify }) {
             type="button"
             role="tab"
             aria-selected={mode === "console"}
+            tabIndex={mode === "console" ? 0 : -1}
             className="pixel-tab"
             onClick={() => setMode("console")}
+            onKeyDown={tabKeyDown}
           >
             Console snippet
           </button>
@@ -593,8 +631,10 @@ export function BridgeModal({ onClose, getConnection, notify }) {
             type="button"
             role="tab"
             aria-selected={mode === "userscript"}
+            tabIndex={mode === "userscript" ? 0 : -1}
             className="pixel-tab"
             onClick={() => setMode("userscript")}
+            onKeyDown={tabKeyDown}
           >
             Userscript · auto
           </button>
@@ -616,7 +656,7 @@ export function BridgeModal({ onClose, getConnection, notify }) {
         )}
 
         <div className="space-y-2">
-          <pre className="code-block"><code>{code || (error || "Loading bridge…")}</code></pre>
+          <pre className="code-block" tabIndex={0} aria-label="Bridge code"><code>{code || (error || "Loading bridge…")}</code></pre>
           <div className="flex flex-wrap gap-2">
             <button className="btn btn-primary btn-sm" type="button" onClick={copy}>
               <Icon name="i-copy" className="h-3 w-3" />
@@ -632,7 +672,7 @@ export function BridgeModal({ onClose, getConnection, notify }) {
         </div>
 
         {mode === "console" ? (
-          <p className="flex items-start gap-2 text-[13px] leading-relaxed text-faint">
+          <p className="flex items-start gap-2 text-copy text-faint">
             <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
             <span>
               Console mode uses the page's <code className="text-ink-dim">fetch</code>, so Rollercoin's CSP or
@@ -641,7 +681,7 @@ export function BridgeModal({ onClose, getConnection, notify }) {
             </span>
           </p>
         ) : (
-          <p className="flex items-start gap-2 text-[13px] leading-relaxed text-faint">
+          <p className="flex items-start gap-2 text-copy text-faint">
             <Icon name="i-check" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-signal" />
             <span>
               Userscript mode uses <code className="text-ink-dim">GM_xmlhttpRequest</code>, which bypasses page CORS
@@ -650,7 +690,7 @@ export function BridgeModal({ onClose, getConnection, notify }) {
             </span>
           </p>
         )}
-        <p className="flex items-start gap-2 text-[13px] leading-relaxed text-faint">
+        <p className="flex items-start gap-2 text-copy text-faint">
           <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
           <span>
             Both variants contain this deck's access key. Keep them private and never paste them into a public gist
@@ -667,10 +707,19 @@ export function BridgeModal({ onClose, getConnection, notify }) {
 
 export function ConfirmModal({ title, message, confirmLabel = "CONFIRM", danger = true, onConfirm, onCancel }) {
   const { closeRef, close } = useModalClose();
+  const messageId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   return (
-    <ModalShell title={title} onClose={onCancel} closeRef={closeRef} small role="alertdialog" titleColor={danger ? "danger" : "lime"}>
+    <ModalShell
+      title={title}
+      onClose={onCancel}
+      closeRef={closeRef}
+      small
+      role="alertdialog"
+      titleColor={danger ? "danger" : "lime"}
+      describedBy={messageId}
+    >
       <div className="modal-body">
-        <p className="text-[14px] leading-relaxed text-muted">{message}</p>
+        <p id={messageId} className="text-copy text-muted">{message}</p>
         <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">
           <button className="btn" type="button" onClick={close} data-autofocus>Cancel</button>
           <button className={`btn ${danger ? "btn-danger" : "btn-primary"}`} type="button" onClick={onConfirm}>
@@ -687,7 +736,7 @@ export function KeyModal({ token, onClose, notify }) {
   return (
     <ModalShell title="New access key" onClose={onClose} closeRef={closeRef}>
       <div className="modal-body">
-        <p className="text-[13px] leading-relaxed text-muted">
+        <p className="text-copy text-muted">
           The old key is dead and open control sockets were revoked. Save this key. It is shown once.
         </p>
         <div className="key-box">
@@ -704,7 +753,7 @@ export function KeyModal({ token, onClose, notify }) {
             <Icon name="i-copy" />
           </button>
         </div>
-        <p className="flex items-start gap-2 text-[13px] leading-relaxed text-faint">
+        <p className="flex items-start gap-2 text-copy text-faint">
           <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
           <span>
             This deck reconnects automatically. Other browser tabs must paste the new key. If you installed the
@@ -712,7 +761,7 @@ export function KeyModal({ token, onClose, notify }) {
           </span>
         </p>
         <div className="flex justify-end">
-          <button className="btn btn-primary" type="button" onClick={close}>I saved it</button>
+          <button className="btn btn-primary" type="button" onClick={close} data-autofocus>I saved it</button>
         </div>
       </div>
     </ModalShell>

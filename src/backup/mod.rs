@@ -41,6 +41,10 @@ pub struct ReportProduct {
     pub fills: i64,
     pub failed: i64,
     pub qty: i64,
+    /// Units asked for by failed orders and never obtained. Older backups do
+    /// not carry it; those rows start at 0 and the next failed attempt adds to
+    /// the column normally.
+    pub failed_qty: i64,
     pub spent_rlt: f64,
     pub profit_rlt: f64,
     pub first_at: i64,
@@ -55,6 +59,7 @@ impl From<ReportProduct> for Product {
             fills: value.fills,
             failed: value.failed,
             qty: value.qty,
+            failed_qty: value.failed_qty,
             spent_rlt: value.spent_rlt,
             profit_rlt: value.profit_rlt,
             first_at: value.first_at,

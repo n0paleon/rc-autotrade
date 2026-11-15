@@ -121,7 +121,85 @@ fn creates_the_full_schema_and_stamps_the_version() {
         column_exists(&conn, "settings", "mode").unwrap(),
         "schema v8 must add settings.mode"
     );
+    assert!(
+        column_exists(&conn, "report_products", "failed_qty").unwrap(),
+        "the profit report must track missed units, not just missed orders"
+    );
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A database from before `failed_qty` kept no missed-unit total, but the loot
+/// log still holds every failed attempt. The upgrade must rebuild the column
+/// from `requested_qty` instead of starting every product at 0.
+#[test]
+fn backfills_missed_units_from_the_loot_log() {
+    let dir = temp_dir("failed-qty");
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(DB_FILENAME);
+    {
+        let conn = Connection::open(&file).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE orders (
+                 id TEXT PRIMARY KEY,
+                 order_id TEXT,
+                 item_id TEXT NOT NULL DEFAULT '',
+                 label TEXT NOT NULL DEFAULT '',
+                 qty INTEGER NOT NULL DEFAULT 0,
+                 unit_price REAL NOT NULL DEFAULT 0,
+                 total_price REAL NOT NULL DEFAULT 0,
+                 target_price REAL NOT NULL DEFAULT 0,
+                 profit_rlt REAL NOT NULL DEFAULT 0,
+                 status TEXT NOT NULL,
+                 at INTEGER NOT NULL,
+                 latency_ms INTEGER,
+                 note TEXT,
+                 message TEXT
+             );
+             CREATE TABLE report_products (
+                 product_key TEXT PRIMARY KEY,
+                 item_id     TEXT NOT NULL DEFAULT '',
+                 label       TEXT NOT NULL DEFAULT '',
+                 fills       INTEGER NOT NULL DEFAULT 0,
+                 failed      INTEGER NOT NULL DEFAULT 0,
+                 qty         INTEGER NOT NULL DEFAULT 0,
+                 spent_rlt   REAL NOT NULL DEFAULT 0,
+                 profit_rlt  REAL NOT NULL DEFAULT 0,
+                 first_at    INTEGER NOT NULL,
+                 last_at     INTEGER NOT NULL
+             );
+             -- Legacy failed rows stored the attempted count in qty.
+             INSERT INTO orders (id, item_id, label, qty, status, at)
+             VALUES ('o1', 'item-1', 'Hashboard', 4, 'failed', 1),
+                    ('o2', 'item-1', 'Hashboard', 6, 'failed', 2),
+                    ('o3', 'item-1', 'Hashboard', 2, 'filled', 3);
+             INSERT INTO report_products (product_key, item_id, label, fills, failed, qty, first_at, last_at)
+             VALUES ('item-1', 'item-1', 'Hashboard', 1, 2, 2, 1, 3);",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 7).unwrap();
+    }
+
+    let logger = Logger::new("error");
+    let conn = open(&dir, &logger, None).expect("open");
+    let failed_qty: i64 = conn
+        .query_row(
+            "SELECT failed_qty FROM report_products WHERE product_key = 'item-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(failed_qty, 10, "4 + 6 attempted units were never obtained");
+    // The legacy `qty` column still holds the fulfilled total.
+    let qty: i64 = conn
+        .query_row(
+            "SELECT qty FROM report_products WHERE product_key = 'item-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(qty, 2);
+    drop(conn);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

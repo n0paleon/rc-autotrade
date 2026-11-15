@@ -1,4 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import TrendPanel, { TrendChip } from "./components/TrendPanel.jsx";
 import { Icon } from "./components/ModalShell.jsx";
 import { MonitorWindow } from "./components/MonitorWindow.jsx";
@@ -15,7 +16,7 @@ import {
 } from "./components/Modals.jsx";
 import { useWorker, URL_KEY, readStoredToken, isRemembered } from "./useWorker.js";
 import { useToasts } from "./useToasts.js";
-import { useMediaQuery, useNow } from "./lib/hooks.js";
+import { tabKeyDown, useMediaQuery, useNow } from "./lib/hooks.js";
 import { feedAtBottom, feedScrollIntent } from "./lib/feed.js";
 import {
   cardState,
@@ -68,17 +69,17 @@ const TARGET_BATCH_MOBILE = 8;
 const TARGET_BATCH_DESKTOP = 12;
 
 function ChartSkeleton({ className = "h-[112px]" }) {
-  return <div className={`border-2 border-line bg-night-950/60 ${className}`} aria-hidden="true" />;
+  return <div className={`skeleton border-2 border-line ${className}`} aria-hidden="true" />;
 }
 
 function PanelSkeleton({ height = 300 }) {
   return (
     <section className="panel" aria-hidden="true">
       <div className="panel-head">
-        <span className="block h-4 w-40 bg-line/60" />
+        <span className="skeleton block h-4 w-40" />
       </div>
       <div className="p-4">
-        <div className="border-2 border-line bg-night-950/60" style={{ height }} />
+        <div className="skeleton border-2 border-line" style={{ height }} />
       </div>
     </section>
   );
@@ -193,7 +194,7 @@ function BootScreen({ onLogin, busy, error }) {
   ];
 
   return (
-    <section className="relative flex min-h-dvh items-center justify-center overflow-hidden px-4 py-10 sm:px-6">
+    <section className="boot-shell relative flex min-h-dvh items-center justify-center overflow-hidden px-4 sm:px-6">
       <div className="pointer-events-none absolute inset-0" aria-hidden="true">
         <span className="sparkle absolute left-[7%] top-[16%] h-2 w-2 bg-gold" />
         <span className="sparkle absolute left-[16%] top-[70%] h-1.5 w-1.5 bg-pink [animation-delay:0.7s]" />
@@ -201,7 +202,7 @@ function BootScreen({ onLogin, busy, error }) {
         <span className="sparkle absolute right-[24%] bottom-[18%] h-2 w-2 bg-violet [animation-delay:0.4s]" />
         <span className="absolute left-[46%] top-[10%] h-1 w-1 bg-ink/40" />
       </div>
-      <div className="relative grid w-full max-w-6xl items-center gap-10 lg:grid-cols-[1.08fr_0.92fr] lg:gap-14">
+      <div className="boot-grid relative grid w-full max-w-6xl items-center lg:grid-cols-[1.08fr_0.92fr] lg:gap-14">
         <div className="boot-intro">
           <p className="inline-flex items-center gap-2 border-2 border-line bg-night-900 px-2 py-1 font-mono text-[12px] font-bold uppercase tracking-[0.08em] text-gold shadow-[3px_3px_0_#05030f]">
             <span className="led led-pulse bg-gold" /> Player 1 · TURU.RC
@@ -214,7 +215,7 @@ function BootScreen({ onLogin, busy, error }) {
               MARKET<br /><span className="accent">SNIPER</span>
             </h1>
           </div>
-          <p className="mt-4 max-w-md text-[14px] leading-relaxed text-muted sm:mt-6">
+          <p className="boot-lede mt-4 max-w-md text-copy text-muted sm:mt-6">
             A headless Rollercoin marketplace sniper. It watches the wire, prices your targets, and buys the dip while you sleep.
           </p>
           <ul className="mt-6 hidden space-y-2 sm:block">
@@ -246,6 +247,9 @@ function BootScreen({ onLogin, busy, error }) {
               <span>Worker URL</span>
               <input
                 className="input"
+                type="url"
+                inputMode="url"
+                autoComplete="url"
                 value={url}
                 onChange={(event) => setUrl(event.target.value)}
                 placeholder="http://127.0.0.1:8787"
@@ -262,6 +266,8 @@ function BootScreen({ onLogin, busy, error }) {
                   value={token}
                   onChange={(event) => setToken(event.target.value)}
                   placeholder="Paste access key"
+                  autoComplete="off"
+                  autoCapitalize="none"
                   spellCheck="false"
                   required
                 />
@@ -304,7 +310,7 @@ function BootScreen({ onLogin, busy, error }) {
           </div>
         </div>
 
-        <p className="text-center text-[13px] text-faint lg:col-span-2">
+        <p className="text-center text-meta text-faint lg:col-span-2">
           {remember
             ? "First run? The access key is printed in the worker terminal. Lock the deck to forget it."
             : "First run? The access key is printed in the worker terminal. It is dropped when this tab closes."}
@@ -348,14 +354,14 @@ function Header({ snapshot, status, latency, soundOn, onSound, onLogout, onSetMo
 
   return (
     <header className="deck-enter sticky top-0 z-40 border-b-2 border-line bg-night-950 pt-[env(safe-area-inset-top)]">
-      <div className="mx-auto flex min-h-14 w-full max-w-[1600px] items-center gap-3 px-3 sm:px-4 lg:px-6">
+      <div className="mx-auto flex min-h-14 w-full max-w-[1600px] items-center gap-3 px-3 max-[359px]:gap-2 max-[359px]:px-2 sm:px-4 lg:px-6">
         <div className="flex min-w-0 items-center gap-2.5">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center border-2 border-[#05030f] bg-gold text-[#1a1000] shadow-[0_0_0_2px_var(--color-line-strong),3px_3px_0_#05030f] max-[359px]:hidden">
             <svg viewBox="0 0 16 16" className="h-5 w-5" aria-hidden="true"><use href="#i-coin" /></svg>
           </div>
           <div className="min-w-0">
             <h1 className="flex items-center gap-2 leading-none">
-              <span className="brand-wordmark text-[24px] leading-none text-ink">TURU.RC</span>
+              <span className="brand-wordmark text-[24px] leading-none text-ink max-[359px]:text-[20px]">TURU.RC</span>
               <span className="hidden border border-pink/60 bg-pink/15 px-1 py-0.5 font-mono text-[12px] font-bold text-pink sm:inline">1P</span>
               <span className="hidden truncate font-mono text-[12px] font-bold uppercase tracking-[0.08em] text-pink sm:inline">Market Sniper</span>
             </h1>
@@ -376,6 +382,7 @@ function Header({ snapshot, status, latency, soundOn, onSound, onLogout, onSetMo
             className="hidden items-center gap-1 font-mono text-[12px] text-info hover:text-ink md:inline-flex"
             type="button"
             title="Open the monitor window — order benchmark, latency and system"
+            aria-label={`Open monitor window, current upstream latency ${latency != null ? `${latency} milliseconds` : "unknown"}`}
             onClick={onMonitor}
           >
             <Icon name="i-wifi" className="h-3 w-3" />
@@ -416,7 +423,7 @@ function Header({ snapshot, status, latency, soundOn, onSound, onLogout, onSetMo
 
 function Ticker({ configs, mock }) {
   return (
-    <div className="deck-enter deck-enter-1 hidden border-b-2 border-line bg-night-900/70 sm:block" aria-label="Market wire">
+    <section className="deck-enter deck-enter-1 hidden border-b-2 border-line bg-night-900/70 sm:block" aria-label="Market wire">
       <div className="mx-auto flex h-9 w-full max-w-[1600px] items-center gap-3 px-3 sm:px-4 lg:px-6">
         <div className="flex shrink-0 items-center gap-1.5 font-mono text-[12px] font-bold uppercase tracking-[0.08em] text-gold">
           <span className="led bg-gold" />Market wire
@@ -451,7 +458,7 @@ function Ticker({ configs, mock }) {
           {mock ? "Mock" : "Live"}
         </div>
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -466,6 +473,17 @@ function Hud({ snapshot, epm, marketEvents }) {
   const session = sessionSummary(snapshot.session, snapshot.settings, snapshot.worker, now);
   const profit = Number(stats.profitRlt) || 0;
 
+  // A confirmed fill is the headline event on this surface: pulse the profit
+  // figure when it rises, and stay still for every other telemetry tick.
+  const lastProfit = useRef(profit);
+  const [profitPulse, setProfitPulse] = useState(0);
+  useEffect(() => {
+    if (profit === lastProfit.current) return;
+    const gained = profit > lastProfit.current;
+    lastProfit.current = profit;
+    if (gained) setProfitPulse((value) => value + 1);
+  }, [profit]);
+
   return (
     <section
       className="grid grid-cols-2 gap-[3px] overflow-hidden border-2 border-line bg-line p-[3px] sm:grid-cols-3 xl:grid-cols-7"
@@ -476,7 +494,7 @@ function Hud({ snapshot, epm, marketEvents }) {
           <span className="label">Profit</span>
           <Icon name="i-coin" className="stat-icon h-4 w-4 max-sm:hidden" />
         </div>
-        <div className={`stat-hero mt-1 text-[26px] leading-none [text-shadow:2px_2px_0_#05030f] sm:text-[36px] ${profit > 0 ? "text-gold" : "text-ink"}`} id="stat-profit">
+        <div key={profitPulse} className={`stat-hero mt-1 text-[26px] leading-none [text-shadow:2px_2px_0_#05030f] sm:text-[36px] ${profit > 0 ? "text-gold" : "text-ink"}${profitPulse ? " stat-pulse" : ""}`} id="stat-profit">
           {formatRlt(stats.profitRlt)}
         </div>
         <div className="mt-1.5 font-mono text-[11px] uppercase tracking-[0.08em] text-faint sm:mt-2 sm:text-[12px]" id="stat-profit-sub">
@@ -488,7 +506,7 @@ function Hud({ snapshot, epm, marketEvents }) {
           <span className="label">Loot secured</span>
           <Icon name="i-target" className="stat-icon h-4 w-4 max-sm:hidden" />
         </div>
-        <div className="mt-1.5 font-mono text-[20px] font-bold leading-none tabular-nums text-signal" id="stat-filled">
+        <div className="mt-1.5 font-mono text-[20px] font-bold leading-none tabular-nums text-ink" id="stat-filled">
           {formatInt(stats.filled)}
         </div>
         <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
@@ -500,7 +518,7 @@ function Hud({ snapshot, epm, marketEvents }) {
           <span className="label">Targets</span>
           <Icon name="i-bolt" className="stat-icon h-4 w-4 max-sm:hidden" />
         </div>
-        <div className="mt-1.5 font-mono text-[20px] font-bold leading-none tabular-nums text-info" id="stat-targets">
+        <div className="mt-1.5 font-mono text-[20px] font-bold leading-none tabular-nums text-ink" id="stat-targets">
           {formatInt(configs.length)}
         </div>
         <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
@@ -516,7 +534,7 @@ function Hud({ snapshot, epm, marketEvents }) {
           <span className="label">Market events</span>
           <Icon name="i-wifi" className="stat-icon h-4 w-4 max-sm:hidden" />
         </div>
-        <div className="mt-1.5 font-mono text-[20px] font-bold leading-none tabular-nums text-pink" id="stat-events">
+        <div className="mt-1.5 font-mono text-[20px] font-bold leading-none tabular-nums text-ink" id="stat-events">
           {formatInt(marketEvents)}
         </div>
         <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
@@ -528,7 +546,7 @@ function Hud({ snapshot, epm, marketEvents }) {
           <span className="label">Session</span>
           <Icon name="i-link" className="stat-icon h-4 w-4 max-sm:hidden" />
         </div>
-        <div className={`mt-1.5 font-mono text-[14px] font-bold leading-none ${session.cls === "bg-danger" ? "text-danger" : "text-violet"}`} id="stat-session">
+        <div className={`mt-1.5 font-mono text-[14px] font-bold leading-none ${session.cls === "bg-danger" ? "text-danger" : "text-ink"}`} id="stat-session">
           {session.value}
         </div>
         <div className="meter meter-thin mt-2.5">
@@ -616,6 +634,7 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
       data-state={state}
       data-type={itemType}
       data-item-id={config.itemId}
+      data-expanded={expanded ? "true" : undefined}
       aria-label={`${label}, ${stateLabel(state)}`}
     >
       <span
@@ -642,6 +661,7 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
               className="tap-pad -my-1 inline-flex min-h-6 items-center gap-1 whitespace-nowrap py-1 font-mono text-[12px] text-muted transition-colors hover:text-gold max-sm:min-h-9"
               type="button"
               title="Copy item ID"
+              aria-label={`Copy item id ${config.itemId}`}
               onClick={async () => {
                 const ok = await copyText(config.itemId);
                 notify(ok ? "info" : "error", ok ? "ITEM ID COPIED" : "COPY FAILED", config.itemId);
@@ -666,11 +686,11 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
         </div>
         <div className="flex shrink-0 flex-col items-end gap-2">
           <span key={statePulse} className={`state-chip${statePulse ? " state-chip-pulse" : ""}`} data-state={state}>{stateLabel(state)}</span>
-          <label className="relative -m-2 inline-flex cursor-pointer items-center p-2" title="Arm or disarm this target">
+          <label className="arm-toggle relative -m-2 inline-flex cursor-pointer items-center p-2" title="Arm or disarm this target">
             <input
               type="checkbox"
               className="peer sr-only"
-              aria-label="Arm target"
+              aria-label={`Arm ${label}`}
               checked={Boolean(config.active)}
               disabled={toggling}
               onChange={async (event) => {
@@ -688,7 +708,7 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
       </div>
 
       {compact && !expanded ? (
-        <div className="grid grid-cols-3 gap-[2px] border-2 border-line bg-line">
+        <div className="grid grid-cols-3 gap-[2px] border-2 border-line bg-line max-[359px]:grid-cols-2">
           <div className="bg-night-900/70 px-2 py-1.5">
             <span className="label">Market</span>
             <p className={`mt-0.5 font-mono text-[15px] font-bold leading-none tabular-nums ${hot ? "text-gold" : "text-info"}`}>
@@ -701,7 +721,7 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
               {fixedPrice(targetPrice)}
             </p>
           </div>
-          <div className="bg-night-900/70 px-2 py-1.5">
+          <div className="bg-night-900/70 px-2 py-1.5 max-[359px]:col-span-2">
             <span className="label">Profit</span>
             <p className={`mt-0.5 font-mono text-[15px] font-bold leading-none tabular-nums ${profitClass(productProfit)}`}>
               {formatSignedRlt(productProfit)}
@@ -718,13 +738,13 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
           aria-label={expanded ? `Hide details for ${label}` : `Show details for ${label}`}
           onClick={() => setExpanded((value) => !value)}
         >
-          <span>{expanded ? "Hide details" : "Price chart, range and fills"}</span>
-          <Icon name="i-chevron" className={`h-3 w-3 transition-transform${expanded ? " rotate-90" : ""}`} />
+          <span>{expanded ? "Hide details" : "Price chart & fills"}</span>
+          <Icon name="i-chevron" className={`h-3 w-3 chevron${expanded ? " rotate-90" : ""}`} />
         </button>
       ) : null}
 
       {!compact || expanded ? (
-        <>
+        <div className="target-details">
       <TrendChip trend={runtime.trend} />
 
       <div className="grid grid-cols-2 gap-[2px] border-2 border-line bg-line">
@@ -749,10 +769,10 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
             <strong className={`font-mono text-[18px] font-bold leading-none tabular-nums min-[360px]:text-[20px] ${hot ? "text-gold" : "text-info"}`}>
               {Number.isFinite(runtime.lastPrice) ? fixedPrice(runtime.lastPrice) : "—"}
             </strong>
-            <span className="font-mono text-[12px] text-faint">RLT</span>
+            <span className="font-mono text-label text-faint">RLT</span>
             {runtime.stale && Number.isFinite(runtime.seenAt) ? (
               <span
-                className="ml-auto font-mono text-[10px] uppercase tracking-[0.08em] text-faint"
+                className="ml-auto font-mono text-micro uppercase tracking-[0.08em] text-faint"
                 title={`Cached snapshot from ${relTime(runtime.seenAt)} — waiting for a live market frame`}
               >
                 cached
@@ -876,7 +896,7 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
           </button>
         </div>
       </div>
-        </>
+        </div>
       ) : null}
     </article>
   );
@@ -926,7 +946,7 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, statusFilter,
   return (
     <section className="panel min-w-0 max-lg:order-1 lg:col-start-1 lg:row-start-3" data-accent="cyan">
       <div className="panel-head flex-wrap gap-y-2">
-        <h2 className="panel-title">
+        <h2 id="target-fleet-title" tabIndex={-1} className="panel-title">
           <Icon name="i-target" className="h-4 w-4 text-info" />
           Target fleet
           <span className="border-2 border-[#05030f] bg-info px-1.5 py-0.5 font-mono text-[12px] font-bold text-[#001a24]">
@@ -939,8 +959,13 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, statusFilter,
             <input
               className="input input-sm pl-8"
               type="search"
+              enterKeyHint="search"
+              autoComplete="off"
               value={search}
               onChange={(event) => onSearch(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") onSearch("");
+              }}
               placeholder="Search"
               aria-label="Search targets"
             />
@@ -1023,8 +1048,8 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, statusFilter,
             <Icon name="i-target" className="h-7 w-7" />
           </span>
           <div>
-            <p className="font-mono text-[13px] font-semibold uppercase tracking-[0.14em] text-ink-dim">No targets deployed</p>
-            <p className="mx-auto mt-1 max-w-sm text-[13px] leading-relaxed text-faint">
+            <p className="font-mono text-body font-semibold uppercase tracking-[0.14em] text-ink-dim">No targets deployed</p>
+            <p className="mx-auto mt-1 max-w-sm text-body leading-relaxed text-faint">
               Add an item ID, set your price ceiling, and the worker will hunt the market for you.
             </p>
           </div>
@@ -1036,8 +1061,8 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, statusFilter,
         <div className="grid grid-cols-1 gap-4 p-4 xl:grid-cols-2">
           {filtered.length === 0 ? (
             <div className="col-span-full flex flex-col items-center gap-2 py-10 text-center">
-              <p className="font-mono text-[13px] font-semibold uppercase tracking-[0.14em] text-ink-dim">{emptyTitle}</p>
-              <p className="max-w-sm text-[13px] leading-relaxed text-faint">{emptyNote}</p>
+              <p className="font-mono text-body font-semibold uppercase tracking-[0.14em] text-ink-dim">{emptyTitle}</p>
+              <p className="max-w-sm text-body leading-relaxed text-faint">{emptyNote}</p>
             </div>
           ) : (
             visible.map((config) => (
@@ -1058,7 +1083,7 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, statusFilter,
       )}
       {filtered.length > 0 ? (
         <div className="flex flex-wrap items-center justify-between gap-2 border-t-2 border-line bg-night-900/70 px-4 py-3">
-          <span className="font-mono text-[12px] font-semibold uppercase tracking-[0.08em] text-ink-dim">
+          <span role="status" className="font-mono text-[12px] font-semibold uppercase tracking-[0.08em] text-ink-dim">
             Showing {formatInt(visible.length)} of {formatInt(filtered.length)}
           </span>
           {hidden > 0 ? (
@@ -1117,8 +1142,9 @@ function ReportPanel({ report, notify }) {
         "product",
         "item_id",
         "fills",
-        "failed",
-        "qty",
+        "filled_qty",
+        "missed",
+        "missed_qty",
         "spent_rlt",
         "avg_buy_rlt",
         "profit_rlt",
@@ -1131,8 +1157,9 @@ function ReportPanel({ report, notify }) {
         item.label || item.itemId,
         item.itemId,
         item.fills,
-        item.failed,
         item.qty,
+        item.failed,
+        item.failedQty,
         item.spentRlt,
         item.avgBuy,
         item.profitRlt,
@@ -1172,8 +1199,8 @@ function ReportPanel({ report, notify }) {
       {items.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-2 px-6 py-12 text-center">
           <Icon name="i-coin" className="h-6 w-6 text-faint" />
-          <p className="font-mono text-[13px] uppercase tracking-[0.14em] text-ink-dim">No product data yet</p>
-          <p className="text-[13px] text-faint">Filled and missed orders are aggregated here, per product, all time.</p>
+          <p className="font-mono text-body uppercase tracking-[0.14em] text-ink-dim">No product data yet</p>
+          <p className="text-body text-faint">Filled and missed orders are aggregated here, per product, all time.</p>
         </div>
       ) : (
         <>
@@ -1185,40 +1212,51 @@ function ReportPanel({ report, notify }) {
               </p>
               <p className="mt-1.5 font-mono text-[13px] uppercase tracking-[0.1em] text-faint">RLT · all products</p>
             </div>
-            <div className="stat-tile" data-accent="cyan">
+            <div className="stat-tile">
               <span className="label">Spend</span>
-              <p className="mt-1 font-mono text-[20px] font-semibold leading-none tabular-nums text-info">
+              <p className="mt-1 font-mono text-[20px] font-semibold leading-none tabular-nums text-ink">
                 {formatRlt(totals?.spentRlt ?? 0)}
               </p>
               <p className="mt-1.5 font-mono text-[13px] uppercase tracking-[0.1em] text-faint">
                 RLT · {formatInt(totals?.qty ?? 0)} items
               </p>
             </div>
-            <div className="stat-tile" data-accent="lime">
+            <div className="stat-tile">
               <span className="label">Margin</span>
               <p className={`mt-1 font-mono text-[20px] font-semibold leading-none tabular-nums ${profitClass(totals?.marginPct)}`}>
                 {percentText(totals?.marginPct)}
               </p>
               <p className="mt-1.5 font-mono text-[13px] uppercase tracking-[0.1em] text-faint">Profit ÷ spend</p>
             </div>
-            <div className="stat-tile" data-accent="pink">
+            <div className="stat-tile">
               <span className="label">Fills / missed</span>
-              <p className="mt-1 font-mono text-[20px] font-semibold leading-none tabular-nums text-pink">
+              <p className="mt-1 font-mono text-[20px] font-semibold leading-none tabular-nums text-ink">
                 {formatInt(totals?.fills ?? 0)}
                 <span className="text-faint"> / {formatInt(totals?.failed ?? 0)}</span>
               </p>
-              <p className="mt-1.5 font-mono text-[13px] uppercase tracking-[0.1em] text-faint">Confirmed / missed</p>
+              <p className="mt-1.5 font-mono text-[13px] uppercase tracking-[0.1em] text-faint">
+                {formatInt(totals?.qty ?? 0)} qty bought / {formatInt(totals?.failedQty ?? 0)} qty missed
+              </p>
             </div>
           </div>
 
-          <ul className="report-scroll divide-y divide-line/40 xl:hidden">
+          <ul
+            className="report-scroll divide-y divide-line/40 xl:hidden"
+            tabIndex={0}
+            aria-label="Profit by product, scrollable"
+          >
             {items.map((item) => (
               <li className="px-4 py-3" key={item.itemId || item.label}>
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="truncate text-[13px] text-ink">{item.label || shortId(item.itemId)}</p>
-                    <p className="mt-0.5 font-mono text-[13px] uppercase tracking-[0.08em] text-faint">
-                      {formatInt(item.fills)} filled · {formatInt(item.failed)} missed · {formatInt(item.qty)} qty
+                    <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[13px] uppercase tracking-[0.08em] text-faint">
+                      <span className="whitespace-nowrap">
+                        {formatInt(item.fills)} fills / {formatInt(item.qty)} qty
+                      </span>
+                      <span className="whitespace-nowrap">
+                        {formatInt(item.failed)} missed / {formatInt(item.failedQty)} qty
+                      </span>
                     </p>
                   </div>
                   <div className="shrink-0 text-right">
@@ -1240,19 +1278,24 @@ function ReportPanel({ report, notify }) {
             ))}
           </ul>
 
-          <div className="report-scroll hidden min-w-0 xl:block">
-            <table className="w-full min-w-[880px] border-collapse text-left font-mono text-[13px] tabular-nums">
+          <div
+            className="report-scroll hidden min-w-0 xl:block"
+            tabIndex={0}
+            role="region"
+            aria-label="Profit by product, scrollable"
+          >
+            <table className="w-full min-w-[820px] border-collapse text-left font-mono text-[13px] tabular-nums">
               <thead className="sticky top-0 z-10 bg-night-900">
                 <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
                   <th scope="col" className="px-4 py-2 font-medium">Product</th>
-                  <th scope="col" className="px-3 py-2 font-medium">Fills</th>
-                  <th scope="col" className="px-3 py-2 font-medium">Qty</th>
+                  <th scope="col" className="px-3 py-2 font-medium" title="Filled orders / units actually obtained">Fills/qty</th>
+                  <th scope="col" className="px-3 py-2 font-medium" title="Missed orders / units that were asked for and never obtained">Missed/qty</th>
                   <th scope="col" className="px-3 py-2 font-medium">Spend</th>
                   <th scope="col" className="px-3 py-2 font-medium">Avg buy</th>
                   <th scope="col" className="px-3 py-2 font-medium">Profit</th>
                   <th scope="col" className="px-3 py-2 font-medium">Margin</th>
                   <th scope="col" className="px-3 py-2 font-medium">Success</th>
-                  <th scope="col" className="px-4 py-2 font-medium">Last</th>
+                  <th scope="col" className="px-4 py-2 font-medium max-[1439px]:hidden">Last</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line/40">
@@ -1265,15 +1308,18 @@ function ReportPanel({ report, notify }) {
                     <td className="max-w-[240px] truncate px-4 py-2 text-ink-dim">{item.label || shortId(item.itemId)}</td>
                     <td className="px-3 py-2">
                       <span className="text-signal">{formatInt(item.fills)}</span>
-                      <span className="text-faint"> / {formatInt(item.failed)}</span>
+                      <span className="text-faint"> / {formatInt(item.qty)}</span>
                     </td>
-                    <td className="px-3 py-2 text-ink-dim">{formatInt(item.qty)}</td>
+                    <td className="px-3 py-2">
+                      <span className="text-danger">{formatInt(item.failed)}</span>
+                      <span className="text-faint"> / {formatInt(item.failedQty)}</span>
+                    </td>
                     <td className="px-3 py-2 text-ink-dim">{formatRlt(item.spentRlt)}</td>
                     <td className="px-3 py-2 text-ink-dim">{fixedPrice(item.avgBuy)}</td>
                     <td className={`px-3 py-2 ${profitClass(item.profitRlt)}`}>{formatSignedRlt(item.profitRlt)}</td>
                     <td className={`px-3 py-2 ${profitClass(item.marginPct)}`}>{percentText(item.marginPct)}</td>
                     <td className="px-3 py-2 text-muted">{item.successPct == null ? "—" : `${formatInt(item.successPct)}%`}</td>
-                    <td className="whitespace-nowrap px-4 py-2 text-faint">
+                    <td className="whitespace-nowrap px-4 py-2 text-faint max-[1439px]:hidden">
                       <span title={item.lastAt ? new Date(item.lastAt).toLocaleString() : undefined}>
                         {item.lastAt ? relTime(item.lastAt) : "—"}
                       </span>
@@ -1286,9 +1332,12 @@ function ReportPanel({ report, notify }) {
                   <td className="px-4 py-2.5 uppercase tracking-[0.12em] text-faint">Total</td>
                   <td className="px-3 py-2.5 text-ink-dim">
                     {formatInt(totals?.fills ?? 0)}
-                    <span className="text-faint"> / {formatInt(totals?.failed ?? 0)}</span>
+                    <span className="text-faint"> / {formatInt(totals?.qty ?? 0)}</span>
                   </td>
-                  <td className="px-3 py-2.5 text-ink-dim">{formatInt(totals?.qty ?? 0)}</td>
+                  <td className="px-3 py-2.5 text-ink-dim">
+                    {formatInt(totals?.failed ?? 0)}
+                    <span className="text-faint"> / {formatInt(totals?.failedQty ?? 0)}</span>
+                  </td>
                   <td className="px-3 py-2.5 text-ink-dim">{formatRlt(totals?.spentRlt ?? 0)}</td>
                   <td className="px-3 py-2.5 text-faint">—</td>
                   <td className={`px-3 py-2.5 font-semibold ${profitClass(totals?.profitRlt)}`}>
@@ -1296,7 +1345,7 @@ function ReportPanel({ report, notify }) {
                   </td>
                   <td className={`px-3 py-2.5 ${profitClass(totals?.marginPct)}`}>{percentText(totals?.marginPct)}</td>
                   <td className="px-3 py-2.5 text-faint">—</td>
-                  <td className="px-4 py-2.5 text-faint">—</td>
+                  <td className="px-4 py-2.5 text-faint max-[1439px]:hidden">—</td>
                 </tr>
               </tfoot>
             </table>
@@ -1326,6 +1375,9 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [detail, setDetail] = useState(null);
+  // Retrying a failed filtered query needs a new dependency: the search effect
+  // otherwise has no reason to run again and the error state is a dead end.
+  const [reloadToken, setReloadToken] = useState(0);
   const idsRef = useRef(new Set());
   // The mobile list and the desktop table are the same data: render only the
   // one that fits, instead of mounting both and hiding one with CSS.
@@ -1461,7 +1513,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
     return () => {
       cancelled = true;
     };
-  }, [filtered, query, statusFilter, profitFilter, request]);
+  }, [filtered, query, statusFilter, profitFilter, reloadToken, request]);
 
   const loadOlder = useCallback(async () => {
     if (loading || !hasMore) return;
@@ -1564,6 +1616,8 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
             <input
               className="input input-sm pl-8"
               type="search"
+              enterKeyHint="search"
+              autoComplete="off"
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
@@ -1603,10 +1657,10 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
       {entries.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
           <Icon name="i-coin" className="h-6 w-6 text-faint" />
-          <p className="font-mono text-[13px] uppercase tracking-[0.14em] text-ink-dim">
+          <p className="font-mono text-body uppercase tracking-[0.14em] text-ink-dim">
             {loading ? "Searching…" : emptyTitle}
           </p>
-          <p className="text-[13px] text-faint">{loading ? "Reading the permanent loot log." : emptyHint}</p>
+          <p className="text-body text-faint">{loading ? "Reading the permanent loot log." : emptyHint}</p>
         </div>
       ) : (
         <>
@@ -1614,7 +1668,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
           <ul className="min-h-0 flex-1 divide-y divide-line/40 overflow-y-auto overscroll-contain">
             {entries.map((entry) => (
               <li
-                className={`flex cursor-pointer items-start justify-between gap-3 px-4 py-2.5 transition-colors hover:bg-night-850/60${isRecent(entry.at, 6000) ? " loot-entry" : ""}`}
+                className={`loot-row flex cursor-pointer items-start justify-between gap-3 px-4 py-2.5 transition-colors hover:bg-night-850/60${isRecent(entry.at, 6000) ? " loot-entry" : ""}`}
                 key={entry.id || `${entry.orderId}-${entry.at}`}
                 data-status={entry.status}
                 title={`${entry.note || (entry.orderId ? `order ${entry.orderId}` : "loot entry")} · click for latency details`}
@@ -1661,7 +1715,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
           )}
           {wide ? (
           <div className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain">
-            <table className="w-full min-w-[860px] border-collapse text-left font-mono text-[13px] tabular-nums">
+            <table className="w-full min-w-[800px] border-collapse text-left font-mono text-[13px] tabular-nums">
               <thead className="sticky top-0 z-10 bg-night-900">
                 <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
                   <th scope="col" className="px-4 py-2 font-medium">Time</th>
@@ -1673,15 +1727,15 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
                   <th scope="col" className="px-3 py-2 font-medium">Total</th>
                   <th scope="col" className="px-3 py-2 font-medium">Target</th>
                   <th scope="col" className="px-3 py-2 font-medium">Profit</th>
-                  <th scope="col" className="px-3 py-2 font-medium">Latency</th>
+                  <th scope="col" className="px-3 py-2 font-medium max-[1439px]:hidden">Latency</th>
                   <th scope="col" className="px-3 py-2 font-medium">Status</th>
-                  <th scope="col" className="px-4 py-2 font-medium">Message</th>
+                  <th scope="col" className="px-4 py-2 font-medium max-2xl:hidden">Message</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line/40">
                 {entries.map((entry) => (
                   <tr
-                    className={`cursor-pointer transition-colors hover:bg-night-850/60${isRecent(entry.at, 6000) ? " loot-entry" : ""}`}
+                    className={`loot-row cursor-pointer transition-colors hover:bg-night-850/60${isRecent(entry.at, 6000) ? " loot-entry" : ""}`}
                     key={entry.id || `${entry.orderId}-${entry.at}`}
                     data-status={entry.status}
                     title={`${entry.note || (entry.orderId ? `order ${entry.orderId}` : "loot entry")} · click for latency details`}
@@ -1722,14 +1776,14 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
                     <td className={`px-3 py-2 ${entry.profitRlt > 0 ? "text-gold" : entry.profitRlt < 0 ? "text-danger" : "text-ink-dim"}`}>
                       {entry.status === "failed" ? "0.000000" : formatSignedRlt(entry.profitRlt)}
                     </td>
-                    <td className="px-3 py-2 text-muted">{entry.latencyMs != null ? `${Math.round(entry.latencyMs)}ms` : "—"}</td>
+                    <td className="px-3 py-2 text-muted max-[1439px]:hidden">{entry.latencyMs != null ? `${Math.round(entry.latencyMs)}ms` : "—"}</td>
                     <td className="px-3 py-2">
                       <span className={`status-pill${entry.status === "failed" ? " is-failed" : ""}`}>
                         {entry.status === "failed" ? "Failed" : "Filled"}
                       </span>
                     </td>
                     <td
-                      className="max-w-[220px] truncate px-4 py-2 text-muted"
+                      className="max-w-[220px] truncate px-4 py-2 text-muted max-2xl:hidden"
                       title={entry.status === "failed" ? entry.message || entry.note || undefined : undefined}
                     >
                       {entry.status === "failed" ? entry.message || entry.note || "failed" : "-"}
@@ -1743,7 +1797,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
         </>
       )}
       <div className="flex shrink-0 items-center justify-between gap-2 border-t-2 border-line bg-night-900/70 px-3 py-3">
-        <span className="min-w-0 truncate font-mono text-[12px] font-semibold uppercase tracking-[0.08em] text-ink-dim">
+        <span role="status" className="min-w-0 truncate font-mono text-[12px] font-semibold uppercase tracking-[0.08em] text-ink-dim">
           {filtered
             ? `${formatInt(shown)} match${shown === 1 ? "" : "es"}`
             : trimmed
@@ -1752,9 +1806,18 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
         </span>
         <div className="flex shrink-0 items-center gap-2">
           {error ? (
-            <span className="max-w-[220px] truncate text-[12px] text-danger" title={error}>
-              {error}
-            </span>
+            <>
+              <span className="max-w-[220px] truncate text-[12px] text-danger" title={error}>
+                {error}
+              </span>
+              <button
+                className="btn btn-ghost btn-sm"
+                type="button"
+                onClick={() => setReloadToken((value) => value + 1)}
+              >
+                Retry
+              </button>
+            </>
           ) : null}
           {hasMore ? (
             <button
@@ -1778,7 +1841,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
   );
 }
 
-function FeedPanel({ logs, onClear, notify }) {
+function FeedPanel({ logs, onClear, notify, epm }) {
   const [paused, setPaused] = useState(false);
   const [tailing, setTailing] = useState(true);
   const [frozen, setFrozen] = useState([]);
@@ -1912,22 +1975,31 @@ function FeedPanel({ logs, onClear, notify }) {
         </div>
         <div className="flex items-center gap-1">
           <button
-            className={`btn btn-sm max-sm:w-10 max-sm:px-0 ${isTailing ? "btn-signal" : ""}`}
+            className={`btn btn-sm max-sm:w-11 max-sm:px-0 ${isTailing ? "btn-signal" : ""}`}
             type="button"
             title={isTailing ? "Stop tailing and hold this line" : "Tail newest log lines"}
+            aria-label={isTailing ? "Stop tailing the event log" : "Tail newest event log lines"}
             aria-pressed={isTailing}
             onClick={toggleTail}
           >
             <Icon name="i-arrow-down" className="h-3 w-3" />
             <span className="hidden sm:inline">{isTailing ? "Tailing" : "Tail logs"}</span>
           </button>
-          <button className="icon-btn h-9 w-9 sm:h-8 sm:w-8" type="button" title={paused ? "Resume feed" : "Pause feed"} aria-pressed={paused} onClick={togglePause}>
+          <button
+            className="icon-btn h-9 w-9 sm:h-8 sm:w-8"
+            type="button"
+            title={paused ? "Resume feed" : "Pause feed"}
+            aria-label={paused ? "Resume event feed" : "Pause event feed"}
+            aria-pressed={paused}
+            onClick={togglePause}
+          >
             <Icon name={paused ? "i-play" : "i-pause"} className="h-3.5 w-3.5" />
           </button>
           <button
             className="icon-btn h-9 w-9 sm:h-8 sm:w-8"
             type="button"
             title="Clear feed"
+            aria-label="Clear event feed"
             onClick={() => {
               setPaused(false);
               setTailing(true);
@@ -1969,9 +2041,16 @@ function FeedPanel({ logs, onClear, notify }) {
         <span className={`inline-flex items-center gap-1.5 ${paused ? "text-gold" : !tailing ? "text-info" : "text-signal"}`}>
           <span className="led led-sm" /> {paused ? "Paused" : tailing ? "Tailing" : "Tail paused"}
         </span>
-        <span className="ml-auto flex items-center gap-2">
+        <span className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
           {paused && unread > 0 ? <span className="text-gold">{formatInt(unread)} buffered</span> : null}
           {!paused && !tailing ? <span className="text-info">Scroll held</span> : null}
+          <span
+            className="inline-flex items-center gap-1.5 whitespace-nowrap bg-info/10 px-1.5 font-semibold tabular-nums text-info"
+            id="feed-epm"
+            title="Marketplace listing/price updates and fulfillment results per minute"
+          >
+            {epm.toFixed(1)} events/min
+          </span>
           <span>{formatInt(shown.length)} lines</span>
         </span>
       </div>
@@ -2067,7 +2146,7 @@ function LinkPanel({ snapshot, worker, notify, onEditSession, onBridge, onClearS
           <div className="meter mt-2">
             <i id="token-meter" className={meterClass} style={{ "--meter-value": `${meterWidth}%` }} />
           </div>
-          <p className="mt-2 text-[13px] leading-snug text-faint">
+          <p className="mt-2 text-meta leading-snug text-faint">
             {!session.hasAccessToken
               ? "No Rollercoin session linked. Paste a token or use the bridge."
               : session.lastError
@@ -2114,7 +2193,7 @@ function LinkPanel({ snapshot, worker, notify, onEditSession, onBridge, onClearS
           <input type="checkbox" className="sr-only" checked={Boolean(settings.autoRefresh)} onChange={(event) => toggleAuto(event.target.checked)} />
           <span className="switch" aria-hidden="true" />
         </label>
-        <p className="flex items-start gap-1.5 text-[13px] leading-snug text-faint">
+        <p className="flex items-start gap-1.5 text-body leading-snug text-faint">
           <Icon name="i-alert" className="mt-0.5 h-3 w-3 text-warn/80" />
           <span>Tokens are stored in <code className="text-ink-dim">data/rollercoin.db</code> with owner-only permissions.</span>
         </p>
@@ -2247,7 +2326,7 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
           <h3 className="flex items-center gap-1.5 font-mono text-[12px] font-semibold uppercase tracking-[0.14em] text-gold">
             <Icon name="i-database" className="h-3.5 w-3.5" /> Backup &amp; migrate
           </h3>
-          <p className="text-[13px] leading-snug text-muted">
+          <p className="text-body leading-relaxed text-muted">
             Export targets, settings, counters and the whole loot log to one portable file — or restore it
             onto another worker.
           </p>
@@ -2260,7 +2339,7 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
           <h3 className="flex items-center gap-1.5 font-mono text-[12px] font-semibold uppercase tracking-[0.14em] text-danger">
             <Icon name="i-alert" className="h-3.5 w-3.5" /> Danger zone
           </h3>
-          <p className="text-[13px] leading-snug text-muted">
+          <p className="text-body leading-relaxed text-muted">
             Wipes lifetime profit, fill counters, per-target success rates and the loot log. Targets stay untouched.
           </p>
           <button className="btn btn-danger btn-sm btn-block" type="button" onClick={onReset}>Reset lifetime stats</button>
@@ -2270,7 +2349,7 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
   );
 }
 
-function SidePanel({ tab, setTab, snapshot, logs, worker, notify, onEditSession, onBridge, onClearSession, onRotate, onReset, onReconnect, onBackup, baseUrl, onSetMode }) {
+function SidePanel({ tab, setTab, snapshot, logs, epm, worker, notify, onEditSession, onBridge, onClearSession, onRotate, onReset, onReconnect, onBackup, baseUrl, onSetMode }) {
   const tabs = [
     { id: "feed", label: "FEED" },
     { id: "link", label: "LINK" },
@@ -2282,18 +2361,28 @@ function SidePanel({ tab, setTab, snapshot, logs, worker, notify, onEditSession,
         {tabs.map((item) => (
           <button
             key={item.id}
+            id={`deck-tab-${item.id}`}
             className="pixel-tab"
             type="button"
             role="tab"
             aria-selected={tab === item.id}
+            aria-controls="deck-tab-panel"
+            tabIndex={tab === item.id ? 0 : -1}
             onClick={() => setTab(item.id)}
+            onKeyDown={tabKeyDown}
           >
             {item.label}
           </button>
         ))}
       </div>
-      <div key={tab} className="tab-panel flex min-w-0 flex-col gap-3">
-        {tab === "feed" ? <MemoFeedPanel logs={logs} onClear={worker.clearLogs} notify={notify} /> : null}
+      <div
+        key={tab}
+        id="deck-tab-panel"
+        role="tabpanel"
+        aria-labelledby={`deck-tab-${tab}`}
+        className="tab-panel flex min-w-0 flex-col gap-3"
+      >
+        {tab === "feed" ? <MemoFeedPanel logs={logs} onClear={worker.clearLogs} notify={notify} epm={epm} /> : null}
         {tab === "link" ? (
           <LinkPanel
             snapshot={snapshot}
@@ -2323,13 +2412,34 @@ function SidePanel({ tab, setTab, snapshot, logs, worker, notify, onEditSession,
 }
 
 function ToastStack({ toasts, onDismiss }) {
-  return (
+  const previousFocus = useRef(null);
+  const dismissFrom = (event, id) => {
+    const hadFocus = document.activeElement === event.currentTarget;
+    onDismiss(id);
+    if (!hadFocus) return;
+    const target = previousFocus.current;
+    requestAnimationFrame(() => {
+      if (target instanceof HTMLElement && target.isConnected && target !== document.body) {
+        target.focus({ preventScroll: true });
+      } else {
+        document.getElementById("deck-main")?.focus({ preventScroll: true });
+      }
+    });
+  };
+  return createPortal(
     <div
-      className="pointer-events-none fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-[60] flex flex-col items-end gap-2 sm:inset-x-auto sm:bottom-4 sm:right-4 sm:w-[360px]"
+      className="pointer-events-none fixed left-[max(0.75rem,env(safe-area-inset-left))] right-[max(0.75rem,env(safe-area-inset-right))] bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-[60] flex flex-col items-end gap-2 sm:left-auto sm:right-[max(1rem,env(safe-area-inset-right))] sm:bottom-[max(1rem,env(safe-area-inset-bottom))] sm:w-[360px]"
       aria-live="polite"
+      role="region"
+      aria-label="Notifications"
+      onFocusCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) {
+          previousFocus.current = event.relatedTarget;
+        }
+      }}
     >
       {toasts.map((toast) => (
-        <div key={toast.id} className={`toast ${toast.kind} w-full cursor-pointer${toast.leaving ? " is-leaving" : ""}`} onClick={() => onDismiss(toast.id)} role="status">
+        <div key={toast.id} className={`toast ${toast.kind} w-full${toast.leaving ? " is-leaving" : ""}`}>
           <Icon
             name={toast.kind === "success" ? "i-check" : toast.kind === "error" || toast.kind === "warn" ? "i-alert" : "i-bolt"}
             className={`mt-0.5 h-3.5 w-3.5 ${
@@ -2342,13 +2452,23 @@ function ToastStack({ toasts, onDismiss }) {
                     : "text-info"
             }`}
           />
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <span className="block font-sans text-[12px] font-semibold uppercase tracking-[0.08em] text-ink">{toast.title}</span>
-            <span className="mt-0.5 block text-[13px] leading-relaxed text-muted">{toast.message}</span>
+            <span className="mt-0.5 block text-body leading-relaxed text-muted">{toast.message}</span>
           </div>
+          <button
+            className="toast-close"
+            type="button"
+            aria-label={`Dismiss ${toast.title}`}
+            title="Dismiss"
+            onClick={(event) => dismissFrom(event, toast.id)}
+          >
+            <Icon name="i-x" className="h-3 w-3" />
+          </button>
         </div>
       ))}
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -2362,6 +2482,57 @@ const MemoFeedPanel = memo(FeedPanel);
 // The item monitor owns its own polling and filter state; a market tick must not
 // re-render it (nor reset an in-flight name lookup).
 const MemoItemMonitor = memo(ItemMonitor);
+
+const INSIGHT_TABS = [
+  { id: "market", label: "Market", title: "Market activity" },
+  { id: "items", label: "Items", title: "Item activity" },
+  { id: "trends", label: "Trends", title: "Trend watch" }
+];
+
+/**
+ * The three market-intelligence panels answer the same question at different
+ * zoom levels, so they share one slot instead of stacking three full-width
+ * panels above the working deck. Only the active peer stays mounted, so its
+ * polling stops when another tab takes the slot.
+ */
+function InsightTabs({ request, configs, notify, onEdit }) {
+  const [tab, setTab] = useState("market");
+
+  return (
+    <div className="flex min-w-0 flex-col gap-3">
+      <div className="tab-rail" role="tablist" aria-label="Market intelligence">
+        {INSIGHT_TABS.map((item) => (
+          <button
+            key={item.id}
+            id={`insight-tab-${item.id}`}
+            className="pixel-tab"
+            type="button"
+            role="tab"
+            aria-selected={tab === item.id}
+            aria-controls="insight-tab-panel"
+            tabIndex={tab === item.id ? 0 : -1}
+            title={item.title}
+            onClick={() => setTab(item.id)}
+            onKeyDown={tabKeyDown}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <div
+        key={tab}
+        id="insight-tab-panel"
+        role="tabpanel"
+        aria-labelledby={`insight-tab-${tab}`}
+        className="tab-panel min-w-0"
+      >
+        {tab === "market" ? <MemoActivityChart request={request} /> : null}
+        {tab === "items" ? <MemoItemMonitor request={request} notify={notify} /> : null}
+        {tab === "trends" ? <MemoTrendPanel configs={configs} onEdit={onEdit} /> : null}
+      </div>
+    </div>
+  );
+}
 
 function Dashboard({ worker, notify, toasts, dismissToast }) {
   const { snapshot, logs, status, latency } = worker;
@@ -2483,6 +2654,8 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
     try {
       await workerRef.current.deleteTarget(config.itemId);
       notify("warn", "TARGET REMOVED", config.label || shortId(config.itemId));
+      /* Focus would otherwise fall back to <body> when the card disappears. */
+      requestAnimationFrame(() => document.getElementById("target-fleet-title")?.focus());
     } catch (error) {
       notify("error", "DELETE FAILED", error.message);
     }
@@ -2553,6 +2726,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
 
   return (
     <>
+      <a className="skip-link" href="#deck-main">Skip to control panels</a>
       <Header
         snapshot={snapshot}
         status={status}
@@ -2569,15 +2743,14 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
         <Hud snapshot={snapshot} epm={epm} marketEvents={marketEvents} />
       </div>
       <div className="deck-enter deck-enter-3 mx-auto mt-4 w-full max-w-[1600px] px-3 sm:px-4 lg:px-6">
-        <MemoActivityChart request={worker.request} />
+        <InsightTabs
+          request={worker.request}
+          configs={snapshot.configs || []}
+          notify={notify}
+          onEdit={openTargetModal}
+        />
       </div>
-      <div className="deck-enter deck-enter-3 mx-auto mt-4 w-full max-w-[1600px] px-3 sm:px-4 lg:px-6">
-        <MemoItemMonitor request={worker.request} notify={notify} />
-      </div>
-      <div className="deck-enter deck-enter-3 mx-auto mt-4 w-full max-w-[1600px] px-3 sm:px-4 lg:px-6">
-        <MemoTrendPanel configs={snapshot.configs || []} onEdit={openTargetModal} />
-      </div>
-      <main className="deck-enter deck-enter-3 mx-auto mt-4 grid w-full max-w-[1600px] gap-4 px-3 pb-10 sm:px-4 lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start lg:px-6 xl:grid-cols-[minmax(0,1fr)_380px]">
+      <main id="deck-main" tabIndex={-1} className="deck-enter deck-enter-3 mx-auto mt-4 grid w-full max-w-[1600px] scroll-mt-28 gap-4 px-3 pb-10 sm:px-4 lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start lg:px-6 xl:grid-cols-[minmax(0,1fr)_380px]">
         <MemoLootLog
           history={snapshot.history || []}
           historyTotal={snapshot.historyTotal}
@@ -2610,6 +2783,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           setTab={setTab}
           snapshot={snapshot}
           logs={logs}
+          epm={epm}
           worker={worker}
           notify={notify}
           onEditSession={() => setModal({ type: "session" })}

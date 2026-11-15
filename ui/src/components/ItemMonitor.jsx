@@ -17,8 +17,10 @@ import {
   typeBreakdown
 } from "../lib/activity.js";
 import { formatInt, formatTime, itemTypeLabel, relTime } from "../lib/format.js";
-import { useMediaQuery } from "../lib/hooks.js";
+import { useCollapsed, useMediaQuery } from "../lib/hooks.js";
+import { CollapseToggle } from "./CollapseToggle.jsx";
 import { Icon } from "./ModalShell.jsx";
+import { copyText } from "./Modals.jsx";
 
 /** How often the table re-reads the worker while the tab is visible. */
 const REFRESH_MS = 30_000;
@@ -60,15 +62,14 @@ function Segmented({ label, options, value, onChange }) {
       </span>
       <div
         className="flex items-center gap-0.5 border-2 border-line bg-night-950 p-0.5"
-        role="tablist"
+        role="group"
         aria-label={label}
       >
         {options.map((option) => (
           <button
             key={option.key}
             type="button"
-            role="tab"
-            aria-selected={value === option.key}
+            aria-pressed={value === option.key}
             className={`seg-tab ${
               value === option.key
                 ? "bg-info font-bold text-[#04202a]"
@@ -96,6 +97,8 @@ function Segmented({ label, options, value, onChange }) {
  */
 export function ItemMonitor({ request, notify }) {
   const [range, setRange] = useState(DEFAULT_ACTIVITY_RANGE);
+  const [collapsed, setCollapsed] = useCollapsed("item-activity");
+  const panelRef = useRef(null);
   const [category, setCategory] = useState("");
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
@@ -176,6 +179,13 @@ export function ItemMonitor({ request, notify }) {
       setStatus((previous) => (previous === "loading" ? "error" : "stale"));
     }
   }, [describe, fetchPage]);
+
+  // Manual refresh gets the same accountable state as a filter change: the
+  // button reports the work instead of looking inert while the request runs.
+  const refresh = useCallback(() => {
+    setStatus((previous) => (previous === "loading" ? "loading" : "refreshing"));
+    load();
+  }, [load]);
 
   // Appends the next page below what is already on screen.
   const loadMore = useCallback(async () => {
@@ -258,21 +268,27 @@ export function ItemMonitor({ request, notify }) {
 
   const copyId = useCallback(
     async (row) => {
-      try {
-        await navigator.clipboard.writeText(row.itemId);
-        notify?.("info", "ITEM ID COPIED", row.itemId);
-      } catch {
-        notify?.("error", "COPY FAILED", "Clipboard access was refused.");
-      }
+      const ok = await copyText(row.itemId);
+      notify?.(
+        ok ? "info" : "error",
+        ok ? "ITEM ID COPIED" : "COPY FAILED",
+        ok ? row.itemId : "Clipboard access was refused."
+      );
     },
     [notify]
   );
 
   const live = status === "ready" || status === "refreshing";
+  const refreshing = status === "refreshing";
   const stale = status === "stale";
 
   return (
-    <section className="panel min-w-0" data-accent="cyan" aria-label="Item activity">
+    <section
+      ref={panelRef}
+      className={`panel min-w-0${collapsed ? " panel-collapsed" : ""}`}
+      data-accent="cyan"
+      aria-label="Item activity"
+    >
       <div className="panel-head flex-wrap gap-x-3 gap-y-2">
         <h2 className="panel-title">
           <Icon name="i-pulse" className="h-4 w-4 text-info" />
@@ -288,7 +304,8 @@ export function ItemMonitor({ request, notify }) {
             row so the breakdown reads as a summary of the window rather than
             another column of the table. */}
         <div
-          className="flex min-w-0 flex-wrap items-center gap-1.5"
+          className={`flex min-w-0 flex-wrap items-center gap-1.5${collapsed ? " max-lg:hidden" : ""}`}
+          role="group"
           aria-label="Frames per item type in the selected range, independent of the category and search filters"
         >
           <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
@@ -307,20 +324,33 @@ export function ItemMonitor({ request, notify }) {
           ))}
         </div>
         <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
-          <Segmented label="Range" value={range} onChange={setRange} options={ACTIVITY_RANGES} />
-          <button
-            className="btn btn-ghost btn-sm"
-            type="button"
-            onClick={load}
-            disabled={loading}
-            title="Re-read the worker now"
-          >
-            <Icon name="i-refresh" className="h-3 w-3" /> Refresh
-          </button>
+          <div className={`flex flex-wrap items-center gap-2${collapsed ? " max-lg:hidden" : ""}`}>
+            <Segmented label="Range" value={range} onChange={setRange} options={ACTIVITY_RANGES} />
+            <button
+              className="btn btn-ghost btn-sm"
+              type="button"
+              onClick={refresh}
+              disabled={loading || refreshing}
+              data-busy={refreshing ? "true" : undefined}
+              aria-busy={refreshing}
+              title={refreshing ? "Re-reading the worker…" : "Re-read the worker now"}
+            >
+              <Icon name="i-refresh" className="h-3 w-3" /> Refresh
+            </button>
+          </div>
+          <CollapseToggle
+            expanded={!collapsed}
+            label="item activity"
+            panelRef={panelRef}
+            controls="item-activity-body"
+            onToggle={() => setCollapsed((value) => !value)}
+          />
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 border-b-2 border-line bg-night-950/40 px-4 py-2.5">
+      <div className="collapse-frame" id="item-activity-body" inert={collapsed || undefined}>
+        <div className="collapse-body">
+          <div className="flex flex-wrap items-center gap-2 border-b-2 border-line bg-night-950/40 px-4 py-2.5">
         {/* Phone: search and the category select each take a full row, so the
             select cannot slide over the search icon. From `sm` up they sit
             inline on a fixed 220 px search, leaving room for the counters. */}
@@ -329,6 +359,8 @@ export function ItemMonitor({ request, notify }) {
           <input
             className="input input-sm w-full pl-8"
             type="search"
+            enterKeyHint="search"
+            autoComplete="off"
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
@@ -374,10 +406,10 @@ export function ItemMonitor({ request, notify }) {
       {empty ? (
         <div className="flex flex-col items-center justify-center gap-2 px-6 py-10 text-center">
           <Icon name="i-pulse" className="h-6 w-6 text-faint" />
-          <p className="font-mono text-[13px] uppercase tracking-[0.14em] text-ink-dim">
+          <p className="font-mono text-body uppercase tracking-[0.14em] text-ink-dim">
             {loading ? "Reading item activity…" : status === "error" ? "Item activity unavailable" : "No item activity in range"}
           </p>
-          <p className="max-w-[52ch] text-[13px] text-faint">
+          <p className="max-w-[52ch] text-body leading-relaxed text-faint">
             {loading
               ? "Counting the market frames the worker has seen."
               : status === "error"
@@ -389,9 +421,9 @@ export function ItemMonitor({ request, notify }) {
         <>
           {wide ? (
             <div className="report-scroll min-w-0">
-              <table className="w-full min-w-[820px] border-collapse text-left font-mono text-[13px] tabular-nums">
+              <table className="w-full min-w-[820px] border-collapse text-left font-mono text-meta tabular-nums">
                 <thead className="sticky top-0 z-10 bg-night-900">
-                  <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
+                  <tr className="border-b-2 border-line text-label uppercase tracking-[0.08em] text-faint">
                     <th scope="col" className="px-4 py-2 font-medium">Product</th>
                     <th scope="col" className="px-3 py-2 font-medium" title="Item type reported by the market feed or item-info">Type</th>
                     <th scope="col" className="px-3 py-2 font-medium" title="Market frames seen in the selected range and matching the active filters">Frames</th>
@@ -419,7 +451,7 @@ export function ItemMonitor({ request, notify }) {
                             {name.text}
                           </span>
                           <button
-                            className="tap-pad -my-1 inline-flex min-h-6 items-center gap-1 whitespace-nowrap py-1 font-mono text-[11px] text-faint transition-colors hover:text-info"
+                            className="tap-pad -my-1 inline-flex min-h-6 items-center gap-1 whitespace-nowrap py-1 font-mono text-micro text-faint transition-colors hover:text-info"
                             type="button"
                             title="Copy item id"
                             onClick={() => copyId(row)}
@@ -471,30 +503,39 @@ export function ItemMonitor({ request, notify }) {
                   <li className="px-4 py-3" key={row.itemId}>
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <p className={`truncate text-[13px] ${name.pending ? "text-muted" : "text-ink"}`}>
+                        <p className={`truncate text-body ${name.pending ? "text-muted" : "text-ink"}`}>
                           {name.text}
                         </p>
                         <div className="mt-1 flex items-center gap-2">
                           <span className="type-badge" data-type={categoryOf(row)}>
                             {itemTypeLabel(categoryOf(row))}
                           </span>
-                          <code className="truncate font-mono text-[11px] text-faint">{row.itemId}</code>
+                          <code className="truncate font-mono text-micro text-faint">{row.itemId}</code>
+                          <button
+                            className="tap-pad inline-flex min-h-6 shrink-0 items-center py-1 text-faint transition-colors hover:text-info"
+                            type="button"
+                            title="Copy item id"
+                            aria-label={`Copy item id ${row.itemId}`}
+                            onClick={() => copyId(row)}
+                          >
+                            <Icon name="i-copy" className="h-2.5 w-2.5" />
+                          </button>
                         </div>
                       </div>
                       <div className="shrink-0 text-right">
-                        <p className="font-mono text-[13px] font-semibold tabular-nums text-info">
+                        <p className="font-mono text-meta font-semibold tabular-nums text-info">
                           {formatInt(row.events)}
                         </p>
-                        <p className="mt-0.5 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+                        <p className="mt-0.5 font-mono text-label uppercase tracking-[0.08em] text-faint">
                           frames
                         </p>
                       </div>
                     </div>
                     <div className="mt-2 flex items-center gap-2">
-                      <span className="shrink-0 font-mono text-[11px] tabular-nums text-ink-dim">
+                      <span className="shrink-0 font-mono text-micro tabular-nums text-ink-dim">
                         {share}% of range
                       </span>
-                      <span className="min-w-0 shrink-0 font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+                      <span className="min-w-0 shrink-0 font-mono text-micro uppercase tracking-[0.08em] text-faint">
                         24h {formatInt(row.events24h)}
                       </span>
                       <a
@@ -517,7 +558,7 @@ export function ItemMonitor({ request, notify }) {
       )}
 
       <div className="flex shrink-0 items-center justify-between gap-2 border-t-2 border-line bg-night-900/70 px-3 py-3">
-        <span className="min-w-0 truncate font-mono text-[12px] font-semibold uppercase tracking-[0.08em] text-ink-dim">
+        <span role="status" className="min-w-0 truncate font-mono text-label font-semibold uppercase tracking-[0.08em] text-ink-dim">
           {shown === 0
             ? "No products"
             : hasMore
@@ -527,23 +568,23 @@ export function ItemMonitor({ request, notify }) {
         </span>
         <div className="flex shrink-0 items-center gap-2">
           {error ? (
-            <span className="max-w-[220px] truncate font-mono text-[12px] uppercase tracking-[0.08em] text-danger" title={error}>
+            <span className="max-w-[220px] truncate font-mono text-label uppercase tracking-[0.08em] text-danger" title={error}>
               {stale ? "Stale · retrying" : "Load failed"}
             </span>
           ) : meta?.unresolved > 0 ? (
             <span
-              className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint"
+              className="font-mono text-micro uppercase tracking-[0.08em] text-faint"
               title="The worker is still resolving these names from item-info"
             >
               {formatInt(meta.unresolved)} unnamed
             </span>
           ) : null}
           <span
-            className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.08em] text-faint"
+            className="flex items-center gap-1.5 font-mono text-micro uppercase tracking-[0.08em] text-faint"
             title={refreshedAt ? `Updated ${formatTime(refreshedAt)}` : undefined}
           >
             <span className={`led ${live ? "led-pulse bg-info" : "bg-faint"}`} />
-            {refreshedAt ? relTime(refreshedAt) : loading ? "LOADING" : "—"}
+            {refreshing ? "REFRESHING" : refreshedAt ? relTime(refreshedAt) : loading ? "LOADING" : "—"}
           </span>
           {/* Same affordance as the loot log: rows accumulate below and the
               reader asks for the next batch instead of jumping pages. */}
@@ -559,6 +600,8 @@ export function ItemMonitor({ request, notify }) {
               {loadingMore ? "Loading…" : "Load more"}
             </button>
           ) : null}
+        </div>
+      </div>
         </div>
       </div>
     </section>

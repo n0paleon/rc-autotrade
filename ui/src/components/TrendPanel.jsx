@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   fixedPrice,
   formatInt,
@@ -8,6 +8,8 @@ import {
   relTime,
   shortId
 } from "../lib/format.js";
+import { useCollapsed } from "../lib/hooks.js";
+import { CollapseToggle } from "./CollapseToggle.jsx";
 import { Icon } from "./ModalShell.jsx";
 
 /** Rows rendered at once; the fleet can be large and the table is scrollable. */
@@ -219,6 +221,15 @@ export function TrendChip({ trend }) {
 function TrendRow({ row, onEdit }) {
   const { config, trend, target, market, marketPrice, marketSeenAt, proximity } = row;
   const meta = signalMeta(trend.state);
+  // A flipping signal is the one thing worth interrupting a monitoring table
+  // for: pulse the chip when the classification changes, then settle.
+  const [signalPulse, setSignalPulse] = useState(0);
+  const previousSignal = useRef(trend.state);
+  useEffect(() => {
+    if (previousSignal.current === trend.state) return;
+    previousSignal.current = trend.state;
+    setSignalPulse((value) => value + 1);
+  }, [trend.state]);
   const label = config.label || `ITEM ${shortId(config.itemId)}`;
   const momentum = Number(trend.momentumPct);
   const type = itemTypeOf(config);
@@ -242,7 +253,7 @@ function TrendRow({ row, onEdit }) {
         <span className="block">{fixedPrice(market)}</span>
         {Number.isFinite(trend.bandPct) ? (
           <span
-            className="block font-mono text-[10px] font-normal leading-tight text-faint"
+            className="block font-mono text-micro font-normal leading-tight text-faint"
             title={`The smoothed level may sit up to ±${Number(trend.bandPct).toFixed(1)}% from the live market; the signal band is drawn from that`}
           >
             ±{Number(trend.bandPct).toFixed(1)}%
@@ -287,12 +298,17 @@ function TrendRow({ row, onEdit }) {
         {trend.confidence}%
       </td>
       <td>
-        <span className="signal-chip" data-tone={meta.tone} title={meta.hint}>
+        <span
+          key={signalPulse}
+          className={`signal-chip${signalPulse ? " signal-pulse" : ""}`}
+          data-tone={meta.tone}
+          title={meta.hint}
+        >
           {meta.label}
         </span>
         {trend.reliable ? null : (
           <span
-            className="ml-1 font-mono text-[10px] uppercase tracking-[0.08em] text-faint"
+            className="ml-1 font-mono text-micro uppercase tracking-[0.08em] text-faint"
             title={
               trend.reliableReason === "wide-band"
                 ? "There is enough history, but the level is too loose for the gap to mean much"
@@ -346,6 +362,8 @@ function TrendRow({ row, onEdit }) {
 export default function TrendPanel({ configs, onEdit }) {
   const [mode, setMode] = useState("above");
   const [limit, setLimit] = useState(TREND_BATCH);
+  const [collapsed, setCollapsed] = useCollapsed("trend-watch");
+  const panelRef = useRef(null);
 
   useEffect(() => {
     setLimit(TREND_BATCH);
@@ -393,58 +411,85 @@ export default function TrendPanel({ configs, onEdit }) {
     };
   }, [configs]);
 
-  if (!Array.isArray(configs) || configs.length === 0) return null;
-
+  const hasTargets = Array.isArray(configs) && configs.length > 0;
   const current = mode === "above" ? above : mode === "below" ? below : rows;
   const visible = current.slice(0, limit);
   const reliable = rows.filter((row) => row.trend.reliable).length;
+  /* Color is earned by data: a filter only wears its tone once it has a row
+     behind it, so an empty board reads as idle instead of alarming. */
+  const aboveTone = above.length > 0 ? "danger" : "muted";
+  const belowTone = below.length > 0 ? "signal" : "muted";
 
   return (
-    <section className="panel min-w-0" data-accent="gold" aria-label="Trend watch">
+    <section
+      ref={panelRef}
+      className={`panel min-w-0${collapsed ? " panel-collapsed" : ""}`}
+      data-accent="gold"
+      aria-label="Trend watch"
+    >
       <div className="panel-head flex-wrap gap-y-2">
         <h2 className="panel-title">
           <Icon name="i-target" className="h-4 w-4 text-gold" />
           Trend watch
-          <span className="border-2 border-[#05030f] bg-danger px-1.5 py-0.5 font-mono text-[12px] font-bold text-[#2b0008]">
+          <span
+            className={`border-2 border-[#05030f] px-1.5 py-0.5 font-mono text-[12px] font-bold ${
+              above.length > 0 ? "bg-danger text-[#2b0008]" : "bg-night-800 text-ink-dim"
+            }`}
+          >
             {above.length}
           </span>
         </h2>
-        <div className="ml-auto flex w-full flex-wrap items-center gap-1.5 sm:w-auto" role="group" aria-label="Filter targets by trend position">
-          <button
-            className="trend-filter"
-            type="button"
-            data-tone="danger"
-            aria-pressed={mode === "above"}
-            onClick={() => setMode("above")}
+        <div className="ml-auto flex items-center gap-1.5">
+          <div
+            className={`flex w-full flex-wrap items-center gap-1.5 sm:w-auto${collapsed ? " max-lg:hidden" : ""}`}
+            role="group"
+            aria-label="Filter targets by trend position"
           >
-            at/above trend <span className="tabular-nums opacity-70">{above.length}</span>
-          </button>
-          <button
-            className="trend-filter"
-            type="button"
-            data-tone="signal"
-            aria-pressed={mode === "below"}
-            onClick={() => setMode("below")}
-          >
-            below trend <span className="tabular-nums opacity-70">{below.length}</span>
-          </button>
-          <button
-            className="trend-filter"
-            type="button"
-            data-tone="muted"
-            aria-pressed={mode === "all"}
-            onClick={() => setMode("all")}
-          >
-            all <span className="tabular-nums opacity-70">{rows.length}</span>
-          </button>
+            <button
+              className="trend-filter"
+              type="button"
+              data-tone={aboveTone}
+              aria-pressed={mode === "above"}
+              onClick={() => setMode("above")}
+            >
+              at/above trend <span className="tabular-nums opacity-70">{above.length}</span>
+            </button>
+            <button
+              className="trend-filter"
+              type="button"
+              data-tone={belowTone}
+              aria-pressed={mode === "below"}
+              onClick={() => setMode("below")}
+            >
+              below trend <span className="tabular-nums opacity-70">{below.length}</span>
+            </button>
+            <button
+              className="trend-filter"
+              type="button"
+              data-tone="muted"
+              aria-pressed={mode === "all"}
+              onClick={() => setMode("all")}
+            >
+              all <span className="tabular-nums opacity-70">{rows.length}</span>
+            </button>
+          </div>
+          <CollapseToggle
+            expanded={!collapsed}
+            label="trend watch"
+            panelRef={panelRef}
+            controls="trend-watch-body"
+            onToggle={() => setCollapsed((value) => !value)}
+          />
         </div>
       </div>
 
+      <div className="collapse-frame" id="trend-watch-body" inert={collapsed || undefined}>
+        <div className="collapse-body">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b-2 border-line px-4 py-1.5">
-        <p className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+        <p className="font-mono text-micro uppercase tracking-[0.08em] text-faint">
           Signal only · nothing here places an order
         </p>
-        <p className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+        <p className="font-mono text-micro uppercase tracking-[0.08em] text-faint">
           {reliable} reliable
           {stale > 0 ? ` · ${stale} stale` : ""}
           {waiting > 0 ? ` · ${waiting} waiting for data` : ""}
@@ -452,21 +497,31 @@ export default function TrendPanel({ configs, onEdit }) {
       </div>
 
       {current.length === 0 ? (
-        <div className="px-4 py-5 text-center sm:py-8">
-          <p className="font-mono text-[13px] font-semibold uppercase tracking-[0.14em] text-ink-dim">
-            {mode === "above"
-              ? "No target at or above trend"
-              : mode === "below"
-                ? "No target below trend"
-                : "Waiting for market frames"}
-          </p>
-          <p className="mx-auto mt-1 max-w-md text-[13px] leading-relaxed text-faint">
-            {mode === "above"
-              ? "Every ceiling sits below the market trend — the healthy side, nothing to follow up."
-              : mode === "below"
-                ? "A ceiling appears here once it drops under its trend line; those are waiting for a dip."
-                : "The worker needs a few minutes of price points before it can draw a trend."}
-          </p>
+        <div className="flex items-start gap-2.5 px-4 py-3">
+          <span
+            className={`led mt-1 shrink-0 ${rows.length > 0 && mode === "above" ? "bg-signal" : "bg-faint"}`}
+            aria-hidden="true"
+          />
+          <div className="min-w-0">
+            <p className="font-mono text-label font-semibold uppercase tracking-[0.12em] text-ink-dim">
+              {rows.length === 0
+                ? hasTargets
+                  ? "Waiting for trend data"
+                  : "No targets deployed"
+                : mode === "above"
+                  ? "No ceiling above trend"
+                  : "No ceiling below trend"}
+            </p>
+            <p className="mt-0.5 text-body leading-relaxed text-faint">
+              {rows.length === 0
+                ? hasTargets
+                  ? "A trend needs a few minutes of price points."
+                  : "Deploy a target to compare its ceiling with the market trend."
+                : mode === "above"
+                  ? "Nothing to follow up."
+                  : "A target appears here once it drops under its line."}
+            </p>
+          </div>
         </div>
       ) : (
         <div
@@ -491,7 +546,7 @@ export default function TrendPanel({ configs, onEdit }) {
                 <th scope="col" className="text-right">Action</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody key={mode} className="trend-body">
               {visible.map((row) => (
                 <TrendRow key={row.config.itemId} row={row} onEdit={onEdit} />
               ))}
@@ -502,7 +557,7 @@ export default function TrendPanel({ configs, onEdit }) {
 
       {current.length > visible.length ? (
         <div className="flex items-center justify-between gap-2 border-t-2 border-line bg-night-900/70 px-4 py-3">
-          <span className="font-mono text-[12px] font-semibold uppercase tracking-[0.08em] text-ink-dim">
+          <span role="status" className="font-mono text-label font-semibold uppercase tracking-[0.08em] text-ink-dim">
             Showing {visible.length} of {current.length}
           </span>
           <button
@@ -516,32 +571,36 @@ export default function TrendPanel({ configs, onEdit }) {
         </div>
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2">
-        {Object.entries(SIGNAL_META)
-          .filter(([key]) => ["ABOVE", "NEAR", "UNSURE", "BELOW", "FAR_BELOW"].includes(key))
-          .map(([key, meta]) => (
-            <span key={key} className="signal-chip" data-tone={meta.tone} title={meta.hint}>
-              {meta.label}
-            </span>
-          ))}
-        <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
-          gap = target vs trend · mom = 15m/60m momentum · ± = level uncertainty
-        </span>
-        <span className="ml-auto flex flex-wrap items-center gap-1.5">
-          {["lower", "hold", "review", "wait"].map((key) => (
-            <span
-              key={key}
-              className="signal-chip"
-              data-tone={ACTION_META[key].tone}
-              title={ACTION_META[key].hint}
-            >
-              {ACTION_META[key].label}
-            </span>
-          ))}
-          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
-            next step
+      {current.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2">
+          {Object.entries(SIGNAL_META)
+            .filter(([key]) => ["ABOVE", "NEAR", "UNSURE", "BELOW", "FAR_BELOW"].includes(key))
+            .map(([key, meta]) => (
+              <span key={key} className="signal-chip" data-tone={meta.tone} title={meta.hint}>
+                {meta.label}
+              </span>
+            ))}
+          <span className="font-mono text-micro uppercase tracking-[0.08em] text-faint">
+            gap = target vs trend · mom = 15m/60m momentum · ± = level uncertainty
           </span>
-        </span>
+          <span className="ml-auto flex flex-wrap items-center gap-1.5">
+            {["lower", "hold", "review", "wait"].map((key) => (
+              <span
+                key={key}
+                className="signal-chip"
+                data-tone={ACTION_META[key].tone}
+                title={ACTION_META[key].hint}
+              >
+                {ACTION_META[key].label}
+              </span>
+            ))}
+            <span className="font-mono text-micro uppercase tracking-[0.08em] text-faint">
+              next step
+            </span>
+          </span>
+        </div>
+      ) : null}
+        </div>
       </div>
     </section>
   );
