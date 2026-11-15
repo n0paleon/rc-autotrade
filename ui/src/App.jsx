@@ -1841,7 +1841,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
   );
 }
 
-function FeedPanel({ logs, onClear, notify }) {
+function FeedPanel({ logs, onClear, notify, epm }) {
   const [paused, setPaused] = useState(false);
   const [tailing, setTailing] = useState(true);
   const [frozen, setFrozen] = useState([]);
@@ -2041,9 +2041,16 @@ function FeedPanel({ logs, onClear, notify }) {
         <span className={`inline-flex items-center gap-1.5 ${paused ? "text-gold" : !tailing ? "text-info" : "text-signal"}`}>
           <span className="led led-sm" /> {paused ? "Paused" : tailing ? "Tailing" : "Tail paused"}
         </span>
-        <span className="ml-auto flex items-center gap-2">
+        <span className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
           {paused && unread > 0 ? <span className="text-gold">{formatInt(unread)} buffered</span> : null}
           {!paused && !tailing ? <span className="text-info">Scroll held</span> : null}
+          <span
+            className="inline-flex items-center gap-1.5 whitespace-nowrap bg-info/10 px-1.5 font-semibold tabular-nums text-info"
+            id="feed-epm"
+            title="Marketplace listing/price updates and fulfillment results per minute"
+          >
+            {epm.toFixed(1)} events/min
+          </span>
           <span>{formatInt(shown.length)} lines</span>
         </span>
       </div>
@@ -2342,7 +2349,7 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
   );
 }
 
-function SidePanel({ tab, setTab, snapshot, logs, worker, notify, onEditSession, onBridge, onClearSession, onRotate, onReset, onReconnect, onBackup, baseUrl, onSetMode }) {
+function SidePanel({ tab, setTab, snapshot, logs, epm, worker, notify, onEditSession, onBridge, onClearSession, onRotate, onReset, onReconnect, onBackup, baseUrl, onSetMode }) {
   const tabs = [
     { id: "feed", label: "FEED" },
     { id: "link", label: "LINK" },
@@ -2375,7 +2382,7 @@ function SidePanel({ tab, setTab, snapshot, logs, worker, notify, onEditSession,
         aria-labelledby={`deck-tab-${tab}`}
         className="tab-panel flex min-w-0 flex-col gap-3"
       >
-        {tab === "feed" ? <MemoFeedPanel logs={logs} onClear={worker.clearLogs} notify={notify} /> : null}
+        {tab === "feed" ? <MemoFeedPanel logs={logs} onClear={worker.clearLogs} notify={notify} epm={epm} /> : null}
         {tab === "link" ? (
           <LinkPanel
             snapshot={snapshot}
@@ -2776,6 +2783,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           setTab={setTab}
           snapshot={snapshot}
           logs={logs}
+          epm={epm}
           worker={worker}
           notify={notify}
           onEditSession={() => setModal({ type: "session" })}
