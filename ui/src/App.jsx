@@ -108,7 +108,7 @@ function TargetPriceChart({ history, targetPrice, itemId, request, label }) {
   );
 }
 
-/** Smoothed market-event rate, in events per minute. */
+/** Smoothed event rate, in events per minute. */
 function useEventRate(count) {
   const [rate, setRate] = useState(0);
   const reference = useRef({ count: 0, at: 0 });
@@ -1841,7 +1841,15 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
   );
 }
 
-function FeedPanel({ logs, onClear, notify, epm }) {
+/** Tone for the feed's active log-level badge, keyed by `LOG_LEVEL`. */
+const LOG_LEVEL_TONES = {
+  debug: "text-info",
+  info: "text-signal",
+  warn: "text-gold",
+  error: "text-danger"
+};
+
+function FeedPanel({ logs, onClear, notify, epm, logLevel }) {
   const [paused, setPaused] = useState(false);
   const [tailing, setTailing] = useState(true);
   const [frozen, setFrozen] = useState([]);
@@ -1859,6 +1867,8 @@ function FeedPanel({ logs, onClear, notify, epm }) {
   const FEED_WINDOW = 120;
   const shown = (paused ? frozen : logs).slice(-FEED_WINDOW);
   const isTailing = tailing && !paused;
+  const activeLevel = String(logLevel || "info").toLowerCase();
+  const levelTone = LOG_LEVEL_TONES[activeLevel] || "text-muted";
 
   const scrollToLatest = useCallback(() => {
     const feed = feedRef.current;
@@ -1971,7 +1981,7 @@ function FeedPanel({ logs, onClear, notify, epm }) {
     <section className="panel flex h-[clamp(15rem,52dvh,27.5rem)] flex-col xl:h-[560px]" data-accent="lime">
       <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-2.5">
         <div className="flex items-center gap-1.5 font-mono text-[12px] font-semibold uppercase tracking-[0.14em] text-muted">
-          <span className="led led-pulse bg-signal" />Live event log
+          <span className="led led-pulse bg-signal" />Live system log
         </div>
         <div className="flex items-center gap-1">
           <button
@@ -2038,8 +2048,12 @@ function FeedPanel({ logs, onClear, notify, epm }) {
         </div>
       </div>
       <div className="flex items-center justify-between gap-2 border-t-2 border-line px-3 py-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
-        <span className={`inline-flex items-center gap-1.5 ${paused ? "text-gold" : !tailing ? "text-info" : "text-signal"}`}>
-          <span className="led led-sm" /> {paused ? "Paused" : tailing ? "Tailing" : "Tail paused"}
+        <span
+          className={`tag ${levelTone}`}
+          id="feed-log-level"
+          title={`Active worker log level (LOG_LEVEL=${activeLevel})`}
+        >
+          Level {activeLevel}
         </span>
         <span className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
           {paused && unread > 0 ? <span className="text-gold">{formatInt(unread)} buffered</span> : null}
@@ -2047,11 +2061,10 @@ function FeedPanel({ logs, onClear, notify, epm }) {
           <span
             className="inline-flex items-center gap-1.5 whitespace-nowrap bg-info/10 px-1.5 font-semibold tabular-nums text-info"
             id="feed-epm"
-            title="Marketplace listing/price updates and fulfillment results per minute"
+            title="All lines appended to the live system log per minute, system and market events alike"
           >
             {epm.toFixed(1)} events/min
           </span>
-          <span>{formatInt(shown.length)} lines</span>
         </span>
       </div>
     </section>
@@ -2349,7 +2362,7 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
   );
 }
 
-function SidePanel({ tab, setTab, snapshot, logs, epm, worker, notify, onEditSession, onBridge, onClearSession, onRotate, onReset, onReconnect, onBackup, baseUrl, onSetMode }) {
+function SidePanel({ tab, setTab, snapshot, logs, feedEpm, worker, notify, onEditSession, onBridge, onClearSession, onRotate, onReset, onReconnect, onBackup, baseUrl, onSetMode }) {
   const tabs = [
     { id: "feed", label: "FEED" },
     { id: "link", label: "LINK" },
@@ -2382,7 +2395,7 @@ function SidePanel({ tab, setTab, snapshot, logs, epm, worker, notify, onEditSes
         aria-labelledby={`deck-tab-${tab}`}
         className="tab-panel flex min-w-0 flex-col gap-3"
       >
-        {tab === "feed" ? <MemoFeedPanel logs={logs} onClear={worker.clearLogs} notify={notify} epm={epm} /> : null}
+        {tab === "feed" ? <MemoFeedPanel logs={logs} onClear={worker.clearLogs} notify={notify} epm={feedEpm} logLevel={snapshot.worker?.logLevel} /> : null}
         {tab === "link" ? (
           <LinkPanel
             snapshot={snapshot}
@@ -2535,7 +2548,7 @@ function InsightTabs({ request, configs, notify, onEdit }) {
 }
 
 function Dashboard({ worker, notify, toasts, dismissToast }) {
-  const { snapshot, logs, status, latency } = worker;
+  const { snapshot, logs, logCount, status, latency } = worker;
   const [tab, setTab] = useState("feed");
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -2564,6 +2577,9 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
 
   const marketEvents = Number(snapshot.gateway?.marketEventCount ?? snapshot.gateway?.eventCount ?? 0) || 0;
   const epm = useEventRate(marketEvents);
+  // The feed readout tracks every line appended to the live system log (system
+  // and market alike), not just the upstream marketplace event counter.
+  const feedEpm = useEventRate(logCount);
   const baseUrl = worker.getConnection().baseUrl;
   const reportByItem = useMemo(() => {
     const map = {};
@@ -2783,7 +2799,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           setTab={setTab}
           snapshot={snapshot}
           logs={logs}
-          epm={epm}
+          feedEpm={feedEpm}
           worker={worker}
           notify={notify}
           onEditSession={() => setModal({ type: "session" })}
