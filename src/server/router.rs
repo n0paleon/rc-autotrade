@@ -85,7 +85,39 @@ pub fn router(state: Arc<AppState>, dist_dir: PathBuf) -> Router {
         .layer(axum::middleware::from_fn(security_headers))
         .layer(CorsLayer::permissive())
         .layer(axum::extract::DefaultBodyLimit::max(Limits::BODY_BYTES))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            log_requests,
+        ))
         .with_state(state)
+}
+
+/// One debug line per HTTP request (method, path, status, duration).
+///
+/// Static deck assets are included on purpose: after a page reload the sequence
+/// makes it obvious which bundle the browser actually fetched. The query string
+/// is never logged, so an access key passed in a URL cannot leak into the ring
+/// buffer.
+async fn log_requests(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !state.logger.debug_enabled() {
+        return next.run(request).await;
+    }
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let started = std::time::Instant::now();
+    let response = next.run(request).await;
+    state.logger.debug_lazy("http", || {
+        format!(
+            "{method} {path} -> {} in {:.1}ms",
+            response.status().as_u16(),
+            started.elapsed().as_secs_f64() * 1000.0
+        )
+    });
+    response
 }
 
 /// Security headers sent on every response, plus the CSP added to HTML

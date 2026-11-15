@@ -39,6 +39,12 @@ impl Engine {
         order_id: Option<String>,
     ) -> Vec<EngineEvent> {
         store.state.stats.failed += 1;
+        self.logger.debug_lazy("order", || {
+            format!(
+                "recording failure for {} ×{} (got {}): {reason}",
+                meta.label, meta.qty, meta.got_qty
+            )
+        });
         {
             let runtime = self.runtime_for(&meta.item_id, meta.qty.max(1));
             runtime.failures += 1;

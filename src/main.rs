@@ -89,8 +89,26 @@ async fn run() -> Result<(), String> {
         120,
         Arc::new(rollercoin_worker::store::now_ms),
     )));
-    let api =
-        Arc::new(ApiClient::with_default_timeout(&config.api_base).with_latency(latency.clone()));
+    let api = Arc::new(
+        ApiClient::with_default_timeout(&config.api_base)
+            .with_latency(latency.clone())
+            .with_logger(logger.clone()),
+    );
+
+    logger.debug("worker", format!("log level {}", config.log_level));
+    logger.debug(
+        "worker",
+        format!(
+            "bind {}:{} | data {} | ws {} | keepalive {}ms | sample {}ms | mock {}",
+            config.host,
+            config.port,
+            config.data_dir.display(),
+            config.ws_url,
+            config.keep_alive_ms,
+            config.system_sample_ms,
+            config.mock
+        ),
+    );
 
     let system = Arc::new(std::sync::Mutex::new(SystemMonitor::new(
         config.system_sample_ms.max(500) as u64,

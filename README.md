@@ -88,6 +88,8 @@ Key environment variables:
 | `MOCK` | `0` | `1` enables the simulator |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` |
 
+`LOG_LEVEL=debug` is intentionally noisy — it is the "why did my snipe not fire?" mode. At debug the worker adds a line for every upstream frame and WebSocket message, every target decision (price, stock, effective stock, fill estimate, planner result, mode), every order gate and purchase attempt, every HTTP request to Rollercoin, every control-socket connect/message, plus health, sampler, hydration and store-write detail. Lines go to stdout and to the deck's log panel (the ring buffer keeps the last 250). Expect a high line rate on a busy market; keep `info` for normal operation.
+
 You can reset the access key while the worker is stopped:
 
 ```bash

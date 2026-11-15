@@ -219,10 +219,16 @@ impl ItemInfoService {
             if let Some(cached) = cache.get(&key)
                 && now_ms() - cached.at < self.ttl_ms
             {
+                self.logger.debug_lazy("item-info", || {
+                    format!("cache hit {key} ({})", cached.value.label)
+                });
                 return Ok(cached.value.clone());
             }
         }
 
+        self.logger.debug_lazy("item-info", || {
+            format!("resolving {item_id} as {item_type} (fresh cache={fresh})")
+        });
         let mut candidates = vec![item_type.to_string()];
         for candidate in ITEM_TYPE_CANDIDATES {
             if candidate != item_type {
@@ -233,6 +239,8 @@ impl ItemInfoService {
         let mut last_error = String::from("item-info returned no data");
         let mut last_status = 0u16;
         for candidate in &candidates {
+            self.logger
+                .debug_lazy("item-info", || format!("querying {item_id} as {candidate}"));
             let result = self
                 .api
                 .fetch_item_info(credentials, item_id, candidate, "RLT")
@@ -241,6 +249,12 @@ impl ItemInfoService {
                 && let Some(data) = result.data
             {
                 let value = normalize_item_info(&data, item_id, candidate);
+                self.logger.debug_lazy("item-info", || {
+                    format!(
+                        "resolved {item_id} as {candidate} -> {} ({})",
+                        value.label, value.item_type
+                    )
+                });
                 let at = now_ms();
                 let mut cache = lock(&self.cache);
                 cache.insert(
@@ -268,7 +282,14 @@ impl ItemInfoService {
                 .clone()
                 .unwrap_or_else(|| "item-info returned no data".to_string());
             last_status = result.status;
-            if !type_miss {
+            if type_miss {
+                self.logger.debug_lazy("item-info", || {
+                    format!(
+                        "type {candidate} missed for {item_id} (HTTP {}); trying the next candidate",
+                        result.status
+                    )
+                });
+            } else {
                 break;
             }
         }

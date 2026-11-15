@@ -66,6 +66,12 @@ impl Engine {
             } else {
                 self.runtime_for(&config.item_id, config.desired_qty)
                     .persisted_at = now;
+                self.logger.debug_lazy("engine", || {
+                    format!(
+                        "persisted market snapshot for {} (price {:?}, stock {:?})",
+                        config.item_id, snapshot.last_price, snapshot.last_stock
+                    )
+                });
             }
         }
 
@@ -114,6 +120,12 @@ impl Engine {
                 let runtime = self.runtime_for(&config.item_id, config.desired_qty);
                 runtime.last_point_bucket = Some(bucket);
                 runtime.point_write_at = now;
+                self.logger.debug_lazy("engine", || {
+                    format!(
+                        "wrote price point {}@{bucket} (close {price:.6}, low {low:.6}, high {high:.6})",
+                        config.item_id
+                    )
+                });
             }
         }
     }
@@ -219,6 +231,15 @@ impl Engine {
             let runtime = self.runtime_for(&config.item_id, desired_qty);
             Self::compute_trend(&config, runtime, now, true);
             restored += 1;
+            self.logger.debug_lazy("engine", || {
+                format!(
+                    "hydrated {} from sqlite (price {:?}, stock {:?}, seen {}ms ago)",
+                    config.item_id,
+                    snapshot.last_price,
+                    snapshot.last_stock,
+                    now - snapshot.seen_at
+                )
+            });
         }
 
         if restored > 0 {
@@ -395,12 +416,20 @@ impl Engine {
                 sample.raw_high,
             )
         }));
-        if let Err(error) = store.record_price_samples(&rows)
-            && at - self.sample_error_at > 60_000
-        {
-            self.sample_error_at = at;
-            self.logger
-                .warn("engine", format!("could not record price samples: {error}"));
+        match store.record_price_samples(&rows) {
+            Err(error) => {
+                if at - self.sample_error_at > 60_000 {
+                    self.sample_error_at = at;
+                    self.logger
+                        .warn("engine", format!("could not record price samples: {error}"));
+                }
+            }
+            Ok(()) if !rows.is_empty() => {
+                self.logger.debug_lazy("engine", || {
+                    format!("stored {} sampled price point(s)", rows.len())
+                });
+            }
+            Ok(()) => {}
         }
         samples
     }

@@ -32,6 +32,9 @@ pub(super) async fn latency_view(_auth: Auth, State(state): State<Arc<AppState>>
 }
 
 pub(super) async fn latency_probe(_auth: Auth, State(state): State<Arc<AppState>>) -> Response {
+    state
+        .logger
+        .debug("latency", "manual latency probe requested from the deck");
     let probe = match state.keepalive_service() {
         Some(service) if service.enabled() => Some(service.probe_once().await),
         _ => None,

@@ -52,6 +52,16 @@ pub(super) async fn patch_settings(
     drop(store);
 
     state.logger.info("config", "runtime settings updated");
+    state.logger.debug_lazy("config", || {
+        format!(
+            "settings now: mode {}, delay {}ms, cap {}/min, auto refresh {}, markup {}%",
+            settings.mode.as_str(),
+            settings.delay_per_order,
+            settings.max_orders_per_minute,
+            settings.auto_refresh,
+            settings.total_price_markup_pct
+        )
+    });
     if resumed {
         state.wake_keepalive("trading resumed");
     }
@@ -144,6 +154,9 @@ pub(super) async fn control(
             let gateway = lock(&state.gateway).clone();
             match gateway {
                 Some(gateway) => {
+                    state
+                        .logger
+                        .debug("control", "manual market feed reconnect requested");
                     gateway.reconnect("manual").await;
                     Json(json!({ "ok": true })).into_response()
                 }

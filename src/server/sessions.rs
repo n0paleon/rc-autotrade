@@ -49,6 +49,9 @@ pub(super) async fn post_session(
     };
     state.broadcast("session", status.clone());
     state.wake_keepalive("session updated");
+    state.logger.debug_lazy("session", || {
+        format!("session patched from the deck (access token changed={changed})")
+    });
 
     if changed {
         // Manual credential replacement must re-handshake even when the feed
@@ -125,6 +128,9 @@ pub(super) async fn push_session(
     };
     if accepted {
         state.wake_keepalive("bridge session");
+        state
+            .logger
+            .debug("session", "bridge session push accepted");
         let status = {
             let store = lock(&state.store);
             store.session_status()
@@ -142,6 +148,9 @@ pub(super) async fn refresh_session_endpoint(
     _auth: Auth,
     State(state): State<Arc<AppState>>,
 ) -> Response {
+    state
+        .logger
+        .debug("session", "manual session refresh requested from the deck");
     let refreshed = crate::runtime::refresh_session(&state).await;
     let status = {
         let store = lock(&state.store);

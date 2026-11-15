@@ -388,8 +388,16 @@ pub fn spawn(
         ticker.tick().await;
         loop {
             ticker.tick().await;
-            let mut guard = lock(&sample_monitor);
-            guard.sample();
+            let snapshot = {
+                let mut guard = lock(&sample_monitor);
+                guard.sample()
+            };
+            let cpu = snapshot["cpu"]["processPercent"].as_f64().unwrap_or(0.0);
+            let rss = snapshot["memory"]["rssMb"].as_f64().unwrap_or(0.0);
+            let health = snapshot["health"]["level"].as_str().unwrap_or("?");
+            sample_logger.debug_lazy("system", || {
+                format!("sample cpu {cpu:.1}% rss {rss:.1}MB health {health}")
+            });
         }
     });
 
@@ -414,6 +422,5 @@ pub fn spawn(
         }
     });
 
-    let _ = sample_logger;
     vec![sampler, watchdog]
 }

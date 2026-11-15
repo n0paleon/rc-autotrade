@@ -28,6 +28,12 @@ pub(super) async fn run(
     let upstream = config.upstream_host();
     let mut attempts: i64 = 0;
     let mut stopped = false;
+    config.logger.debug_lazy("gateway", || {
+        format!(
+            "feed target {upstream} ({})",
+            crate::redact::redact_secrets(&config.url)
+        )
+    });
 
     loop {
         if stopped {
@@ -54,6 +60,13 @@ pub(super) async fn run(
         }
         set_status(&stats, &events, &upstream, "connecting");
         config.logger.info("gateway", "connecting to market feed");
+        config.logger.debug_lazy("gateway", || {
+            format!(
+                "handshake attempt {} (timeout {HANDSHAKE_TIMEOUT_MS}ms, cookie {})",
+                attempts + 1,
+                if cookie.is_empty() { "no" } else { "yes" }
+            )
+        });
         let connect_started = Instant::now();
 
         let Some(request) = build_request(&config.url, &token, &cookie) else {
@@ -86,6 +99,9 @@ pub(super) async fn run(
                 }
                 set_status(&stats, &events, &upstream, "online");
                 config.logger.info("gateway", "market feed connected");
+                config.logger.debug_lazy("gateway", || {
+                    format!("handshake finished in {handshake_ms:.1}ms")
+                });
                 Some(socket)
             }
             Ok(Err(error)) => {
@@ -166,6 +182,9 @@ pub(super) async fn run(
                                             let mut stats = lock(&stats);
                                             stats.note_message(&cmd);
                                         }
+                                        config.logger.debug_lazy("gateway", || {
+                                            format!("frame {cmd} ({} bytes)", text.len())
+                                        });
                                         let event = GatewayEvent::Frame {
                                             raw: value,
                                             at: now_ms(),
@@ -177,15 +196,37 @@ pub(super) async fn run(
                                         } else if events.try_send(event).is_err() {
                                             let mut stats = lock(&stats);
                                             stats.dropped += 1;
+                                            config.logger.debug_lazy("gateway", || {
+                                                format!("dropped {cmd}: engine queue is full")
+                                            });
                                         }
                                     }
-                                    _ => {
+                                    Ok(_) => {
                                         let mut stats = lock(&stats);
                                         stats.parse_errors += 1;
+                                        config.logger.debug_lazy("gateway", || {
+                                            format!(
+                                                "ignored non-object frame ({} bytes)",
+                                                text.len()
+                                            )
+                                        });
+                                    }
+                                    Err(error) => {
+                                        let mut stats = lock(&stats);
+                                        stats.parse_errors += 1;
+                                        config.logger.debug_lazy("gateway", || {
+                                            format!(
+                                                "unparseable frame ({} bytes): {error}",
+                                                text.len()
+                                            )
+                                        });
                                     }
                                 }
                             }
                             Some(Ok(Message::Ping(payload))) => {
+                                config.logger.debug_lazy("gateway", || {
+                                    format!("upstream ping ({} bytes) -> pong", payload.len())
+                                });
                                 if write.send(Message::Pong(payload)).await.is_err() {
                                     break;
                                 }
@@ -199,6 +240,9 @@ pub(super) async fn run(
                                     }
                                     let mut latency = lock(&config.latency);
                                     latency.record(Channel::WsPing, ms, true, None);
+                                    config.logger.debug_lazy("gateway", || {
+                                        format!("pong in {ms:.1}ms")
+                                    });
                                 }
                             }
                             Some(Ok(Message::Close(frame))) => {
@@ -210,10 +254,23 @@ pub(super) async fn run(
                                 } else {
                                     format!("socket closed ({code}: {reason})")
                                 };
+                                config.logger.debug("gateway", &message);
                                 record_error(&stats, &redact_secrets(&message));
                                 break;
                             }
-                            Some(Ok(_)) => {}
+                            Some(Ok(other)) => {
+                                // Never format the payload: a stray binary frame
+                                // can be megabytes long.
+                                let label = match &other {
+                                    Message::Binary(bytes) => {
+                                        format!("binary frame ({} bytes)", bytes.len())
+                                    }
+                                    _ => "non-text frame".to_string(),
+                                };
+                                config.logger.debug_lazy("gateway", || {
+                                    format!("ignoring {label}")
+                                });
+                            }
                             Some(Err(error)) => {
                                 record_error(&stats, &redact_secrets(&error.to_string()));
                                 config
@@ -246,6 +303,9 @@ pub(super) async fn run(
             }
 
             let _ = write.close().await;
+            config
+                .logger
+                .debug("gateway", "socket read loop ended; dropping the connection");
             {
                 let mut stats = lock(&stats);
                 stats.connected_at = None;
@@ -272,6 +332,13 @@ pub(super) async fn run(
         config
             .logger
             .info("gateway", format!("retrying in {delay}ms"));
+        config.logger.debug_lazy("gateway", || {
+            format!(
+                "attempt {} failed; backoff base {base}ms + {}ms jitter",
+                attempts,
+                delay - base
+            )
+        });
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(delay)) => {}
             command = commands.recv() => {

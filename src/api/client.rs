@@ -24,6 +24,9 @@ pub struct ApiClient {
     /// A proxy makes the resolver describe the proxy hop, not the upstream, so
     /// connection classification is reported as unknown instead of guessing.
     pub(super) proxy: bool,
+    /// Optional so tests can build a client without a ring buffer; the worker
+    /// installs it to trace every upstream exchange at debug level.
+    pub(super) logger: Option<std::sync::Arc<crate::logger::Logger>>,
 }
 
 /// Whether the environment asks reqwest for a proxy. The resolver then sees
@@ -71,6 +74,20 @@ impl ApiClient {
             last_request_at: std::sync::Arc::new(AtomicI64::new(0)),
             latency: None,
             dns,
+            logger: None,
+        }
+    }
+
+    /// Attaches the worker logger so every exchange is traced at debug level.
+    pub fn with_logger(mut self, logger: std::sync::Arc<crate::logger::Logger>) -> Self {
+        self.logger = Some(logger);
+        self
+    }
+
+    /// Emits a debug line when both a logger and the debug level are present.
+    fn log_debug(&self, message: impl FnOnce() -> String) {
+        if let Some(logger) = &self.logger {
+            logger.debug_lazy("http", message);
         }
     }
 
@@ -206,6 +223,25 @@ impl ApiClient {
                 let status = response.status().as_u16();
                 let (parsed, text) = read_json(response).await;
                 self.record_http(started, true, None);
+                self.log_debug(|| {
+                    let dns = dns
+                        .as_ref()
+                        .map(|lookup| {
+                            format!(
+                                "{:.1}ms {}",
+                                lookup.ms,
+                                lookup.address.as_deref().unwrap_or("?")
+                            )
+                        })
+                        .unwrap_or_else(|| "reused/skipped".to_string());
+                    format!(
+                        "POST {path} -> {status} in {:.1}ms (ttfb {:.1}ms, socket {}, dns {dns}, {} body bytes)",
+                        started.elapsed().as_secs_f64() * 1000.0,
+                        ttfb.as_secs_f64() * 1000.0,
+                        socket.as_str(),
+                        text.len()
+                    )
+                });
                 (
                     status,
                     parsed,
@@ -231,6 +267,13 @@ impl ApiClient {
                     crate::redact::redact_secrets(&error.to_string())
                 };
                 self.record_http(started, false, Some(&message));
+                self.log_debug(|| {
+                    format!(
+                        "POST {path} failed after {:.1}ms (socket {}): {message}",
+                        started.elapsed().as_secs_f64() * 1000.0,
+                        socket.as_str()
+                    )
+                });
                 (
                     0,
                     None,

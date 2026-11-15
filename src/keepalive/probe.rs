@@ -12,6 +12,8 @@ impl KeepaliveService {
     /// Coalesced probe: concurrent callers share the same in-flight request.
     pub async fn probe_once(&self) -> ProbeResult {
         if !self.enabled() {
+            self.logger
+                .debug("keepalive", "probe skipped: the warm probe is disabled");
             return ProbeResult {
                 skipped: true,
                 error: Some("disabled".into()),
@@ -19,6 +21,10 @@ impl KeepaliveService {
             };
         }
         let Ok(_guard) = self.run_lock.try_lock() else {
+            self.logger.debug(
+                "keepalive",
+                "probe skipped: another probe is already running",
+            );
             return ProbeResult {
                 skipped: true,
                 ..Default::default()
@@ -30,6 +36,9 @@ impl KeepaliveService {
     async fn probe(&self) -> ProbeResult {
         let started = std::time::Instant::now();
         let started_at = now_ms();
+        self.logger.debug_lazy("keepalive", || {
+            format!("POST {} ({}ms timeout)", self.url, self.timeout_ms)
+        });
         {
             let mut stats = lock(&self.stats);
             stats.probes += 1;
