@@ -82,7 +82,6 @@ export function TargetModal({ config, onClose, worker, notify, markupPct = 0 }) 
   const [allowPartialOrder, setAllowPartialOrder] = useState(config?.allowPartialOrder !== false);
   const [active, setActive] = useState(config?.active !== false);
   const [errors, setErrors] = useState({});
-  const [formError, setFormError] = useState("");
   const [busy, setBusy] = useState(false);
   const [auto, setAuto] = useState({
     state: config ? (config.label ? "ready" : "loading") : "idle",
@@ -170,25 +169,32 @@ export function TargetModal({ config, onClose, worker, notify, markupPct = 0 }) 
     };
     const localErrors = validateTargetLocally(target);
     setErrors(localErrors);
-    setFormError("");
     if (Object.keys(localErrors).length > 0) {
       focusFirstInvalid(form);
       return;
     }
 
     setBusy(true);
+    // `saveTarget` writes the optimistic config before it awaits the request.
+    // Close the dialog right away so the updated card is what the operator sees;
+    // a rejection rolls the card back and reports the reason as a toast.
+    const saving = worker.saveTarget(target, config?.itemId);
+    close();
     try {
-      await worker.saveTarget(target, config?.itemId);
-      close();
-      notify("success", editing ? "TARGET UPDATED" : "TARGET DEPLOYED", auto.label || shortId(target.itemId));
+      await saving;
+      // The auto label may still be resolving on a fresh deploy, so fall back
+      // to the short id instead of announcing "Waiting for an item ID…".
+      const savedLabel = auto.state === "ready" && auto.label ? auto.label : shortId(target.itemId);
+      notify("success", editing ? "TARGET UPDATED" : "TARGET DEPLOYED", savedLabel);
     } catch (error) {
-      if (error.fields && Object.keys(error.fields).length > 0) {
-        setErrors(error.fields);
-        focusFirstInvalid(form);
-      } else {
-        setFormError(error.message || "The worker could not save this target.");
-      }
-      setBusy(false);
+      const details = Object.entries(error?.fields || {})
+        .map(([field, message]) => `${field}: ${message}`)
+        .join(" · ");
+      notify(
+        "error",
+        details ? "CHECK THE FIELDS" : "SAVE FAILED",
+        details || error?.message || "The worker could not save this target."
+      );
     }
   };
 
@@ -209,12 +215,6 @@ export function TargetModal({ config, onClose, worker, notify, markupPct = 0 }) 
       }
     >
       <form id="target-form" className="modal-body" noValidate autoComplete="off" onSubmit={submit}>
-        {formError ? (
-          <p className="flex items-start gap-2 border-2 border-danger/50 bg-danger/5 p-2.5 text-body leading-relaxed text-danger" role="alert">
-            <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span>{formError}</span>
-          </p>
-        ) : null}
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="field sm:col-span-2">
             <span>Item ID / marketplace URL</span>

@@ -172,7 +172,11 @@ export function ModeMenu({ mode, busy, onChange, variant = "header" }) {
         title={`Trading mode: ${active.label}. ${active.hint}`}
       >
         <Icon name={MODE_ICON[mode]} className="h-3 w-3" />
-        <span className="hidden sm:inline">{busy ? "…" : active.short}</span>
+        {/* The optimistic update has already flipped `mode`, so keep naming the
+            new state while the request is in flight. The button's busy pixel
+            (data-busy) carries the pending signal instead of "…", which used to
+            hide the very change the deck had already committed to. */}
+        <span className="hidden sm:inline">{active.short}</span>
         <Icon
           name="i-caret-down"
           className={`h-2.5 w-2.5 chevron${open ? " rotate-180" : ""}`}

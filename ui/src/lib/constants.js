@@ -50,6 +50,30 @@ export function modeOf(settings = {}) {
   return "live";
 }
 
+/**
+ * The mode a `/api/control` action switches to, mirroring the server's mapping
+ * in `src/server/settings.rs`. Returns `null` when the action is not a mode
+ * change (e.g. `reconnect`), so callers know not to optimistically patch
+ * settings. `toggle` is the header panic switch: it turns live off and every
+ * other state back on in shadow, never straight into live.
+ */
+export function modeAfterControl(action, currentMode = "live") {
+  switch (action) {
+    case "off":
+    case "pause":
+      return "off";
+    case "shadow":
+      return "shadow";
+    case "live":
+    case "resume":
+      return "live";
+    case "toggle":
+      return modeOf({ mode: currentMode }) === "live" ? "off" : "shadow";
+    default:
+      return null;
+  }
+}
+
 /** How many loot-log rows one `/api/history` page returns. */
 export const LOOT_LOG_PAGE_SIZE = 50;
 

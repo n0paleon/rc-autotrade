@@ -6,7 +6,9 @@ import {
   DEFAULT_SETTINGS,
   LOOT_LOG_PAGE_SIZE,
   LIMITS,
-  MAX_REPORT_PRODUCTS
+  MAX_REPORT_PRODUCTS,
+  modeAfterControl,
+  modeOf
 } from "./lib/constants.js";
 
 const URL_KEY = "turuc.url";
@@ -1144,6 +1146,17 @@ export function useWorker({ notify }) {
 
   const control = useCallback(
     async (action) => {
+      // Mode changes are the most visible control action, so they take the same
+      // optimistic path as a settings patch: the header chip and every ModeMenu
+      // flip immediately, and a rejected transition rolls back with a resync.
+      const nextMode = modeAfterControl(action, modeOf(snapshot?.settings));
+      if (nextMode) {
+        return updateSettingsOptimistically(
+          { mode: nextMode },
+          "/api/control",
+          { method: "POST", body: { action } }
+        );
+      }
       if (action === "reconnect") {
         const version = nextMutationVersion(gatewayMutationVersions, "reconnect");
         const previousGateway = snapshot?.gateway || null;
@@ -1168,7 +1181,7 @@ export function useWorker({ notify }) {
       }
       return result;
     },
-    [request, snapshot]
+    [request, snapshot, updateSettingsOptimistically]
   );
 
   const refreshLatency = useCallback(async () => {
