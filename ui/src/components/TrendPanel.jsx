@@ -253,7 +253,7 @@ function TrendRow({ row, onEdit }) {
         <span className="block">{fixedPrice(market)}</span>
         {Number.isFinite(trend.bandPct) ? (
           <span
-            className="block font-mono text-[10px] font-normal leading-tight text-faint"
+            className="block font-mono text-micro font-normal leading-tight text-faint"
             title={`The smoothed level may sit up to ±${Number(trend.bandPct).toFixed(1)}% from the live market; the signal band is drawn from that`}
           >
             ±{Number(trend.bandPct).toFixed(1)}%
@@ -308,7 +308,7 @@ function TrendRow({ row, onEdit }) {
         </span>
         {trend.reliable ? null : (
           <span
-            className="ml-1 font-mono text-[10px] uppercase tracking-[0.08em] text-faint"
+            className="ml-1 font-mono text-micro uppercase tracking-[0.08em] text-faint"
             title={
               trend.reliableReason === "wide-band"
                 ? "There is enough history, but the level is too loose for the gap to mean much"
@@ -486,10 +486,10 @@ export default function TrendPanel({ configs, onEdit }) {
       <div className="collapse-frame" id="trend-watch-body" inert={collapsed || undefined}>
         <div className="collapse-body">
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b-2 border-line px-4 py-1.5">
-        <p className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+        <p className="font-mono text-micro uppercase tracking-[0.08em] text-faint">
           Signal only · nothing here places an order
         </p>
-        <p className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+        <p className="font-mono text-micro uppercase tracking-[0.08em] text-faint">
           {reliable} reliable
           {stale > 0 ? ` · ${stale} stale` : ""}
           {waiting > 0 ? ` · ${waiting} waiting for data` : ""}
@@ -503,7 +503,7 @@ export default function TrendPanel({ configs, onEdit }) {
             aria-hidden="true"
           />
           <div className="min-w-0">
-            <p className="font-mono text-[12px] font-semibold uppercase tracking-[0.12em] text-ink-dim">
+            <p className="font-mono text-label font-semibold uppercase tracking-[0.12em] text-ink-dim">
               {rows.length === 0
                 ? hasTargets
                   ? "Waiting for trend data"
@@ -512,7 +512,7 @@ export default function TrendPanel({ configs, onEdit }) {
                   ? "No ceiling above trend"
                   : "No ceiling below trend"}
             </p>
-            <p className="mt-0.5 text-[13px] leading-snug text-faint">
+            <p className="mt-0.5 text-body leading-relaxed text-faint">
               {rows.length === 0
                 ? hasTargets
                   ? "A trend needs a few minutes of price points."
@@ -557,7 +557,7 @@ export default function TrendPanel({ configs, onEdit }) {
 
       {current.length > visible.length ? (
         <div className="flex items-center justify-between gap-2 border-t-2 border-line bg-night-900/70 px-4 py-3">
-          <span role="status" className="font-mono text-[12px] font-semibold uppercase tracking-[0.08em] text-ink-dim">
+          <span role="status" className="font-mono text-label font-semibold uppercase tracking-[0.08em] text-ink-dim">
             Showing {visible.length} of {current.length}
           </span>
           <button
@@ -580,7 +580,7 @@ export default function TrendPanel({ configs, onEdit }) {
                 {meta.label}
               </span>
             ))}
-          <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
+          <span className="font-mono text-micro uppercase tracking-[0.08em] text-faint">
             gap = target vs trend · mom = 15m/60m momentum · ± = level uncertainty
           </span>
           <span className="ml-auto flex flex-wrap items-center gap-1.5">
@@ -594,7 +594,7 @@ export default function TrendPanel({ configs, onEdit }) {
                 {ACTION_META[key].label}
               </span>
             ))}
-            <span className="font-mono text-[10px] uppercase tracking-[0.08em] text-faint">
+            <span className="font-mono text-micro uppercase tracking-[0.08em] text-faint">
               next step
             </span>
           </span>

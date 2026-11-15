@@ -190,7 +190,7 @@ export default function EventChart({ request }) {
       </div>
 
       <div className="px-4 pb-4 pt-3">
-        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+        <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 font-mono text-label uppercase tracking-[0.08em] text-faint">
           <span>
             Events{" "}
             <strong className="tabular-nums text-pink">{formatInt(total)}</strong>

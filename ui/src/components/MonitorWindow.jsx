@@ -26,7 +26,7 @@ const OrderBenchmarkChart = lazy(() => import("./OrderBenchmarkChart.jsx"));
 function ChartSkeleton({ className = "h-[116px]" }) {
   return (
     <div
-      className={`skeleton flex items-center justify-center border-2 border-line/60 font-mono text-[11px] uppercase tracking-[0.08em] text-faint ${className}`}
+      className={`skeleton flex items-center justify-center border-2 border-line/60 font-mono text-micro uppercase tracking-[0.08em] text-faint ${className}`}
     >
       Loading chart…
     </div>
@@ -53,7 +53,7 @@ function LatencyChannel({ label, stats }) {
       <div className="flex items-baseline justify-between gap-3">
         <div className="min-w-0">
           <h3 className="label truncate">{label}</h3>
-          <span className="mt-1 block font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+          <span className="mt-1 block font-mono text-micro uppercase tracking-[0.08em] text-faint">
             {formatInt(count)} {count === 1 ? "sample" : "samples"}
             {errors > 0 ? <b className="text-danger"> · {formatInt(errors)} err</b> : null}
           </span>
@@ -85,7 +85,7 @@ function LatencyChannel({ label, stats }) {
         ))}
       </dl>
       {errors > 0 ? (
-        <p className="mt-2 flex items-start gap-1.5 font-mono text-[11px] leading-snug text-danger">
+        <p className="mt-2 flex items-start gap-1.5 font-mono text-meta leading-snug text-danger">
           <Icon name="i-alert" className="mt-px h-3 w-3 shrink-0" />
           <span className="break-words">{stats.lastError || "Upstream call failed"}</span>
         </p>
@@ -148,7 +148,7 @@ function LatencyPanel({ latency, fetchLatency, refreshLatency, notify }) {
               <b className={`font-mono text-[28px] font-bold leading-none tabular-nums ${fresh ? latencyClass(fresh.last) : "text-muted"}`}>
                 {fresh ? formatMs(fresh.last) : "—"}
               </b>
-              <span className="min-w-0 truncate font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+              <span className="min-w-0 truncate font-mono text-micro uppercase tracking-[0.08em] text-faint">
                 {fresh ? `${latencyChannelLabel(fresh.channel)} · ${relTime(fresh.lastAt)}` : "Waiting for the first sample"}
               </span>
             </div>
@@ -162,7 +162,7 @@ function LatencyPanel({ latency, fetchLatency, refreshLatency, notify }) {
             <LatencyChannel key={key} label={latencyChannelLabel(key)} stats={channels[key] || { count: 0, recent: [] }} />
           ))}
         </div>
-        <p className="text-[13px] leading-relaxed text-faint">
+        <p className="max-w-[65ch] text-copy text-faint">
           HTTP covers purchases, item info and token refresh. Warm probe is the keepalive GET. WS handshake and ping cover the market feed. Failures still count because they used upstream time.
         </p>
       </div>
@@ -267,8 +267,8 @@ function BenchmarkPanel({ benchmark, fetchBenchmark, onExpandChart }) {
               <b className={`font-mono text-[28px] font-bold leading-none tabular-nums ${benchmarkTone("total", total.avg)}`}>
                 {formatPreciseMs(total.avg)}
               </b>
-              <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">avg</span>
-              <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+              <span className="font-mono text-micro uppercase tracking-[0.08em] text-faint">avg</span>
+              <span className="font-mono text-micro uppercase tracking-[0.08em] text-faint">
                 · P95 <b className={`tabular-nums ${benchmarkTone("total", total.p95)}`}>{formatPreciseMs(total.p95)}</b>
                 {" · "}jitter <b className="tabular-nums text-ink-dim">{formatPreciseMs(total.jitter)}</b>
               </span>
@@ -300,10 +300,10 @@ function BenchmarkPanel({ benchmark, fetchBenchmark, onExpandChart }) {
         </Suspense>
 
         <div className="overflow-x-auto border-2 border-line">
-          <table className="w-full min-w-[21rem] border-collapse font-mono text-[12px] tabular-nums sm:min-w-[34rem]">
+          <table className="w-full min-w-[21rem] border-collapse font-mono text-meta tabular-nums sm:min-w-[34rem]">
             <caption className="sr-only">Order pipeline stages for the last {samples} timed orders</caption>
             <thead>
-              <tr className="border-b-2 border-line bg-night-900/80 text-[11px] uppercase tracking-[0.08em] text-faint">
+              <tr className="border-b-2 border-line bg-night-900/80 text-label uppercase tracking-[0.08em] text-faint">
                 <th scope="col" className="px-2.5 py-1.5 text-left font-medium">Stage</th>
                 <th scope="col" className="px-2 py-1.5 text-right font-medium">n</th>
                 {BENCHMARK_COLUMNS.map(([key, label, mobile]) => (
@@ -325,7 +325,7 @@ function BenchmarkPanel({ benchmark, fetchBenchmark, onExpandChart }) {
                   >
                     <th scope="row" className="whitespace-nowrap px-2.5 py-1.5 text-left font-normal">
                       {stage.label}
-                      {slowest?.key === stage.key ? <span className="ml-1.5 text-[10px] uppercase text-warn">slowest</span> : null}
+                      {slowest?.key === stage.key ? <span className="ml-1.5 text-micro uppercase text-warn">slowest</span> : null}
                     </th>
                     <td className="px-2 py-1.5 text-right text-faint">{empty ? "—" : formatInt(stat.count)}</td>
                     {BENCHMARK_COLUMNS.map(([key, , mobile]) => (
@@ -340,7 +340,7 @@ function BenchmarkPanel({ benchmark, fetchBenchmark, onExpandChart }) {
           </table>
         </div>
 
-        <p className="text-[13px] leading-relaxed text-faint">
+        <p className="max-w-[65ch] text-copy text-faint">
           {samples > 0
             ? `Showing the last ${formatInt(samples)} timed orders.`
             : "No timed orders yet."}{" "}
@@ -368,14 +368,14 @@ function SystemMeter({ label, value, detail, tone }) {
     <div className="border-2 border-line bg-night-950/60 p-3">
       <div className="flex items-center justify-between gap-2">
         <span className="label">{label}</span>
-        <b className={`font-mono text-[14px] font-semibold tabular-nums ${tone || "text-ink-dim"}`}>
+        <b className={`font-mono text-body font-semibold tabular-nums ${tone || "text-ink-dim"}`}>
           {formatPercent(value, 1)}
         </b>
       </div>
       <div className="meter meter-thin mt-2">
         <i className={fill} style={{ "--meter-value": `${width}%` }} />
       </div>
-      <span className="mt-1.5 block font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+      <span className="mt-1.5 block font-mono text-label uppercase tracking-[0.08em] text-faint">
         {detail}
       </span>
     </div>
@@ -384,12 +384,12 @@ function SystemMeter({ label, value, detail, tone }) {
 
 function StatTile({ label, value, tone, meta }) {
   return (
-    <span className="flex min-w-0 flex-col gap-0.5 border border-line/70 bg-night-900/60 px-1.5 py-1 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+    <span className="flex min-w-0 flex-col gap-0.5 border border-line/70 bg-night-900/60 px-1.5 py-1 font-mono text-label uppercase tracking-[0.08em] text-faint">
       <span className="truncate leading-tight">{label}</span>
-      <b className={`whitespace-nowrap text-[12px] font-semibold leading-tight tracking-normal tabular-nums ${tone || "text-ink-dim"}`}>
+      <b className={`whitespace-nowrap text-meta font-semibold leading-tight tracking-normal tabular-nums ${tone || "text-ink-dim"}`}>
         {value}
       </b>
-      {meta ? <span className="whitespace-nowrap text-[11px] leading-tight tracking-[0.04em]">{meta}</span> : null}
+      {meta ? <span className="whitespace-nowrap text-micro leading-tight tracking-[0.04em]">{meta}</span> : null}
     </span>
   );
 }
@@ -459,7 +459,7 @@ function SystemPanel({ system, fetchSystem }) {
           <h2 className="panel-title"><Icon name="i-bolt" className="h-4 w-4 text-signal" /> Worker health</h2>
         </div>
         <div className="panel-body">
-          <p className="text-[13px] leading-relaxed text-faint">
+          <p className="max-w-[65ch] text-copy text-faint">
             Waiting for the first metrics sample. The worker samples CPU, memory and event-loop
             health every few seconds; make sure it is running the latest build.
           </p>
@@ -489,13 +489,13 @@ function SystemPanel({ system, fetchSystem }) {
           <span className="label flex items-center gap-1.5">
             <Icon name="i-clock" className="h-3 w-3" /> Uptime {formatUptime(proc.uptimeMs)}
           </span>
-          <span className="font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+          <span className="font-mono text-label uppercase tracking-[0.08em] text-faint">
             PID {proc.pid} · {proc.runtime || proc.node}
           </span>
         </div>
 
         {health.level !== "ok" ? (
-          <p className="border-2 border-line bg-night-950/60 px-3 py-2 font-mono text-[12px] uppercase tracking-[0.08em] text-warn">
+          <p className="border-2 border-line bg-night-950/60 px-3 py-2 font-mono text-label uppercase tracking-[0.08em] text-warn">
             {health.reasons?.length ? health.reasons.join(" · ") : "Health check degraded"}
           </p>
         ) : null}
@@ -541,7 +541,7 @@ function SystemPanel({ system, fetchSystem }) {
               {dbSqlite.journalMode || "—"}
             </span>
             <span
-              className={`font-mono text-[12px] uppercase tracking-[0.08em] ${
+              className={`font-mono text-label uppercase tracking-[0.08em] ${
                 db?.instrumented ? "text-signal" : "text-faint"
               }`}
               title="Statements are timed through wrapped prepare/transaction calls"
@@ -572,7 +572,7 @@ function SystemPanel({ system, fetchSystem }) {
               {db.recentSlow.slice(0, 2).map((item, index) => (
                 <div
                   key={`${item.at}-${index}`}
-                  className="flex items-baseline gap-2 font-mono text-[11px] uppercase tracking-[0.06em]"
+                  className="flex items-baseline gap-2 font-mono text-micro uppercase tracking-[0.06em]"
                 >
                   <b className="shrink-0 text-warn">{formatPreciseMs(item.ms)}</b>
                   <code className="truncate text-faint" title={item.sql}>
@@ -582,7 +582,7 @@ function SystemPanel({ system, fetchSystem }) {
               ))}
             </div>
           ) : (
-            <span className="mt-1.5 block font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+            <span className="mt-1.5 block font-mono text-micro uppercase tracking-[0.08em] text-faint">
               {formatInt(dbWindow.count || 0)} statements · no slow queries in the last 60s
             </span>
           )}
@@ -609,7 +609,7 @@ function SystemPanel({ system, fetchSystem }) {
           />
         </div>
 
-        <p className="text-[13px] leading-relaxed text-faint">
+        <p className="max-w-[65ch] text-copy text-faint">
           Sampled every {formatInt(Math.round((system.intervalMs || 2000) / 1000)) || 1}s, pushed every{" "}
           {TELEMETRY_PUSH_MS / 1000}s. CPU is the worker process as a percentage of one core; system
           RAM uses MemAvailable on Linux. Warnings trigger at 80% heap, 88% RAM, 100ms event-loop p95, a DB p95 above{" "}
@@ -651,14 +651,14 @@ export function MonitorWindow({ open, snapshot, worker, notify, onClose }) {
 
   return (
     <ModalShell
-      title={chartExpanded ? "Order latency · expanded" : "Monitor window"}
+      title={chartExpanded ? "Order latency" : "Monitor window"}
       titleColor="lime"
       size="monitor"
       focusKey={chartExpanded ? "detail" : "compact"}
       onClose={onClose}
       footer={
         chartExpanded ? null : (
-          <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+          <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-micro uppercase tracking-[0.08em] text-faint">
             <span>
               <span className="led led-pulse text-signal" /> Telemetry live · push every {TELEMETRY_PUSH_MS / 1000}s
             </span>
@@ -683,10 +683,10 @@ export function MonitorWindow({ open, snapshot, worker, notify, onClose }) {
       ) : (
         <div className="monitor-window tab-panel space-y-3 p-3 sm:p-4">
           <div className="flex flex-wrap items-center justify-between gap-2 border-2 border-line bg-night-950/70 px-3 py-2">
-            <span className="flex items-center gap-2 font-mono text-[11px] font-bold uppercase tracking-[0.12em] text-gold">
+            <span className="flex items-center gap-2 font-mono text-micro font-bold uppercase tracking-[0.12em] text-gold">
               <Icon name="i-pulse" className="h-3.5 w-3.5" /> Orders · latency · system
             </span>
-            <span className="flex flex-wrap items-center gap-2 font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+            <span className="flex flex-wrap items-center gap-2 font-mono text-micro uppercase tracking-[0.08em] text-faint">
               <span className="flex items-center gap-1"><span className="led bg-info" /> upstream</span>
               <span className="flex items-center gap-1"><span className="led bg-gold" /> orders</span>
               <span className="flex items-center gap-1"><span className="led bg-signal" /> worker</span>

@@ -194,7 +194,7 @@ function BootScreen({ onLogin, busy, error }) {
   ];
 
   return (
-    <section className="relative flex min-h-dvh items-center justify-center overflow-hidden px-4 py-10 sm:px-6">
+    <section className="boot-shell relative flex min-h-dvh items-center justify-center overflow-hidden px-4 sm:px-6">
       <div className="pointer-events-none absolute inset-0" aria-hidden="true">
         <span className="sparkle absolute left-[7%] top-[16%] h-2 w-2 bg-gold" />
         <span className="sparkle absolute left-[16%] top-[70%] h-1.5 w-1.5 bg-pink [animation-delay:0.7s]" />
@@ -202,7 +202,7 @@ function BootScreen({ onLogin, busy, error }) {
         <span className="sparkle absolute right-[24%] bottom-[18%] h-2 w-2 bg-violet [animation-delay:0.4s]" />
         <span className="absolute left-[46%] top-[10%] h-1 w-1 bg-ink/40" />
       </div>
-      <div className="relative grid w-full max-w-6xl items-center gap-10 lg:grid-cols-[1.08fr_0.92fr] lg:gap-14">
+      <div className="boot-grid relative grid w-full max-w-6xl items-center lg:grid-cols-[1.08fr_0.92fr] lg:gap-14">
         <div className="boot-intro">
           <p className="inline-flex items-center gap-2 border-2 border-line bg-night-900 px-2 py-1 font-mono text-[12px] font-bold uppercase tracking-[0.08em] text-gold shadow-[3px_3px_0_#05030f]">
             <span className="led led-pulse bg-gold" /> Player 1 · TURU.RC
@@ -215,7 +215,7 @@ function BootScreen({ onLogin, busy, error }) {
               MARKET<br /><span className="accent">SNIPER</span>
             </h1>
           </div>
-          <p className="mt-4 max-w-md text-[14px] leading-relaxed text-muted sm:mt-6">
+          <p className="boot-lede mt-4 max-w-md text-copy text-muted sm:mt-6">
             A headless Rollercoin marketplace sniper. It watches the wire, prices your targets, and buys the dip while you sleep.
           </p>
           <ul className="mt-6 hidden space-y-2 sm:block">
@@ -310,7 +310,7 @@ function BootScreen({ onLogin, busy, error }) {
           </div>
         </div>
 
-        <p className="text-center text-[13px] text-faint lg:col-span-2">
+        <p className="text-center text-meta text-faint lg:col-span-2">
           {remember
             ? "First run? The access key is printed in the worker terminal. Lock the deck to forget it."
             : "First run? The access key is printed in the worker terminal. It is dropped when this tab closes."}
@@ -738,7 +738,7 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
           aria-label={expanded ? `Hide details for ${label}` : `Show details for ${label}`}
           onClick={() => setExpanded((value) => !value)}
         >
-          <span>{expanded ? "Hide details" : "Price chart, range and fills"}</span>
+          <span>{expanded ? "Hide details" : "Price chart & fills"}</span>
           <Icon name="i-chevron" className={`h-3 w-3 chevron${expanded ? " rotate-90" : ""}`} />
         </button>
       ) : null}
@@ -769,10 +769,10 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
             <strong className={`font-mono text-[18px] font-bold leading-none tabular-nums min-[360px]:text-[20px] ${hot ? "text-gold" : "text-info"}`}>
               {Number.isFinite(runtime.lastPrice) ? fixedPrice(runtime.lastPrice) : "—"}
             </strong>
-            <span className="font-mono text-[12px] text-faint">RLT</span>
+            <span className="font-mono text-label text-faint">RLT</span>
             {runtime.stale && Number.isFinite(runtime.seenAt) ? (
               <span
-                className="ml-auto font-mono text-[10px] uppercase tracking-[0.08em] text-faint"
+                className="ml-auto font-mono text-micro uppercase tracking-[0.08em] text-faint"
                 title={`Cached snapshot from ${relTime(runtime.seenAt)} — waiting for a live market frame`}
               >
                 cached
@@ -1048,8 +1048,8 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, statusFilter,
             <Icon name="i-target" className="h-7 w-7" />
           </span>
           <div>
-            <p className="font-mono text-[13px] font-semibold uppercase tracking-[0.14em] text-ink-dim">No targets deployed</p>
-            <p className="mx-auto mt-1 max-w-sm text-[13px] leading-relaxed text-faint">
+            <p className="font-mono text-body font-semibold uppercase tracking-[0.14em] text-ink-dim">No targets deployed</p>
+            <p className="mx-auto mt-1 max-w-sm text-body leading-relaxed text-faint">
               Add an item ID, set your price ceiling, and the worker will hunt the market for you.
             </p>
           </div>
@@ -1061,8 +1061,8 @@ function TargetsPanel({ configs, reportByItem, search, typeFilter, statusFilter,
         <div className="grid grid-cols-1 gap-4 p-4 xl:grid-cols-2">
           {filtered.length === 0 ? (
             <div className="col-span-full flex flex-col items-center gap-2 py-10 text-center">
-              <p className="font-mono text-[13px] font-semibold uppercase tracking-[0.14em] text-ink-dim">{emptyTitle}</p>
-              <p className="max-w-sm text-[13px] leading-relaxed text-faint">{emptyNote}</p>
+              <p className="font-mono text-body font-semibold uppercase tracking-[0.14em] text-ink-dim">{emptyTitle}</p>
+              <p className="max-w-sm text-body leading-relaxed text-faint">{emptyNote}</p>
             </div>
           ) : (
             visible.map((config) => (
@@ -1197,8 +1197,8 @@ function ReportPanel({ report, notify }) {
       {items.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-2 px-6 py-12 text-center">
           <Icon name="i-coin" className="h-6 w-6 text-faint" />
-          <p className="font-mono text-[13px] uppercase tracking-[0.14em] text-ink-dim">No product data yet</p>
-          <p className="text-[13px] text-faint">Filled and missed orders are aggregated here, per product, all time.</p>
+          <p className="font-mono text-body uppercase tracking-[0.14em] text-ink-dim">No product data yet</p>
+          <p className="text-body text-faint">Filled and missed orders are aggregated here, per product, all time.</p>
         </div>
       ) : (
         <>
@@ -1275,18 +1275,18 @@ function ReportPanel({ report, notify }) {
             role="region"
             aria-label="Profit by product, scrollable"
           >
-            <table className="w-full min-w-[880px] border-collapse text-left font-mono text-[13px] tabular-nums">
+            <table className="w-full min-w-[820px] border-collapse text-left font-mono text-[13px] tabular-nums">
               <thead className="sticky top-0 z-10 bg-night-900">
                 <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
                   <th scope="col" className="px-4 py-2 font-medium">Product</th>
-                  <th scope="col" className="px-3 py-2 font-medium">Fills</th>
+                  <th scope="col" className="px-3 py-2 font-medium">Fills/missed</th>
                   <th scope="col" className="px-3 py-2 font-medium">Qty</th>
                   <th scope="col" className="px-3 py-2 font-medium">Spend</th>
                   <th scope="col" className="px-3 py-2 font-medium">Avg buy</th>
                   <th scope="col" className="px-3 py-2 font-medium">Profit</th>
                   <th scope="col" className="px-3 py-2 font-medium">Margin</th>
                   <th scope="col" className="px-3 py-2 font-medium">Success</th>
-                  <th scope="col" className="px-4 py-2 font-medium">Last</th>
+                  <th scope="col" className="px-4 py-2 font-medium max-[1439px]:hidden">Last</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line/40">
@@ -1307,7 +1307,7 @@ function ReportPanel({ report, notify }) {
                     <td className={`px-3 py-2 ${profitClass(item.profitRlt)}`}>{formatSignedRlt(item.profitRlt)}</td>
                     <td className={`px-3 py-2 ${profitClass(item.marginPct)}`}>{percentText(item.marginPct)}</td>
                     <td className="px-3 py-2 text-muted">{item.successPct == null ? "—" : `${formatInt(item.successPct)}%`}</td>
-                    <td className="whitespace-nowrap px-4 py-2 text-faint">
+                    <td className="whitespace-nowrap px-4 py-2 text-faint max-[1439px]:hidden">
                       <span title={item.lastAt ? new Date(item.lastAt).toLocaleString() : undefined}>
                         {item.lastAt ? relTime(item.lastAt) : "—"}
                       </span>
@@ -1330,7 +1330,7 @@ function ReportPanel({ report, notify }) {
                   </td>
                   <td className={`px-3 py-2.5 ${profitClass(totals?.marginPct)}`}>{percentText(totals?.marginPct)}</td>
                   <td className="px-3 py-2.5 text-faint">—</td>
-                  <td className="px-4 py-2.5 text-faint">—</td>
+                  <td className="px-4 py-2.5 text-faint max-[1439px]:hidden">—</td>
                 </tr>
               </tfoot>
             </table>
@@ -1642,10 +1642,10 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
       {entries.length === 0 ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
           <Icon name="i-coin" className="h-6 w-6 text-faint" />
-          <p className="font-mono text-[13px] uppercase tracking-[0.14em] text-ink-dim">
+          <p className="font-mono text-body uppercase tracking-[0.14em] text-ink-dim">
             {loading ? "Searching…" : emptyTitle}
           </p>
-          <p className="text-[13px] text-faint">{loading ? "Reading the permanent loot log." : emptyHint}</p>
+          <p className="text-body text-faint">{loading ? "Reading the permanent loot log." : emptyHint}</p>
         </div>
       ) : (
         <>
@@ -1700,7 +1700,7 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
           )}
           {wide ? (
           <div className="min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain">
-            <table className="w-full min-w-[860px] border-collapse text-left font-mono text-[13px] tabular-nums">
+            <table className="w-full min-w-[800px] border-collapse text-left font-mono text-[13px] tabular-nums">
               <thead className="sticky top-0 z-10 bg-night-900">
                 <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
                   <th scope="col" className="px-4 py-2 font-medium">Time</th>
@@ -1712,9 +1712,9 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
                   <th scope="col" className="px-3 py-2 font-medium">Total</th>
                   <th scope="col" className="px-3 py-2 font-medium">Target</th>
                   <th scope="col" className="px-3 py-2 font-medium">Profit</th>
-                  <th scope="col" className="px-3 py-2 font-medium">Latency</th>
+                  <th scope="col" className="px-3 py-2 font-medium max-[1439px]:hidden">Latency</th>
                   <th scope="col" className="px-3 py-2 font-medium">Status</th>
-                  <th scope="col" className="px-4 py-2 font-medium">Message</th>
+                  <th scope="col" className="px-4 py-2 font-medium max-2xl:hidden">Message</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line/40">
@@ -1761,14 +1761,14 @@ function LootLog({ history, historyTotal, historyRevision, onReset, request, onM
                     <td className={`px-3 py-2 ${entry.profitRlt > 0 ? "text-gold" : entry.profitRlt < 0 ? "text-danger" : "text-ink-dim"}`}>
                       {entry.status === "failed" ? "0.000000" : formatSignedRlt(entry.profitRlt)}
                     </td>
-                    <td className="px-3 py-2 text-muted">{entry.latencyMs != null ? `${Math.round(entry.latencyMs)}ms` : "—"}</td>
+                    <td className="px-3 py-2 text-muted max-[1439px]:hidden">{entry.latencyMs != null ? `${Math.round(entry.latencyMs)}ms` : "—"}</td>
                     <td className="px-3 py-2">
                       <span className={`status-pill${entry.status === "failed" ? " is-failed" : ""}`}>
                         {entry.status === "failed" ? "Failed" : "Filled"}
                       </span>
                     </td>
                     <td
-                      className="max-w-[220px] truncate px-4 py-2 text-muted"
+                      className="max-w-[220px] truncate px-4 py-2 text-muted max-2xl:hidden"
                       title={entry.status === "failed" ? entry.message || entry.note || undefined : undefined}
                     >
                       {entry.status === "failed" ? entry.message || entry.note || "failed" : "-"}
@@ -1960,7 +1960,7 @@ function FeedPanel({ logs, onClear, notify }) {
         </div>
         <div className="flex items-center gap-1">
           <button
-            className={`btn btn-sm max-sm:w-10 max-sm:px-0 ${isTailing ? "btn-signal" : ""}`}
+            className={`btn btn-sm max-sm:w-11 max-sm:px-0 ${isTailing ? "btn-signal" : ""}`}
             type="button"
             title={isTailing ? "Stop tailing and hold this line" : "Tail newest log lines"}
             aria-label={isTailing ? "Stop tailing the event log" : "Tail newest event log lines"}
@@ -2124,7 +2124,7 @@ function LinkPanel({ snapshot, worker, notify, onEditSession, onBridge, onClearS
           <div className="meter mt-2">
             <i id="token-meter" className={meterClass} style={{ "--meter-value": `${meterWidth}%` }} />
           </div>
-          <p className="mt-2 text-[13px] leading-snug text-faint">
+          <p className="mt-2 text-meta leading-snug text-faint">
             {!session.hasAccessToken
               ? "No Rollercoin session linked. Paste a token or use the bridge."
               : session.lastError
@@ -2171,7 +2171,7 @@ function LinkPanel({ snapshot, worker, notify, onEditSession, onBridge, onClearS
           <input type="checkbox" className="sr-only" checked={Boolean(settings.autoRefresh)} onChange={(event) => toggleAuto(event.target.checked)} />
           <span className="switch" aria-hidden="true" />
         </label>
-        <p className="flex items-start gap-1.5 text-[13px] leading-snug text-faint">
+        <p className="flex items-start gap-1.5 text-body leading-snug text-faint">
           <Icon name="i-alert" className="mt-0.5 h-3 w-3 text-warn/80" />
           <span>Tokens are stored in <code className="text-ink-dim">data/rollercoin.db</code> with owner-only permissions.</span>
         </p>
@@ -2304,7 +2304,7 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
           <h3 className="flex items-center gap-1.5 font-mono text-[12px] font-semibold uppercase tracking-[0.14em] text-gold">
             <Icon name="i-database" className="h-3.5 w-3.5" /> Backup &amp; migrate
           </h3>
-          <p className="text-[13px] leading-snug text-muted">
+          <p className="text-body leading-relaxed text-muted">
             Export targets, settings, counters and the whole loot log to one portable file — or restore it
             onto another worker.
           </p>
@@ -2317,7 +2317,7 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
           <h3 className="flex items-center gap-1.5 font-mono text-[12px] font-semibold uppercase tracking-[0.14em] text-danger">
             <Icon name="i-alert" className="h-3.5 w-3.5" /> Danger zone
           </h3>
-          <p className="text-[13px] leading-snug text-muted">
+          <p className="text-body leading-relaxed text-muted">
             Wipes lifetime profit, fill counters, per-target success rates and the loot log. Targets stay untouched.
           </p>
           <button className="btn btn-danger btn-sm btn-block" type="button" onClick={onReset}>Reset lifetime stats</button>
@@ -2406,7 +2406,7 @@ function ToastStack({ toasts, onDismiss }) {
   };
   return createPortal(
     <div
-      className="pointer-events-none fixed inset-x-3 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-[60] flex flex-col items-end gap-2 sm:inset-x-auto sm:bottom-4 sm:right-4 sm:w-[360px]"
+      className="pointer-events-none fixed left-[max(0.75rem,env(safe-area-inset-left))] right-[max(0.75rem,env(safe-area-inset-right))] bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-[60] flex flex-col items-end gap-2 sm:left-auto sm:right-[max(1rem,env(safe-area-inset-right))] sm:bottom-[max(1rem,env(safe-area-inset-bottom))] sm:w-[360px]"
       aria-live="polite"
       role="region"
       aria-label="Notifications"
@@ -2432,7 +2432,7 @@ function ToastStack({ toasts, onDismiss }) {
           />
           <div className="min-w-0 flex-1">
             <span className="block font-sans text-[12px] font-semibold uppercase tracking-[0.08em] text-ink">{toast.title}</span>
-            <span className="mt-0.5 block text-[13px] leading-relaxed text-muted">{toast.message}</span>
+            <span className="mt-0.5 block text-body leading-relaxed text-muted">{toast.message}</span>
           </div>
           <button
             className="toast-close"

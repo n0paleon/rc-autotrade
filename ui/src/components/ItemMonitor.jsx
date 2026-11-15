@@ -406,10 +406,10 @@ export function ItemMonitor({ request, notify }) {
       {empty ? (
         <div className="flex flex-col items-center justify-center gap-2 px-6 py-10 text-center">
           <Icon name="i-pulse" className="h-6 w-6 text-faint" />
-          <p className="font-mono text-[13px] uppercase tracking-[0.14em] text-ink-dim">
+          <p className="font-mono text-body uppercase tracking-[0.14em] text-ink-dim">
             {loading ? "Reading item activity…" : status === "error" ? "Item activity unavailable" : "No item activity in range"}
           </p>
-          <p className="max-w-[52ch] text-[13px] text-faint">
+          <p className="max-w-[52ch] text-body leading-relaxed text-faint">
             {loading
               ? "Counting the market frames the worker has seen."
               : status === "error"
@@ -421,9 +421,9 @@ export function ItemMonitor({ request, notify }) {
         <>
           {wide ? (
             <div className="report-scroll min-w-0">
-              <table className="w-full min-w-[820px] border-collapse text-left font-mono text-[13px] tabular-nums">
+              <table className="w-full min-w-[820px] border-collapse text-left font-mono text-meta tabular-nums">
                 <thead className="sticky top-0 z-10 bg-night-900">
-                  <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
+                  <tr className="border-b-2 border-line text-label uppercase tracking-[0.08em] text-faint">
                     <th scope="col" className="px-4 py-2 font-medium">Product</th>
                     <th scope="col" className="px-3 py-2 font-medium" title="Item type reported by the market feed or item-info">Type</th>
                     <th scope="col" className="px-3 py-2 font-medium" title="Market frames seen in the selected range and matching the active filters">Frames</th>
@@ -451,7 +451,7 @@ export function ItemMonitor({ request, notify }) {
                             {name.text}
                           </span>
                           <button
-                            className="tap-pad -my-1 inline-flex min-h-6 items-center gap-1 whitespace-nowrap py-1 font-mono text-[11px] text-faint transition-colors hover:text-info"
+                            className="tap-pad -my-1 inline-flex min-h-6 items-center gap-1 whitespace-nowrap py-1 font-mono text-micro text-faint transition-colors hover:text-info"
                             type="button"
                             title="Copy item id"
                             onClick={() => copyId(row)}
@@ -503,14 +503,14 @@ export function ItemMonitor({ request, notify }) {
                   <li className="px-4 py-3" key={row.itemId}>
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <p className={`truncate text-[13px] ${name.pending ? "text-muted" : "text-ink"}`}>
+                        <p className={`truncate text-body ${name.pending ? "text-muted" : "text-ink"}`}>
                           {name.text}
                         </p>
                         <div className="mt-1 flex items-center gap-2">
                           <span className="type-badge" data-type={categoryOf(row)}>
                             {itemTypeLabel(categoryOf(row))}
                           </span>
-                          <code className="truncate font-mono text-[11px] text-faint">{row.itemId}</code>
+                          <code className="truncate font-mono text-micro text-faint">{row.itemId}</code>
                           <button
                             className="tap-pad inline-flex min-h-6 shrink-0 items-center py-1 text-faint transition-colors hover:text-info"
                             type="button"
@@ -523,19 +523,19 @@ export function ItemMonitor({ request, notify }) {
                         </div>
                       </div>
                       <div className="shrink-0 text-right">
-                        <p className="font-mono text-[13px] font-semibold tabular-nums text-info">
+                        <p className="font-mono text-meta font-semibold tabular-nums text-info">
                           {formatInt(row.events)}
                         </p>
-                        <p className="mt-0.5 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+                        <p className="mt-0.5 font-mono text-label uppercase tracking-[0.08em] text-faint">
                           frames
                         </p>
                       </div>
                     </div>
                     <div className="mt-2 flex items-center gap-2">
-                      <span className="shrink-0 font-mono text-[11px] tabular-nums text-ink-dim">
+                      <span className="shrink-0 font-mono text-micro tabular-nums text-ink-dim">
                         {share}% of range
                       </span>
-                      <span className="min-w-0 shrink-0 font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
+                      <span className="min-w-0 shrink-0 font-mono text-micro uppercase tracking-[0.08em] text-faint">
                         24h {formatInt(row.events24h)}
                       </span>
                       <a
@@ -558,7 +558,7 @@ export function ItemMonitor({ request, notify }) {
       )}
 
       <div className="flex shrink-0 items-center justify-between gap-2 border-t-2 border-line bg-night-900/70 px-3 py-3">
-        <span role="status" className="min-w-0 truncate font-mono text-[12px] font-semibold uppercase tracking-[0.08em] text-ink-dim">
+        <span role="status" className="min-w-0 truncate font-mono text-label font-semibold uppercase tracking-[0.08em] text-ink-dim">
           {shown === 0
             ? "No products"
             : hasMore
@@ -568,19 +568,19 @@ export function ItemMonitor({ request, notify }) {
         </span>
         <div className="flex shrink-0 items-center gap-2">
           {error ? (
-            <span className="max-w-[220px] truncate font-mono text-[12px] uppercase tracking-[0.08em] text-danger" title={error}>
+            <span className="max-w-[220px] truncate font-mono text-label uppercase tracking-[0.08em] text-danger" title={error}>
               {stale ? "Stale · retrying" : "Load failed"}
             </span>
           ) : meta?.unresolved > 0 ? (
             <span
-              className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint"
+              className="font-mono text-micro uppercase tracking-[0.08em] text-faint"
               title="The worker is still resolving these names from item-info"
             >
               {formatInt(meta.unresolved)} unnamed
             </span>
           ) : null}
           <span
-            className="flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.08em] text-faint"
+            className="flex items-center gap-1.5 font-mono text-micro uppercase tracking-[0.08em] text-faint"
             title={refreshedAt ? `Updated ${formatTime(refreshedAt)}` : undefined}
           >
             <span className={`led ${live ? "led-pulse bg-info" : "bg-faint"}`} />

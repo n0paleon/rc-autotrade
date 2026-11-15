@@ -107,7 +107,7 @@ function inspectBackup(text, workerSchemaVersion) {
 function CountBox({ label, value }) {
   return (
     <div className="border-2 border-line bg-night-950/60 px-2.5 py-2">
-      <span className="block font-mono text-[10px] uppercase tracking-[0.14em] text-faint">{label}</span>
+      <span className="block font-mono text-micro uppercase tracking-[0.14em] text-faint">{label}</span>
       <strong className="font-mono text-[17px] tabular-nums text-gold">{formatInt(value)}</strong>
     </div>
   );
@@ -292,7 +292,7 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
 
         {error ? (
           <p
-            className="flex items-start gap-2 border-2 border-danger/50 bg-danger/5 p-2.5 text-[13px] leading-relaxed text-danger"
+            className="flex items-start gap-2 border-2 border-danger/50 bg-danger/5 p-2.5 text-body leading-relaxed text-danger"
             role="alert"
           >
             <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -302,7 +302,7 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
 
         {tab === "export" ? (
           <>
-            <p className="text-[13px] leading-relaxed text-muted">
+            <p className="text-copy text-muted">
               One portable file with every target, runtime setting, lifetime counter, profit row and
               loot entry. Restore it on another worker to move machines without losing history.
             </p>
@@ -318,7 +318,7 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
                   <h3 className="font-mono text-[12px] font-semibold uppercase tracking-[0.14em] text-gold">
                     Portable JSON backup
                   </h3>
-                  <p className="mt-1 text-[13px] leading-relaxed text-muted">
+                  <p className="mt-1 text-body leading-relaxed text-muted">
                     The market cache is not included; the deck rebuilds it from live frames.
                   </p>
                 </div>
@@ -336,7 +336,7 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
                 disabled={!hasSession || busyNow}
               />
               {includeCredentials ? (
-                <p className="flex items-start gap-2 border-2 border-danger/40 bg-danger/5 p-2.5 text-[12px] leading-relaxed text-danger">
+                <p className="flex items-start gap-2 border-2 border-danger/40 bg-danger/5 p-2.5 text-body leading-relaxed text-danger">
                   <Icon name="i-shield" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                   <span>
                     Anyone with this file can act as you on Rollercoin until the tokens expire. Do not
@@ -361,7 +361,7 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
               <h3 className="flex items-center gap-1.5 font-mono text-[12px] font-semibold uppercase tracking-[0.14em] text-violet">
                 <Icon name="i-database" className="h-3.5 w-3.5" /> Raw SQLite snapshot
               </h3>
-              <p className="text-[13px] leading-relaxed text-muted">
+              <p className="text-copy text-muted">
                 A byte-complete, consistent copy of the whole database, including the stored session
                 and market cache. It must be restored with the worker stopped.
               </p>
@@ -378,7 +378,7 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
               </button>
             </div>
 
-            <p className="text-[12px] leading-relaxed text-faint">
+            <p className="text-body leading-relaxed text-faint">
               Manual restore: stop the worker, replace <code className="text-ink-dim">data/rollercoin.db</code>{" "}
               with the snapshot, delete <code className="text-ink-dim">rollercoin.db-wal</code> and{" "}
               <code className="text-ink-dim">rollercoin.db-shm</code>, then start it again.
@@ -414,7 +414,7 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
                     <h3 className="truncate font-mono text-[12px] font-semibold uppercase tracking-[0.14em] text-signal">
                       {fileName}
                     </h3>
-                    <p className="mt-1 text-[12px] leading-relaxed text-muted">
+                    <p className="mt-1 text-meta leading-relaxed text-muted">
                       Exported{" "}
                       {preview.exportedAt
                         ? `${formatDate(preview.exportedAt)} ${formatTime(preview.exportedAt)}`
@@ -479,12 +479,12 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
                   <CountBox label="Loot log" value={restored.restored?.counts?.orders} />
                   <CountBox label="Products" value={restored.restored?.counts?.reportProducts} />
                 </div>
-                <p className="text-[12px] leading-relaxed text-muted">
+                <p className="text-meta leading-relaxed text-muted">
                   Rollercoin session:{" "}
                   {restored.restored?.credentialsRestored ? "restored from the file" : "kept as it was"}.
                 </p>
                 {restored.restored?.safetyBackup ? (
-                  <p className="text-[12px] leading-relaxed text-faint">
+                  <p className="text-meta leading-relaxed text-faint">
                     Safety snapshot:{" "}
                     <code className="break-all text-ink-dim">{restored.restored.safetyBackup}</code>
                   </p>
@@ -493,7 +493,7 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
               </div>
             ) : null}
 
-            <p className="flex items-start gap-2 text-[12px] leading-relaxed text-faint">
+            <p className="flex items-start gap-2 text-body leading-relaxed text-faint">
               <Icon name="i-shield" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet" />
               <span>
                 The worker access key is never part of a backup. This worker keeps its own key, so

@@ -143,7 +143,7 @@ export function ModeMenu({ mode, busy, onChange, variant = "header" }) {
   // the button (which made "live" look like a secondary, inert action).
   const triggerClass =
     variant === "header"
-      ? "btn btn-primary btn-sm max-sm:w-10 max-sm:px-0"
+      ? "btn btn-primary btn-sm max-sm:w-11 max-sm:px-0"
       : "btn btn-primary btn-sm w-full justify-between";
 
   return (

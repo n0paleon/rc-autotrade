@@ -210,7 +210,7 @@ export function TargetModal({ config, onClose, worker, notify, markupPct = 0 }) 
     >
       <form id="target-form" className="modal-body" noValidate autoComplete="off" onSubmit={submit}>
         {formError ? (
-          <p className="flex items-start gap-2 border-2 border-danger/50 bg-danger/5 p-2.5 text-[13px] leading-relaxed text-danger" role="alert">
+          <p className="flex items-start gap-2 border-2 border-danger/50 bg-danger/5 p-2.5 text-body leading-relaxed text-danger" role="alert">
             <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>{formError}</span>
           </p>
@@ -264,7 +264,7 @@ export function TargetModal({ config, onClose, worker, notify, markupPct = 0 }) 
               </span>
             </div>
             <strong className="mt-1 block text-[14px] font-medium text-ink">{auto.label}</strong>
-            <small className="mt-0.5 block text-[13px] leading-snug text-faint">
+            <small className="mt-0.5 block text-meta leading-snug text-faint">
               From Rollercoin item-info: rarity + item name. Falls back to the item name when rarity is absent.
             </small>
           </div>
@@ -436,13 +436,13 @@ export function SessionModal({ session, onClose, worker, notify }) {
       }
     >
       <form id="session-form" className="modal-body" noValidate autoComplete="off" onSubmit={submit}>
-        <p className="text-[13px] leading-relaxed text-muted">
+        <p className="text-copy text-muted">
           Grab the tokens from a logged-in rollercoin.com tab: DevTools → Application → Local Storage →{" "}
           <code className="text-ink-dim">token</code> and <code className="text-ink-dim">refreshToken</code>. The
           browser bridge can keep them in sync automatically.
         </p>
         {formError ? (
-          <p className="flex items-start gap-2 border-2 border-danger/50 bg-danger/5 p-2.5 text-[13px] leading-relaxed text-danger" role="alert">
+          <p className="flex items-start gap-2 border-2 border-danger/50 bg-danger/5 p-2.5 text-body leading-relaxed text-danger" role="alert">
             <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>{formError}</span>
           </p>
@@ -672,7 +672,7 @@ export function BridgeModal({ onClose, getConnection, notify }) {
         </div>
 
         {mode === "console" ? (
-          <p className="flex items-start gap-2 text-[13px] leading-relaxed text-faint">
+          <p className="flex items-start gap-2 text-copy text-faint">
             <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
             <span>
               Console mode uses the page's <code className="text-ink-dim">fetch</code>, so Rollercoin's CSP or
@@ -681,7 +681,7 @@ export function BridgeModal({ onClose, getConnection, notify }) {
             </span>
           </p>
         ) : (
-          <p className="flex items-start gap-2 text-[13px] leading-relaxed text-faint">
+          <p className="flex items-start gap-2 text-copy text-faint">
             <Icon name="i-check" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-signal" />
             <span>
               Userscript mode uses <code className="text-ink-dim">GM_xmlhttpRequest</code>, which bypasses page CORS
@@ -690,7 +690,7 @@ export function BridgeModal({ onClose, getConnection, notify }) {
             </span>
           </p>
         )}
-        <p className="flex items-start gap-2 text-[13px] leading-relaxed text-faint">
+        <p className="flex items-start gap-2 text-copy text-faint">
           <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
           <span>
             Both variants contain this deck's access key. Keep them private and never paste them into a public gist
@@ -719,7 +719,7 @@ export function ConfirmModal({ title, message, confirmLabel = "CONFIRM", danger 
       describedBy={messageId}
     >
       <div className="modal-body">
-        <p id={messageId} className="text-[14px] leading-relaxed text-muted">{message}</p>
+        <p id={messageId} className="text-copy text-muted">{message}</p>
         <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">
           <button className="btn" type="button" onClick={close} data-autofocus>Cancel</button>
           <button className={`btn ${danger ? "btn-danger" : "btn-primary"}`} type="button" onClick={onConfirm}>
@@ -736,7 +736,7 @@ export function KeyModal({ token, onClose, notify }) {
   return (
     <ModalShell title="New access key" onClose={onClose} closeRef={closeRef}>
       <div className="modal-body">
-        <p className="text-[13px] leading-relaxed text-muted">
+        <p className="text-copy text-muted">
           The old key is dead and open control sockets were revoked. Save this key. It is shown once.
         </p>
         <div className="key-box">
@@ -753,7 +753,7 @@ export function KeyModal({ token, onClose, notify }) {
             <Icon name="i-copy" />
           </button>
         </div>
-        <p className="flex items-start gap-2 text-[13px] leading-relaxed text-faint">
+        <p className="flex items-start gap-2 text-copy text-faint">
           <Icon name="i-alert" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
           <span>
             This deck reconnects automatically. Other browser tabs must paste the new key. If you installed the

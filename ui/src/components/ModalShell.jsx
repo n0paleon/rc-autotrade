@@ -175,7 +175,7 @@ export function ModalShell({
         <div className="flex items-center justify-between gap-4 border-b-2 border-line bg-night-850/70 px-4 py-3 sm:px-5">
           <h2
             id={titleId}
-            className={`flex items-center gap-2 font-sans text-[15px] font-bold uppercase tracking-[0.08em] ${
+            className={`flex min-w-0 items-center gap-2 font-sans text-heading font-bold uppercase tracking-[0.06em] ${
               titleColor === "danger" ? "text-danger" : "text-gold"
             }`}
           >
@@ -192,7 +192,7 @@ export function ModalShell({
             <Icon name="i-x" />
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">{children}</div>
+        <div className={`min-h-0 flex-1 overflow-y-auto overscroll-contain${footer ? "" : " pb-[env(safe-area-inset-bottom)]"}`}>{children}</div>
         {footer ? (
           <div className="shrink-0 border-t-2 border-line bg-night-900/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:px-5">
             {footer}
