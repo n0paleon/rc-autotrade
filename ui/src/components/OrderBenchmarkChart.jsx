@@ -73,15 +73,14 @@ function ProTabs({ label, options, value, onChange }) {
       <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-[#5d6b7f]">{label}</span>
       <div
         className="flex items-center gap-px border border-[#1d2a38] bg-[#0d141d] p-px"
-        role="tablist"
+        role="group"
         aria-label={label}
       >
         {options.map((option) => (
           <button
             key={option.key}
             type="button"
-            role="tab"
-            aria-selected={value === option.key}
+            aria-pressed={value === option.key}
             className={`h-6 min-w-7 px-2 font-mono text-[10px] uppercase tracking-[0.06em] transition-colors ${
               value === option.key
                 ? "bg-[#1e2c3d] text-[#e8eef7]"
@@ -191,7 +190,7 @@ function Preview({ series, p95, onExpand }) {
         : ["dataMin", "dataMax"];
 
   return (
-    <div className="border-2 border-line bg-night-950/60 p-2.5">
+    <div className="chart-mount border-2 border-line bg-night-950/60 p-2.5">
       <div className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-1">
         <span className="flex items-center gap-1.5 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
           <span className="led bg-info" aria-hidden="true" /> Order latency
@@ -421,7 +420,7 @@ function Detail({ request, benchmark, onCollapse }) {
   }
 
   return (
-    <div className="pro-surface flex min-h-full flex-col">
+    <div className="pro-surface tab-panel flex min-h-full flex-col">
       <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 border-b border-[#16202b] px-4 pb-3.5 pt-4 sm:px-5">
         <div className="min-w-0">
           <p className="truncate font-mono text-[10px] uppercase tracking-[0.16em] text-[#5d6b7f]">

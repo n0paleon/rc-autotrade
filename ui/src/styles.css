@@ -72,6 +72,9 @@
   --motion-state: 180ms;
   --motion-panel: 220ms;
   --motion-exit: 140ms;
+  /* Panels reveal in eight hard steps: long enough to read as a wipe, short
+     enough that a monitoring deck never waits on its own chrome. */
+  --motion-collapse: 240ms;
   --ease-pixel: steps(2, end);
   --ease-pixel-3: steps(3, end);
   --ease-pixel-4: steps(4, end);
@@ -201,6 +204,32 @@
 }
 
 @layer components {
+  /* Keyboard users land here first: the deck has a lot of chrome before the
+     work. It stays off-screen until focused, then becomes a real button. */
+  .skip-link {
+    position: fixed;
+    inset-block-start: 0.5rem;
+    inset-inline-start: 0.5rem;
+    z-index: 100;
+    transform: translateY(-200%);
+    border: 2px solid #05030f;
+    background: var(--color-gold);
+    color: #1a1000;
+    padding: 0.5rem 0.75rem;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    box-shadow: 3px 3px 0 #05030f;
+  }
+
+  .skip-link:focus-visible {
+    transform: translateY(0);
+    outline: 2px solid var(--color-ink);
+    outline-offset: 2px;
+  }
+
   /* ── the cave ─────────────────────────────────────────────────── */
   .deck-bg {
     position: relative;
@@ -257,6 +286,90 @@
 
   .panel-body {
     @apply space-y-3 p-4;
+  }
+
+  /* A closed panel is one bar: the header keeps the title, the count and the
+     toggle, and the divider would otherwise draw a line onto nothing.
+     Secondary header controls are hidden by the `max-lg:hidden` utility in the
+     panel markup while collapsed: they describe the body, and on a phone they
+     are what would turn the bar into four stacked rows. */
+  .panel-collapsed .panel-head {
+    border-bottom-color: transparent;
+    background: linear-gradient(180deg, rgb(99 77 214 / 0.16), transparent);
+  }
+
+  /* ── panel disclosure ────────────────────────────────────────────────
+     The body stays mounted and slides inside a clip frame, so the reveal is
+     a real transition (scroll position, loaded pages and the sticky table
+     header all survive the toggle). `clip` instead of `hidden` is deliberate:
+     `overflow: hidden` would turn the frame into a new scroll container and
+     break `position: sticky` on the table head. */
+  .collapse-frame {
+    display: grid;
+    grid-template-rows: 1fr;
+    overflow: clip;
+  }
+
+  .collapse-frame > * {
+    min-height: 0;
+  }
+
+  /* Closed: the row track animates to zero and the body is clipped away. */
+  .panel-collapsed .collapse-frame {
+    grid-template-rows: 0fr;
+  }
+
+  .collapse-frame,
+  .panel-collapsed .collapse-frame {
+    transition:
+      grid-template-rows var(--motion-collapse) var(--ease-pixel-8),
+      opacity var(--motion-collapse) linear;
+  }
+
+  .collapse-frame > .collapse-body {
+    transition:
+      transform var(--motion-collapse) var(--ease-pixel-8),
+      opacity calc(var(--motion-collapse) * 0.72) linear;
+    will-change: transform, opacity;
+  }
+
+  .panel-collapsed .collapse-frame > .collapse-body {
+    opacity: 0;
+    transform: translateY(-8px) scaleY(0.97);
+    transform-origin: top center;
+  }
+
+  /* The accent rail washes across the header as the body opens or closes, so
+     the toggle reads as a mechanical shutter rather than a layout jump. */
+  .panel-head::after {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent, var(--color-line-strong)), transparent);
+    opacity: 0;
+    transform: scaleX(0);
+    transform-origin: left center;
+  }
+
+  .panel[data-accent] .panel-head {
+    position: relative;
+  }
+
+  .panel-head.is-revealing::after {
+    animation: rail-sweep 360ms var(--ease-pixel-8) both;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .collapse-frame,
+    .panel-collapsed .collapse-frame,
+    .collapse-frame > .collapse-body {
+      transition-duration: 0.01ms;
+    }
+
+    .panel-head.is-revealing::after {
+      animation-duration: 0.01ms;
+    }
   }
 
   .label {
@@ -823,6 +936,9 @@
     border: 2px solid #05030f;
     background: #2a2155;
     box-shadow: inset 2px 2px 0 rgb(0 0 0 / 0.45);
+    transition:
+      background-color var(--motion-ui) linear,
+      box-shadow var(--motion-ui) linear;
   }
 
   .switch::after {
@@ -830,7 +946,9 @@
     @apply absolute left-0.5 top-0.5 h-3 w-3;
     background: var(--color-faint);
     box-shadow: inset 1px 1px 0 rgb(255 255 255 / 0.3);
-    transition: transform var(--motion-ui) var(--ease-pixel-3);
+    transition:
+      transform var(--motion-ui) var(--ease-pixel-3),
+      background-color var(--motion-ui) linear;
   }
 
   input:checked + .switch {
@@ -881,6 +999,29 @@
     overflow: auto;
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
+  }
+
+  /* Rows open the telemetry dialog. A row is too wide for a ring to describe,
+     so keyboard focus fills the row and rings its inside edge. */
+  .loot-row {
+    transition: background-color var(--motion-ui) linear;
+  }
+
+  .loot-row:focus-visible {
+    outline: 2px solid var(--color-gold);
+    outline-offset: -2px;
+    background: rgb(99 77 214 / 0.16);
+  }
+
+  /* The file picker is a real input clipped inside a button-shaped label:
+     focus has to land on the label or the ring is invisible. */
+  .file-trigger {
+    position: relative;
+  }
+
+  .file-trigger:focus-within {
+    outline: 2px solid var(--color-gold);
+    outline-offset: 2px;
   }
 
   @media (max-width: 720px) {
@@ -1039,6 +1180,34 @@
     animation: toast-out 130ms var(--ease-pixel) both;
   }
 
+  .toast-close {
+    display: flex;
+    width: 2rem;
+    height: 2rem;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    margin: -0.25rem -0.25rem -0.25rem 0;
+    border: 2px solid transparent;
+    background: transparent;
+    color: var(--color-faint);
+    transition:
+      color var(--motion-ui) linear,
+      border-color var(--motion-ui) linear;
+  }
+
+  .toast-close:hover {
+    border-color: var(--color-line-strong);
+    color: var(--color-ink);
+  }
+
+  @media (max-width: 639px), (any-pointer: coarse) {
+    .toast-close {
+      width: 2.75rem;
+      height: 2.75rem;
+    }
+  }
+
   .toast.success {
     border-left-color: var(--color-signal);
   }
@@ -1074,6 +1243,11 @@
     margin-top: 0.375rem;
     text-align: left;
     cursor: zoom-in;
+    transition: transform var(--motion-tap) var(--ease-pixel);
+  }
+
+  .chart-expand:active {
+    transform: translateY(1px);
   }
 
   .chart-expand:focus-visible {
@@ -1276,29 +1450,36 @@
     }
   }
 
+  /* One instrument plate, not six lit bays: the rails stay structural and
+     only the money tile carries a lit rail. The small icons keep their
+     accent as indicator lamps; the numbers themselves stay neutral so the
+     profit figure is the only value that leads by color. */
   .stat-tile {
     --accent: var(--color-muted);
     @apply relative px-3 py-2.5 sm:px-4 sm:py-3;
-    background:
-      linear-gradient(180deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 55%),
-      linear-gradient(180deg, #17103b, #110c2d);
+    background: linear-gradient(180deg, #17103b, #110c2d);
   }
 
   .stat-tile::before {
     content: "";
     position: absolute;
     inset: 0 0 auto;
-    height: 3px;
-    background: var(--accent);
+    height: 2px;
+    background: var(--color-line-strong);
+  }
+
+  .stat-tile[data-accent="gold"]::before {
+    background: var(--color-gold);
   }
 
   .stat-tile .label {
-    color: var(--accent);
-    opacity: 0.9;
+    color: var(--color-faint);
+    opacity: 1;
   }
 
   .stat-tile .stat-icon {
     color: var(--accent);
+    opacity: 0.85;
   }
 
   [data-accent="gold"] {
@@ -1601,6 +1782,77 @@
   .boot-intro-delay {
     animation: boot-rise 420ms var(--ease-pixel-4) 120ms both;
   }
+
+  /* Disclosure chevrons keep the deck's stepped cadence instead of a smooth
+     glide, so every expander turns on the same beat. */
+  .chevron {
+    transition: transform var(--motion-ui) var(--ease-pixel-3);
+  }
+
+  /* Menus are anchored to their trigger: the panel unfolds from its top edge
+     so the eye can trace it back to the control that opened it. */
+  .mode-menu {
+    transform-origin: top right;
+    animation: menu-in 160ms var(--ease-pixel-3) both;
+  }
+
+  .mode-menu.is-closing {
+    pointer-events: none;
+    animation: menu-out 110ms var(--ease-pixel) both;
+  }
+
+  /* A phone target card mounts its chart and stats in one go; the blocks
+     arrive together as a shutter instead of popping into place. The wrapper
+     is layout-transparent, so the card's own flex rhythm is untouched. */
+  .target-details {
+    display: contents;
+  }
+
+  .target-card-compact[data-expanded="true"] .target-details > * {
+    animation: detail-in var(--motion-state) var(--ease-pixel-3) both;
+  }
+
+  /* A lazy chart chunk lands from disk: the surface fades in rather than
+     swapping a skeleton for a full plot in a single frame. */
+  .chart-mount {
+    animation: chart-in 180ms var(--ease-pixel-3) both;
+  }
+
+  /* Placeholder for a lazy chunk. The sweep is stepped like everything else
+     in the deck, and only runs while a placeholder is actually on screen. */
+  .skeleton {
+    position: relative;
+    overflow: hidden;
+    background: rgb(8 5 28 / 0.8);
+  }
+
+  .skeleton::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, rgb(99 77 214 / 0.22), transparent);
+    transform: translateX(-100%);
+    animation: skeleton-sweep 1.2s var(--ease-pixel-8) infinite;
+  }
+
+  /* A fill moves the headline number: the profit figure pops once, then sits
+     still until the next confirmation. */
+  .stat-pulse {
+    transform-origin: left center;
+    animation: stat-pop var(--motion-state) var(--ease-pixel-3);
+  }
+
+  /* The trend reading is advisory, so a flipped signal pulses its chip and
+     then goes quiet — the one moment the table asks for attention. */
+  .signal-pulse {
+    animation: chip-pop var(--motion-state) var(--ease-pixel-3);
+  }
+
+  /* Switching the trend filter re-orders the table; one shared reveal keeps
+     the rows attached to the tab that produced them. */
+  .trend-body {
+    animation: tab-in 160ms var(--ease-pixel-3) both;
+  }
 }
 
 @keyframes marquee {
@@ -1769,6 +2021,22 @@
   }
 }
 
+/* The accent rail wipes out from the left edge and dissolves, stepping with
+   the same pixel cadence as the body reveal. */
+@keyframes rail-sweep {
+  0% {
+    opacity: 0;
+    transform: scaleX(0);
+  }
+  22% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: scaleX(1);
+  }
+}
+
 @keyframes tab-in {
   from {
     opacity: 0;
@@ -1880,6 +2148,73 @@
   }
 }
 
+/* The menu drops its bottom edge first, so it reads as unfolding from the
+   button above it rather than fading in mid-air. */
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scaleY(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes menu-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-4px) scaleY(0.97);
+  }
+}
+
+@keyframes detail-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes chart-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes skeleton-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes stat-pop {
+  0% {
+    transform: scale(1.05);
+    filter: brightness(1.4);
+  }
+  60% {
+    transform: scale(0.995);
+  }
+  100% {
+    transform: none;
+    filter: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -1904,7 +2239,9 @@
   .auto-label[data-state="loading"] strong,
   .state-chip-pulse,
   .loot-entry,
-  .price-tick {
+  .price-tick,
+  .stat-pulse,
+  .signal-pulse {
     animation: none !important;
   }
 
@@ -1945,6 +2282,25 @@
 
   .toast.is-leaving {
     animation: modal-fade-out 100ms linear both !important;
+  }
+
+  .mode-menu,
+  .chart-mount,
+  .trend-body {
+    animation: fade-in 120ms linear both !important;
+  }
+
+  .mode-menu.is-closing {
+    animation: modal-fade-out 100ms linear both !important;
+  }
+
+  .target-card-compact[data-expanded="true"] .target-details > * {
+    animation: fade-in 120ms linear both !important;
+  }
+
+  .skeleton::after {
+    animation: none !important;
+    opacity: 0;
   }
 
   .btn[data-busy="true"]::after {
@@ -2037,6 +2393,16 @@
     @apply inline-flex items-center gap-1 px-2 py-1 font-mono text-[11px] uppercase tracking-[0.08em] text-muted;
     border: 2px solid var(--color-line);
     background: rgb(8 6 23 / 0.7);
+    transition:
+      border-color var(--motion-ui) linear,
+      background-color var(--motion-ui) linear,
+      color var(--motion-ui) linear,
+      box-shadow var(--motion-ui) linear,
+      transform var(--motion-tap) var(--ease-pixel);
+  }
+
+  .trend-filter:active {
+    transform: translateY(1px);
   }
 
   .trend-filter:hover {
@@ -2151,6 +2517,19 @@
       height: 2.75rem;
       min-width: 2.75rem;
       padding-inline: 0.75rem;
+    }
+
+    /* 28px is a cursor size; the counter opens a dialog and needs a thumb. */
+    .monitor-counter {
+      min-height: 2.75rem;
+    }
+
+    /* The switch stays 40x20; the label grows to a real thumb target. */
+    .arm-toggle {
+      min-width: 2.75rem;
+      min-height: 2.75rem;
+      margin: -0.75rem;
+      padding: 0.75rem;
     }
 
     .btn {

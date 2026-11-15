@@ -74,15 +74,14 @@ function Segmented({ label, options, value, onChange }) {
       </span>
       <div
         className="flex items-center gap-0.5 border-2 border-line bg-night-950 p-0.5"
-        role="tablist"
+        role="group"
         aria-label={label}
       >
         {options.map((option) => (
           <button
             key={option.key}
             type="button"
-            role="tab"
-            aria-selected={value === option.key}
+            aria-pressed={value === option.key}
             className={`seg-tab ${
               value === option.key
                 ? "bg-pink font-bold text-[#2a0018]"

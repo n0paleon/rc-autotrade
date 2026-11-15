@@ -15,6 +15,13 @@ export function useModalClose() {
   return { closeRef, close };
 }
 
+/**
+ * Stack-safe inert lock. Modals are portalled outside `#app`, so marking the
+ * app root inert removes the whole deck from the tab order and the
+ * accessibility tree while leaving the dialog reachable.
+ */
+let openModalCount = 0;
+
 /** Shared pixel switch row used by the modal forms. */
 export function ToggleRow({ checked, onChange, title, hint, disabled = false }) {
   return (
@@ -45,7 +52,9 @@ export function ModalShell({
   small = false,
   size = null,
   role = "dialog",
-  titleColor = "lime"
+  titleColor = "lime",
+  describedBy = null,
+  focusKey = null
 }) {
   const titleId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const panelRef = useRef(null);
@@ -74,6 +83,10 @@ export function ModalShell({
   }, [externalCloseRef, requestClose]);
 
   useEffect(() => {
+    const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const appRoot = document.getElementById("app");
+    openModalCount += 1;
+    if (appRoot) appRoot.inert = true;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     const timer = requestAnimationFrame(() => {
@@ -113,8 +126,25 @@ export function ModalShell({
       document.removeEventListener("keydown", onKeyDown);
       document.body.style.overflow = previousOverflow;
       if (closeTimer.current) clearTimeout(closeTimer.current);
+      openModalCount = Math.max(0, openModalCount - 1);
+      if (appRoot) appRoot.inert = openModalCount > 0;
+      const fallback = document.getElementById("deck-main");
+      const restore = trigger?.isConnected ? trigger : fallback;
+      restore?.focus?.({ preventScroll: false });
     };
   }, []);
+
+  // A dialog that swaps views in place (the monitor's compact/detail pair)
+  // unmounts whatever had focus. Land focus on the dialog itself so the reader
+  // starts at the new view instead of losing the keyboard to <body>.
+  const firstFocus = useRef(true);
+  useEffect(() => {
+    if (firstFocus.current) {
+      firstFocus.current = false;
+      return;
+    }
+    panelRef.current?.focus({ preventScroll: true });
+  }, [focusKey]);
 
   // Render outside the dashboard tree: animated ancestors leave an identity
   // transform behind, which would turn `fixed` into "relative to the page"
@@ -139,6 +169,8 @@ export function ModalShell({
         role={role}
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-describedby={describedBy || undefined}
+        tabIndex={-1}
       >
         <div className="flex items-center justify-between gap-4 border-b-2 border-line bg-night-850/70 px-4 py-3 sm:px-5">
           <h2
@@ -150,11 +182,17 @@ export function ModalShell({
             <span className={`h-2 w-2 ${titleColor === "danger" ? "bg-danger" : "bg-gold"}`} aria-hidden="true" />
             {title}
           </h2>
-          <button className="icon-btn -mr-1.5 h-10 w-10 sm:h-8 sm:w-8" type="button" onClick={requestClose} aria-label="Close">
+          <button
+            className="icon-btn -mr-1.5 h-10 w-10 sm:h-8 sm:w-8"
+            type="button"
+            onClick={requestClose}
+            aria-label={`Close ${title}`}
+            title="Close"
+          >
             <Icon name="i-x" />
           </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">{children}</div>
         {footer ? (
           <div className="shrink-0 border-t-2 border-line bg-night-900/95 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur sm:px-5">
             {footer}

@@ -1,6 +1,7 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon, ModalShell, ToggleRow, useModalClose } from "./ModalShell.jsx";
 import { formatBytes, formatDate, formatInt, formatTime } from "../lib/format.js";
+import { tabKeyDown } from "../lib/hooks.js";
 
 const BACKUP_KIND = "turu-rc-backup";
 const BACKUP_FORMAT_VERSION = 1;
@@ -138,6 +139,13 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
   const [acknowledged, setAcknowledged] = useState(false);
   const [restored, setRestored] = useState(null);
   const fileRef = useRef(null);
+  const restoredRef = useRef(null);
+
+  // The restore button unmounts with the preview when the import lands, so
+  // focus has to be moved to the result instead of falling back to <body>.
+  useEffect(() => {
+    if (restored) restoredRef.current?.focus({ preventScroll: true });
+  }, [restored]);
 
   const counts = {
     targets: Array.isArray(snapshot.configs) ? snapshot.configs.length : 0,
@@ -151,7 +159,8 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
   const busyNow = busy !== "";
 
   const switchTab = (next) => {
-    if (busyNow) return;
+    // Export keeps running in the background; blocking the tab switch left a
+    // clickable tab that silently did nothing.
     setTab(next);
     setError("");
   };
@@ -262,7 +271,9 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
             type="button"
             role="tab"
             aria-selected={tab === "export"}
+            tabIndex={tab === "export" ? 0 : -1}
             onClick={() => switchTab("export")}
+            onKeyDown={tabKeyDown}
           >
             Export
           </button>
@@ -271,7 +282,9 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
             type="button"
             role="tab"
             aria-selected={tab === "import"}
+            tabIndex={tab === "import" ? 0 : -1}
             onClick={() => switchTab("import")}
+            onKeyDown={tabKeyDown}
           >
             Import
           </button>
@@ -380,7 +393,7 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
             </ol>
 
             <label
-              className={`btn btn-ghost btn-sm btn-block cursor-pointer${busyNow ? " opacity-50" : ""}`}
+              className={`file-trigger btn btn-ghost btn-sm btn-block cursor-pointer${busyNow ? " opacity-50" : ""}`}
             >
               <Icon name="i-upload" className="h-3.5 w-3.5" />
               {fileName || "Choose backup .json"}
@@ -453,7 +466,11 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
             ) : null}
 
             {restored ? (
-              <div className="space-y-2 border-2 border-signal/50 bg-signal/5 p-3">
+              <div
+                ref={restoredRef}
+                tabIndex={-1}
+                className="space-y-2 border-2 border-signal/50 bg-signal/5 p-3"
+              >
                 <h3 className="flex items-center gap-1.5 font-mono text-[12px] font-semibold uppercase tracking-[0.14em] text-signal">
                   <Icon name="i-check" className="h-3.5 w-3.5" /> Restore complete
                 </h3>

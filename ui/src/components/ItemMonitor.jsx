@@ -17,8 +17,10 @@ import {
   typeBreakdown
 } from "../lib/activity.js";
 import { formatInt, formatTime, itemTypeLabel, relTime } from "../lib/format.js";
-import { useMediaQuery } from "../lib/hooks.js";
+import { useCollapsed, useMediaQuery } from "../lib/hooks.js";
+import { CollapseToggle } from "./CollapseToggle.jsx";
 import { Icon } from "./ModalShell.jsx";
+import { copyText } from "./Modals.jsx";
 
 /** How often the table re-reads the worker while the tab is visible. */
 const REFRESH_MS = 30_000;
@@ -60,15 +62,14 @@ function Segmented({ label, options, value, onChange }) {
       </span>
       <div
         className="flex items-center gap-0.5 border-2 border-line bg-night-950 p-0.5"
-        role="tablist"
+        role="group"
         aria-label={label}
       >
         {options.map((option) => (
           <button
             key={option.key}
             type="button"
-            role="tab"
-            aria-selected={value === option.key}
+            aria-pressed={value === option.key}
             className={`seg-tab ${
               value === option.key
                 ? "bg-info font-bold text-[#04202a]"
@@ -96,6 +97,8 @@ function Segmented({ label, options, value, onChange }) {
  */
 export function ItemMonitor({ request, notify }) {
   const [range, setRange] = useState(DEFAULT_ACTIVITY_RANGE);
+  const [collapsed, setCollapsed] = useCollapsed("item-activity");
+  const panelRef = useRef(null);
   const [category, setCategory] = useState("");
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
@@ -176,6 +179,13 @@ export function ItemMonitor({ request, notify }) {
       setStatus((previous) => (previous === "loading" ? "error" : "stale"));
     }
   }, [describe, fetchPage]);
+
+  // Manual refresh gets the same accountable state as a filter change: the
+  // button reports the work instead of looking inert while the request runs.
+  const refresh = useCallback(() => {
+    setStatus((previous) => (previous === "loading" ? "loading" : "refreshing"));
+    load();
+  }, [load]);
 
   // Appends the next page below what is already on screen.
   const loadMore = useCallback(async () => {
@@ -258,21 +268,27 @@ export function ItemMonitor({ request, notify }) {
 
   const copyId = useCallback(
     async (row) => {
-      try {
-        await navigator.clipboard.writeText(row.itemId);
-        notify?.("info", "ITEM ID COPIED", row.itemId);
-      } catch {
-        notify?.("error", "COPY FAILED", "Clipboard access was refused.");
-      }
+      const ok = await copyText(row.itemId);
+      notify?.(
+        ok ? "info" : "error",
+        ok ? "ITEM ID COPIED" : "COPY FAILED",
+        ok ? row.itemId : "Clipboard access was refused."
+      );
     },
     [notify]
   );
 
   const live = status === "ready" || status === "refreshing";
+  const refreshing = status === "refreshing";
   const stale = status === "stale";
 
   return (
-    <section className="panel min-w-0" data-accent="cyan" aria-label="Item activity">
+    <section
+      ref={panelRef}
+      className={`panel min-w-0${collapsed ? " panel-collapsed" : ""}`}
+      data-accent="cyan"
+      aria-label="Item activity"
+    >
       <div className="panel-head flex-wrap gap-x-3 gap-y-2">
         <h2 className="panel-title">
           <Icon name="i-pulse" className="h-4 w-4 text-info" />
@@ -288,7 +304,8 @@ export function ItemMonitor({ request, notify }) {
             row so the breakdown reads as a summary of the window rather than
             another column of the table. */}
         <div
-          className="flex min-w-0 flex-wrap items-center gap-1.5"
+          className={`flex min-w-0 flex-wrap items-center gap-1.5${collapsed ? " max-lg:hidden" : ""}`}
+          role="group"
           aria-label="Frames per item type in the selected range, independent of the category and search filters"
         >
           <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
@@ -307,20 +324,33 @@ export function ItemMonitor({ request, notify }) {
           ))}
         </div>
         <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
-          <Segmented label="Range" value={range} onChange={setRange} options={ACTIVITY_RANGES} />
-          <button
-            className="btn btn-ghost btn-sm"
-            type="button"
-            onClick={load}
-            disabled={loading}
-            title="Re-read the worker now"
-          >
-            <Icon name="i-refresh" className="h-3 w-3" /> Refresh
-          </button>
+          <div className={`flex flex-wrap items-center gap-2${collapsed ? " max-lg:hidden" : ""}`}>
+            <Segmented label="Range" value={range} onChange={setRange} options={ACTIVITY_RANGES} />
+            <button
+              className="btn btn-ghost btn-sm"
+              type="button"
+              onClick={refresh}
+              disabled={loading || refreshing}
+              data-busy={refreshing ? "true" : undefined}
+              aria-busy={refreshing}
+              title={refreshing ? "Re-reading the worker…" : "Re-read the worker now"}
+            >
+              <Icon name="i-refresh" className="h-3 w-3" /> Refresh
+            </button>
+          </div>
+          <CollapseToggle
+            expanded={!collapsed}
+            label="item activity"
+            panelRef={panelRef}
+            controls="item-activity-body"
+            onToggle={() => setCollapsed((value) => !value)}
+          />
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2 border-b-2 border-line bg-night-950/40 px-4 py-2.5">
+      <div className="collapse-frame" id="item-activity-body" inert={collapsed || undefined}>
+        <div className="collapse-body">
+          <div className="flex flex-wrap items-center gap-2 border-b-2 border-line bg-night-950/40 px-4 py-2.5">
         {/* Phone: search and the category select each take a full row, so the
             select cannot slide over the search icon. From `sm` up they sit
             inline on a fixed 220 px search, leaving room for the counters. */}
@@ -329,6 +359,8 @@ export function ItemMonitor({ request, notify }) {
           <input
             className="input input-sm w-full pl-8"
             type="search"
+            enterKeyHint="search"
+            autoComplete="off"
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
@@ -479,6 +511,15 @@ export function ItemMonitor({ request, notify }) {
                             {itemTypeLabel(categoryOf(row))}
                           </span>
                           <code className="truncate font-mono text-[11px] text-faint">{row.itemId}</code>
+                          <button
+                            className="tap-pad inline-flex min-h-6 shrink-0 items-center py-1 text-faint transition-colors hover:text-info"
+                            type="button"
+                            title="Copy item id"
+                            aria-label={`Copy item id ${row.itemId}`}
+                            onClick={() => copyId(row)}
+                          >
+                            <Icon name="i-copy" className="h-2.5 w-2.5" />
+                          </button>
                         </div>
                       </div>
                       <div className="shrink-0 text-right">
@@ -517,7 +558,7 @@ export function ItemMonitor({ request, notify }) {
       )}
 
       <div className="flex shrink-0 items-center justify-between gap-2 border-t-2 border-line bg-night-900/70 px-3 py-3">
-        <span className="min-w-0 truncate font-mono text-[12px] font-semibold uppercase tracking-[0.08em] text-ink-dim">
+        <span role="status" className="min-w-0 truncate font-mono text-[12px] font-semibold uppercase tracking-[0.08em] text-ink-dim">
           {shown === 0
             ? "No products"
             : hasMore
@@ -543,7 +584,7 @@ export function ItemMonitor({ request, notify }) {
             title={refreshedAt ? `Updated ${formatTime(refreshedAt)}` : undefined}
           >
             <span className={`led ${live ? "led-pulse bg-info" : "bg-faint"}`} />
-            {refreshedAt ? relTime(refreshedAt) : loading ? "LOADING" : "—"}
+            {refreshing ? "REFRESHING" : refreshedAt ? relTime(refreshedAt) : loading ? "LOADING" : "—"}
           </span>
           {/* Same affordance as the loot log: rows accumulate below and the
               reader asks for the next batch instead of jumping pages. */}
@@ -559,6 +600,8 @@ export function ItemMonitor({ request, notify }) {
               {loadingMore ? "Loading…" : "Load more"}
             </button>
           ) : null}
+        </div>
+      </div>
         </div>
       </div>
     </section>

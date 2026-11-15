@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { ModalShell } from "./ModalShell.jsx";
 import {
@@ -101,7 +101,11 @@ function RawEventPayload({ label, payload, missingText }) {
                 Payload was {formatInt(payload.originalBytes)} bytes; showing a bounded preview.
               </p>
             ) : null}
-            <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-ink-dim">
+            <pre
+              tabIndex={0}
+              aria-label={`${label} payload`}
+              className="max-h-[320px] overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-ink-dim"
+            >
               {payload.__truncatedForStorage
                 ? payload.preview || "No preview available."
                 : JSON.stringify(payload, null, 2)}
@@ -223,6 +227,15 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
   const [detail, setDetail] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [detailError, setDetailError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const timelineRef = useRef(null);
+
+  // Retry replaces the focused button with a loading state; park focus on the
+  // heading that survives both branches so the keyboard does not fall to body.
+  const retryDetail = () => {
+    setAttempt((value) => value + 1);
+    timelineRef.current?.focus({ preventScroll: true });
+  };
 
   // Lists only carry the columns a row renders. A live order event still
   // arrives with its frames inline, so only fetch when they are missing.
@@ -251,7 +264,7 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
     return () => {
       cancelled = true;
     };
-  }, [summary?.id, summary?.rawEvents, request]);
+  }, [attempt, summary?.id, summary?.rawEvents, request]);
 
   const entry =
     detail && detail.id === summary.id ? { ...summary, ...detail } : summary;
@@ -378,7 +391,7 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
 
         <div className="border-2 border-line bg-night-950/50 p-3 sm:p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="panel-title text-[13px]">
+            <h3 ref={timelineRef} tabIndex={-1} className="panel-title text-[13px]">
               <span className="led bg-gold" /> Latency debugger
             </h3>
             <span className="font-mono text-[12px] tabular-nums text-faint">
@@ -521,9 +534,15 @@ export function LootDetailModal({ entry: summary, onClose, request }) {
           ) : detailError ? (
             <div className="mt-3 border-2 border-line/60 bg-night-900/50 px-3 py-3">
               <p className="text-[13px] text-muted">
-                Could not load this entry&apos;s telemetry from the worker. Reopen the row to
-                retry.
+                Could not load this entry&apos;s telemetry from the worker.
               </p>
+              <button
+                className="btn btn-ghost btn-sm mt-2"
+                type="button"
+                onClick={retryDetail}
+              >
+                Retry
+              </button>
             </div>
           ) : (
             <div className="mt-3 border-2 border-line/60 bg-night-900/50 px-3 py-3">

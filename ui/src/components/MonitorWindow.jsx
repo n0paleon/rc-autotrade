@@ -26,7 +26,7 @@ const OrderBenchmarkChart = lazy(() => import("./OrderBenchmarkChart.jsx"));
 function ChartSkeleton({ className = "h-[116px]" }) {
   return (
     <div
-      className={`flex items-center justify-center border-2 border-line/60 bg-night-950/50 font-mono text-[11px] uppercase tracking-[0.08em] text-faint ${className}`}
+      className={`skeleton flex items-center justify-center border-2 border-line/60 font-mono text-[11px] uppercase tracking-[0.08em] text-faint ${className}`}
     >
       Loading chart…
     </div>
@@ -654,6 +654,7 @@ export function MonitorWindow({ open, snapshot, worker, notify, onClose }) {
       title={chartExpanded ? "Order latency · expanded" : "Monitor window"}
       titleColor="lime"
       size="monitor"
+      focusKey={chartExpanded ? "detail" : "compact"}
       onClose={onClose}
       footer={
         chartExpanded ? null : (
@@ -680,7 +681,7 @@ export function MonitorWindow({ open, snapshot, worker, notify, onClose }) {
           />
         </Suspense>
       ) : (
-        <div className="monitor-window space-y-3 p-3 sm:p-4">
+        <div className="monitor-window tab-panel space-y-3 p-3 sm:p-4">
           <div className="flex flex-wrap items-center justify-between gap-2 border-2 border-line bg-night-950/70 px-3 py-2">
             <span className="flex items-center gap-2 font-mono text-[11px] font-bold uppercase tracking-[0.12em] text-gold">
               <Icon name="i-pulse" className="h-3.5 w-3.5" /> Orders · latency · system

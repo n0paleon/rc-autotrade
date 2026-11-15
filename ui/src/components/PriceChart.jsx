@@ -126,15 +126,14 @@ function ProTabs({ label, options, value, onChange }) {
       <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-[#5d6b7f]">{label}</span>
       <div
         className="flex items-center gap-px border border-[#1d2a38] bg-[#0d141d] p-px"
-        role="tablist"
+        role="group"
         aria-label={label}
       >
         {options.map((option) => (
           <button
             key={option.key}
             type="button"
-            role="tab"
-            aria-selected={value === option.key}
+            aria-pressed={value === option.key}
             className={`h-6 min-w-7 px-2 font-mono text-[10px] uppercase tracking-[0.06em] transition-colors ${
               value === option.key
                 ? "bg-[#1e2c3d] text-[#e8eef7]"
@@ -689,7 +688,7 @@ export default function PriceChart({ history, targetPrice, itemId, request, labe
 
   return (
     <>
-      <div className="border-2 border-line bg-night-950/60 p-2.5">
+      <div className="chart-mount border-2 border-line bg-night-950/60 p-2.5">
         <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-1">
           <div className="flex items-baseline gap-2 whitespace-nowrap font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
             Price history

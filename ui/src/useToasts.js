@@ -24,7 +24,7 @@ export function useToasts() {
   }, []);
 
   const push = useCallback(
-    (kind, title, message, ttl = 4200) => {
+    (kind, title, message, ttl = kind === "error" || kind === "warn" ? 0 : 4200) => {
       const signature = `${kind}|${title}|${message}`;
       const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       setToasts((previous) => {
@@ -33,8 +33,10 @@ export function useToasts() {
         const next = [...previous, { id, kind, title, message, signature }];
         return next.length > max ? next.slice(-max) : next;
       });
-      const timer = setTimeout(() => dismiss(id), ttl);
-      timers.current.set(id, timer);
+      if (ttl > 0) {
+        const timer = setTimeout(() => dismiss(id), ttl);
+        timers.current.set(id, timer);
+      }
     },
     [dismiss]
   );
