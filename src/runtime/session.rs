@@ -11,6 +11,10 @@ use crate::session;
 pub async fn refresh_session(state: &Arc<AppState>) -> bool {
     let Ok(_guard) = state.refresh_lock.try_lock() else {
         // Another refresh is already in flight.
+        state.logger.debug(
+            "session",
+            "refresh skipped: another refresh is already in flight",
+        );
         return false;
     };
 
@@ -18,6 +22,17 @@ pub async fn refresh_session(state: &Arc<AppState>) -> bool {
         let store = lock(&state.store);
         store.state.session.clone()
     };
+    state.logger.debug_lazy("session", || {
+        format!(
+            "refreshing session (refresh token {}, last refresh {:?})",
+            if session_snapshot.refresh_token.is_empty() {
+                "missing"
+            } else {
+                "present"
+            },
+            session_snapshot.last_refresh_at
+        )
+    });
     let result = session::refresh_once(&state.api, &session_snapshot).await;
 
     if !result.ok {
@@ -47,6 +62,12 @@ pub async fn refresh_session(state: &Arc<AppState>) -> bool {
         (changed, store.session_status())
     };
     state.logger.info("session", "access token renewed");
+    state.logger.debug_lazy("session", || {
+        format!(
+            "session refreshed (HTTP {}, access token changed={changed})",
+            result.status
+        )
+    });
     state.broadcast("session", status);
     state.wake_keepalive("session refreshed");
     if changed {
@@ -64,5 +85,9 @@ pub(super) async fn tick_session(state: &Arc<AppState>) {
     };
     if due {
         refresh_session(state).await;
+    } else {
+        state
+            .logger
+            .debug("session", "scheduled session check: refresh not due yet");
     }
 }

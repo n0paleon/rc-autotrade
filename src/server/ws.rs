@@ -59,6 +59,12 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, authorized: bool
 
     let (mut sender, mut receiver) = socket.split();
     let mut updates = state.hub.subscribe();
+    state.logger.debug_lazy("control", || {
+        format!(
+            "control socket connected ({} client(s), authorized)",
+            state.hub.receiver_count()
+        )
+    });
     let mut auth_rx = state.auth_epoch.subscribe();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(30));
     heartbeat.tick().await; // the first tick is immediate
@@ -117,13 +123,23 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, authorized: bool
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
                         if text.len() > 4096 {
+                            state.logger.debug_lazy("control", || {
+                                format!("control message dropped: {} bytes", text.len())
+                            });
                             continue;
                         }
                         let Ok(message) = serde_json::from_str::<Value>(&text) else {
+                            state
+                                .logger
+                                .debug("control", "control message dropped: invalid JSON");
                             continue;
                         };
-                        match message.get("type").and_then(Value::as_str) {
-                            Some("ping") => {
+                        let kind = message.get("type").and_then(Value::as_str).unwrap_or("unknown");
+                        state.logger.debug_lazy("control", || {
+                            format!("control message '{kind}'")
+                        });
+                        match kind {
+                            "ping" => {
                                 let pong = json!({
                                     "type": "pong",
                                     "data": { "t": message.get("t").cloned().unwrap_or(Value::Null), "now": now_ms() },
@@ -133,7 +149,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, authorized: bool
                                     break;
                                 }
                             }
-                            Some("refresh") => {
+                            "refresh" => {
                                 let snapshot = current_snapshot(&state);
                                 let frame = json!({ "type": "snapshot", "data": snapshot, "at": now_ms() });
                                 if sender.send(Message::Text(frame.to_string().into())).await.is_err() {
@@ -228,4 +244,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, authorized: bool
             }
         }
     }
+    state.logger.debug_lazy("control", || {
+        format!(
+            "control socket closed ({} client(s) left)",
+            state.hub.receiver_count()
+        )
+    });
 }

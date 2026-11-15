@@ -42,14 +42,24 @@ impl Engine {
         }
         let now = self.now();
         let desired_qty = config.desired_qty;
-        {
+        let (inflight, blocked_until) = {
             let runtime = self.runtime_for(&config.item_id, desired_qty);
-            if runtime.inflight {
-                return events;
-            }
-            if runtime.blocked_until > now {
-                return events;
-            }
+            (runtime.inflight, runtime.blocked_until)
+        };
+        if inflight {
+            self.logger.debug_lazy("order", || {
+                format!("{label} skipped: an order is already in flight")
+            });
+            return events;
+        }
+        if blocked_until > now {
+            self.logger.debug_lazy("order", || {
+                format!(
+                    "{label} skipped: backing off for {}ms after a rejection",
+                    blocked_until - now
+                )
+            });
+            return events;
         }
         // A follow-up extends a fill the engine has just booked rather than
         // opening a new signal, so the inter-order cooldown does not apply to
@@ -254,6 +264,11 @@ impl Engine {
                 label, qty, submitted.unit_price, submitted.notional, marker
             ),
         );
+        self.logger.debug_lazy("order", || {
+            format!(
+                "submit {label} qty={qty} unit_raw={price_raw:.0} unit={unit_price:.6} total_raw={total_price_raw:.0} markup={total_price_markup_pct}% notional={notional:.6} stock_at_trigger={stock_at_trigger:?} total_at_trigger={total_count_at_trigger:?} follow_up={follow_up} signal={signal_cmd}"
+            )
+        });
 
         events.push(EngineEvent::Submit(Box::new(submitted)));
         events

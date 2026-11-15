@@ -39,7 +39,15 @@ impl Engine {
                 self.handle_market(store, &event, &item_id, raw, received_at)
             }
             Kind::Fill => self.handle_fill(store, &event, raw, received_at),
-            Kind::Other => Vec::new(),
+            Kind::Other => {
+                self.logger.debug_lazy("engine", || {
+                    format!(
+                        "ignoring '{}' frame: no market ladder or fill shape",
+                        event.cmd
+                    )
+                });
+                Vec::new()
+            }
         }
     }
 
@@ -52,11 +60,17 @@ impl Engine {
         received_at: i64,
     ) -> Vec<EngineEvent> {
         let Some(config) = store.find_config(item_id).cloned() else {
+            self.logger.debug_lazy("engine", || {
+                format!("frame for {item_id} ignored: not a target")
+            });
             return Vec::new();
         };
         if let Some(currency) = &event.currency
             && currency != "RLT"
         {
+            self.logger.debug_lazy("engine", || {
+                format!("{item_id} ignored: currency {currency} is not RLT")
+            });
             return Vec::new();
         }
 
@@ -67,6 +81,9 @@ impl Engine {
         }
 
         let Some(best) = event.listings.first().copied() else {
+            self.logger.debug_lazy("engine", || {
+                format!("{} frame has no listings", config.item_id)
+            });
             return Vec::new();
         };
 
@@ -291,6 +308,42 @@ impl Engine {
         } else {
             plan
         };
+
+        // One line per live frame of a target: the numbers the planner saw and
+        // what it decided. This is the noisiest debug line on purpose; it is
+        // what makes "why did it not buy?" answerable after the fact.
+        self.logger.debug_lazy("engine", || {
+            let plan_label = match observed.action {
+                Action::Buy => match observed.qty {
+                    Some(qty) if observed.doubled.unwrap_or(false) => {
+                        format!("buy ×{qty} (high stock ×2)")
+                    }
+                    Some(qty) => format!("buy ×{qty}"),
+                    None => "buy".to_string(),
+                },
+                Action::Skip => format!("skip({})", observed.reason.unwrap_or("?")),
+            };
+            let fill_label = fill
+                .map(|fill| format!("{:.6}×{}", fill.price, fill.filled))
+                .unwrap_or_else(|| "none".to_string());
+            format!(
+                "{label} {:.6} RLT ×{} (total {}), eff ×{effective_stock}, fill {fill_label}, plan {plan_label}, mode {}, reconciling={reconciling}",
+                best.unit_price,
+                best.quantity,
+                event
+                    .total_count
+                    .map_or_else(|| "?".to_string(), |total| total.to_string()),
+                settings.mode.as_str()
+            )
+        });
+        if observed.action == Action::Buy && !hot {
+            self.logger.debug_lazy("engine", || {
+                format!(
+                    "{label} buy signal held back: mode {} does not plan orders",
+                    settings.mode.as_str()
+                )
+            });
+        }
 
         // A headless worker (no control socket connected) must not pay to build
         // a payload nobody reads; the wiring flips this off every frame.

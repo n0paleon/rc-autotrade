@@ -38,6 +38,18 @@ pub(super) async fn run_purchase(state: Arc<AppState>, mut intent: OrderIntent) 
         Some(mock) => mock.purchase(request.clone()).await,
         None => state.api.purchase(&credentials(&state), &request).await,
     };
+    state.logger.debug_lazy("order", || {
+        format!(
+            "{} ×{} via {} -> status {} ok={} order={:?} error={:?}",
+            intent.label,
+            intent.qty,
+            if real { "HTTP" } else { "simulator" },
+            result.status,
+            result.ok,
+            result.order_id,
+            result.error
+        )
+    });
     // The first dispatch stays on the timeline even across a 401 retry, so the
     // stage still shows the refresh round-trip; the retry contributes the final
     // headers and TTFB.

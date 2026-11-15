@@ -113,6 +113,15 @@ impl Store {
         store.hydrate_events();
         store.hydrate_item_events();
         store.hydrate_catalog();
+        logger.debug_lazy("store", || {
+            format!(
+                "hydrated {} target(s), {} recent order(s), {} catalogued item(s), {} event bucket(s)",
+                store.state.configs.len(),
+                store.state.history.len(),
+                store.catalog.len(),
+                store.event_points.len()
+            )
+        });
         // Reclaim anything older than the documented retention window. The API
         // only ever serves the last `PRICE_HISTORY_DAYS`, so this is not visible
         // in any chart; it just stops the table from growing across restarts.

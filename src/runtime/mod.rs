@@ -70,6 +70,13 @@ const ORPHAN_RUNTIME_IDLE_MS: i64 = 7 * 86_400_000;
 impl Worker {
     /// Starts the feed, the engine loop and the 30 s session tick.
     pub fn start(state: Arc<AppState>) -> Self {
+        state.logger.debug_lazy("worker", || {
+            format!(
+                "starting {} market feed (coalescing market ticks every {}ms)",
+                if state.config.mock { "mock" } else { "gateway" },
+                crate::constants::MARKET_BROADCAST_INTERVAL_MS
+            )
+        });
         // Market ticks are coalesced per item before they reach the sockets.
         // Created before the feed task so the very first frame has somewhere to
         // go. The channel is bounded; a full queue falls back to a direct send.
@@ -167,7 +174,12 @@ impl Worker {
         let feed_task = tokio::spawn(async move {
             while let Some(event) = events.recv().await {
                 match event {
-                    GatewayEvent::Status(data) => feed_state.broadcast("gateway", data),
+                    GatewayEvent::Status(data) => {
+                        feed_state
+                            .logger
+                            .debug_lazy("feed", || format!("gateway status -> {data}"));
+                        feed_state.broadcast("gateway", data)
+                    }
                     GatewayEvent::Frame { raw, at } => process_frame(&feed_state, raw, at),
                 }
             }
@@ -214,6 +226,10 @@ impl Worker {
             loop {
                 interval.tick().await;
                 let now = now_ms();
+                maintenance_state.logger.debug(
+                    "store",
+                    "maintenance tick: WAL checkpoint + retention sweep",
+                );
 
                 let checkpoint = crate::blocking::run(|| {
                     let store = lock(&maintenance_state.store);
@@ -223,6 +239,10 @@ impl Worker {
                     maintenance_state
                         .logger
                         .warn("store", format!("WAL checkpoint failed: {error}"));
+                } else {
+                    maintenance_state
+                        .logger
+                        .debug("store", "WAL checkpoint finished");
                 }
 
                 if now - pruned_at >= PRICE_PRUNE_INTERVAL_MS {

@@ -23,6 +23,15 @@ impl Engine {
         let Some(fill) = event.fill.clone() else {
             return Vec::new();
         };
+        self.logger.debug_lazy("fill", || {
+            format!(
+                "result for order {} (status {}, count {}, price_raw {})",
+                fill.order_id.as_deref().unwrap_or("-"),
+                fill.status,
+                fill.count,
+                fill.price_raw
+            )
+        });
         let pending = fill
             .order_id
             .as_ref()
@@ -294,12 +303,24 @@ impl Engine {
     ) -> Vec<EngineEvent> {
         let mut events = Vec::new();
         let Some(config) = config else {
+            self.logger.debug_lazy("order", || {
+                format!("{label}: no local rearm (target was deleted)")
+            });
             return events;
         };
         if got <= 0 {
+            self.logger.debug_lazy("order", || {
+                format!("{label}: no local rearm (the fill obtained nothing)")
+            });
             return events;
         }
         if !store.state.settings.mode.plans() {
+            self.logger.debug_lazy("order", || {
+                format!(
+                    "{label}: no local rearm (mode {} does not plan)",
+                    store.state.settings.mode.as_str()
+                )
+            });
             return events;
         }
         let key = price_key(pending.unit_price);
@@ -310,11 +331,20 @@ impl Engine {
                 // once a frame (or the window) has taken authority back, the
                 // fill's old trigger snapshot is stale and re-arming from it
                 // would buy goods that are already committed or gone.
-                Some(window) if window.live(now) && window.price_key == key => window.floor,
-                _ => return events,
+                Some(window) if window.live(now) && window.price_key == key => Some(window.floor),
+                _ => None,
             }
         };
+        let Some(available) = available else {
+            self.logger.debug_lazy("order", || {
+                format!("{label}: no local rearm (the reconcile window is not live for this level)")
+            });
+            return events;
+        };
         if available < 1 {
+            self.logger.debug_lazy("order", || {
+                format!("{label}: no local rearm (nothing left on the level)")
+            });
             return events;
         }
 

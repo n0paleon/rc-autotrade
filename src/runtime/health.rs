@@ -20,6 +20,9 @@ pub(super) fn track_health(state: &Arc<AppState>, health_level: &mut String) {
         .and_then(Value::as_str)
         .unwrap_or("ok")
         .to_string();
+    state
+        .logger
+        .debug_lazy("system", || format!("health check: {level}"));
     if level == *health_level {
         return;
     }

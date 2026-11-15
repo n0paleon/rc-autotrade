@@ -95,6 +95,9 @@ pub(super) async fn run(
                         "data": { "list": [] },
                     }));
                 }
+                config.logger.debug_lazy("mock", || {
+                    format!("tick {ticks} (phase {phase}) emitted simulated frames")
+                });
             }
             _ = ping.tick() => {
                 let ms = 18.0 + rand::random::<f64>() * 22.0;
@@ -110,6 +113,12 @@ pub(super) async fn run(
                     Some(MockCommand::Purchase { request, reply }) => {
                         seq += 1;
                         let order_id = format!("mock_{}_{}", now_ms(), seq);
+                        config.logger.debug_lazy("mock", || {
+                            format!(
+                                "simulated purchase {} ×{} @ raw {} -> order {order_id}",
+                                request.item_id, request.qty, request.unit_price_raw
+                            )
+                        });
                         let accepted = PurchaseResult {
                             ok: true,
                             status: 200,

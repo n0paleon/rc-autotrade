@@ -259,6 +259,9 @@ impl KeepaliveService {
         };
         if let Some(until) = suspended_until {
             if now < until {
+                self.logger.debug_lazy("keepalive", || {
+                    format!("probe suspended for {}ms more", until - now)
+                });
                 return (until - now).max(0) as u64;
             }
             let mut stats = lock(&self.stats);
@@ -275,6 +278,8 @@ impl KeepaliveService {
             }
         };
         if !allowed {
+            self.logger
+                .debug("keepalive", "probe skipped: shouldProbe is false");
             let mut stats = lock(&self.stats);
             stats.last_skip_at = Some(now);
             return jittered(self.interval_ms as f64, self.jitter_ratio);
@@ -284,12 +289,17 @@ impl KeepaliveService {
         if last_real > 0 {
             let since_real = now - last_real;
             if since_real < (self.interval_ms as i64 * 9) / 10 {
+                self.logger.debug_lazy("keepalive", || {
+                    format!("probe skipped: real traffic {since_real}ms ago")
+                });
                 let mut stats = lock(&self.stats);
                 stats.last_skip_at = Some(now);
                 return (self.interval_ms as i64 - since_real).max(1_000) as u64;
             }
         }
 
+        self.logger
+            .debug("keepalive", "probing the purchase endpoint");
         let result = self.probe_once().await;
         if let Some(until) = result.suspended_until {
             return (until - now_ms()).max(1_000) as u64;

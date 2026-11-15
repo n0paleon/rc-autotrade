@@ -58,6 +58,18 @@ pub(super) fn sample_prices(state: &Arc<AppState>) {
         let mut engine = lock(&state.engine);
         engine.sample_prices(&mut store, now, feed_alive)
     };
+    if !feed_alive {
+        state.logger.debug_lazy("feed", || {
+            format!(
+                "price sampler skipped: feed online={feed_online}, last frame {}ms ago",
+                if last_frame > 0 { now - last_frame } else { -1 }
+            )
+        });
+    } else if !samples.is_empty() {
+        state.logger.debug_lazy("feed", || {
+            format!("price sampler wrote {} close(s)", samples.len())
+        });
+    }
 
     for sample in samples {
         state.broadcast(
@@ -142,6 +154,9 @@ fn flush_market_ticks(state: &Arc<AppState>, pending: &mut HashMap<String, Box<M
     if pending.is_empty() {
         return;
     }
+    state.logger.debug_lazy("feed", || {
+        format!("publishing {} coalesced market tick(s)", pending.len())
+    });
     for (_, tick) in pending.drain() {
         state.broadcast_serialized("market", tick.as_ref());
     }

@@ -39,6 +39,18 @@ impl Engine {
     ) -> Vec<EngineEvent> {
         let mut events = Vec::new();
         let now = self.now();
+        self.logger.debug_lazy("order", || {
+            format!(
+                "purchase returned for {} ×{}: ok={} order={:?} error={:?} ttfb={:?}ms attempts={:?}",
+                intent.label,
+                intent.qty,
+                outcome.ok,
+                outcome.order_id,
+                outcome.error,
+                outcome.ttfb_ms,
+                intent.timings.attempts
+            )
+        });
         let mut timings = intent.timings.clone();
         // Overwrite the provisional engine mark with the real HTTP dispatch.
         if let Some(send_at) = outcome.send_at {
@@ -93,6 +105,19 @@ impl Engine {
                     intent.label, intent.qty, order_id
                 ),
             );
+            self.logger.debug_lazy("order", || {
+                format!(
+                    "order {order_id}: qty={} unit_raw={} unit={:.6} total_raw={} markup={}% stock_at_trigger={:?} total_at_trigger={:?} optimistic={}",
+                    intent.qty,
+                    intent.unit_price_raw,
+                    intent.unit_price,
+                    intent.total_price_raw,
+                    intent.total_price_markup_pct,
+                    intent.stock_at_trigger,
+                    intent.total_count_at_trigger,
+                    intent.optimistic
+                )
+            });
             events.push(EngineEvent::Broadcast {
                 kind: "order",
                 data: json!({
