@@ -334,6 +334,9 @@ export function useWorker({ notify }) {
 
   const [snapshot, setSnapshot] = useState(null);
   const [logs, setLogs] = useState([]);
+  // Monotonic total of every line appended to the live system log. The `logs`
+  // state is capped, so its length cannot drive the feed's events/min readout.
+  const [logCount, setLogCount] = useState(0);
   const [status, setStatus] = useState("idle");
   const [latency, setLatency] = useState(null);
   const [authError, setAuthError] = useState("");
@@ -348,6 +351,7 @@ export function useWorker({ notify }) {
     const id = String(entry.id ?? `${entry.at}-${entry.message}`);
     if (logIdsRef.current.has(id)) return;
     logIdsRef.current.add(id);
+    setLogCount((count) => count + 1);
     setLogs((previous) => {
       const next = [...previous, entry];
       return next.length > 400 ? next.slice(-400) : next;
@@ -365,6 +369,7 @@ export function useWorker({ notify }) {
   const clearLogs = useCallback(() => {
     logIdsRef.current.clear();
     setLogs([]);
+    setLogCount(0);
   }, []);
 
   const applySnapshot = useCallback((data) => {
@@ -1232,6 +1237,7 @@ export function useWorker({ notify }) {
   return {
     snapshot,
     logs,
+    logCount,
     status,
     latency,
     connected,

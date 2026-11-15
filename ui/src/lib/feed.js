@@ -1,5 +1,5 @@
 /**
- * Tail-follow rules for the live event log.
+ * Tail-follow rules for the live system log.
  *
  * A native `scroll` event is not proof that the user scrolled: the browser
  * also fires one when the capped window drops its oldest row (scroll
