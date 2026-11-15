@@ -510,7 +510,7 @@ function Hud({ snapshot, epm, marketEvents }) {
           {formatInt(stats.filled)}
         </div>
         <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
-          <span id="stat-failed">{formatInt(stats.failed)}</span> missed · <span id="stat-bought">{formatInt(stats.bought)}</span> items
+          <span id="stat-failed">{formatInt(stats.failed)}</span> missed
         </div>
       </article>
       <article data-accent="cyan" className="stat-tile">
