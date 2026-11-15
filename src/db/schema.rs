@@ -100,6 +100,9 @@ CREATE TABLE IF NOT EXISTS report_products (
   fills       INTEGER NOT NULL DEFAULT 0,
   failed      INTEGER NOT NULL DEFAULT 0,
   qty         INTEGER NOT NULL DEFAULT 0,
+  -- Units an order asked for but never obtained. Unlike `qty` (fulfilled
+  -- units) it is only meaningful next to `failed`.
+  failed_qty  INTEGER NOT NULL DEFAULT 0,
   spent_rlt   REAL NOT NULL DEFAULT 0,
   profit_rlt  REAL NOT NULL DEFAULT 0,
   first_at    INTEGER NOT NULL,
@@ -242,6 +245,31 @@ pub(super) fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     // count in qty. That count now lives in requested_qty, so zero qty for
     // failed rows to match the fulfillment event count (0 obtained).
     conn.execute_batch("UPDATE orders SET qty = 0 WHERE status = 'failed'")?;
+
+    // Units that were asked for and never obtained, per product. The loot log
+    // still holds every failed attempt, so an upgraded database can rebuild the
+    // column exactly instead of starting it at 0. This runs after the
+    // `requested_qty` backfill above: that column is the attempted quantity for
+    // both legacy and current failed rows.
+    if add_column_if_missing(
+        conn,
+        "report_products",
+        "failed_qty",
+        "INTEGER NOT NULL DEFAULT 0",
+    )? {
+        conn.execute_batch(
+            "UPDATE report_products AS p SET failed_qty = COALESCE((
+                 SELECT SUM(COALESCE(o.requested_qty, 0)) FROM orders o
+                 WHERE o.status = 'failed' AND (
+                   CASE
+                     WHEN trim(o.item_id) <> '' THEN lower(trim(o.item_id))
+                     WHEN trim(o.label) <> '' THEN 'label:' || lower(trim(o.label))
+                     ELSE 'unknown'
+                   END
+                 ) = p.product_key
+             ), 0)",
+        )?;
+    }
 
     // The auto-target feature is gone; drop its columns if a legacy DB has them.
     for column in ["auto_target", "auto_target_margin_pct"] {

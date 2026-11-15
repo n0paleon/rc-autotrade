@@ -214,8 +214,8 @@ impl Store {
         let mut statement = self
             .db
             .prepare(
-                "SELECT product_key, item_id, label, fills, failed, qty, spent_rlt,
-                        profit_rlt, first_at, last_at FROM report_products",
+                "SELECT product_key, item_id, label, fills, failed, qty, failed_qty,
+                        spent_rlt, profit_rlt, first_at, last_at FROM report_products",
             )
             .map_err(|e| format!("could not prepare report read: {e}"))?;
         let rows = statement
@@ -227,10 +227,11 @@ impl Store {
                     fills: row.get(3)?,
                     failed: row.get(4)?,
                     qty: row.get(5)?,
-                    spent_rlt: row.get(6)?,
-                    profit_rlt: row.get(7)?,
-                    first_at: row.get(8)?,
-                    last_at: row.get(9)?,
+                    failed_qty: row.get(6)?,
+                    spent_rlt: row.get(7)?,
+                    profit_rlt: row.get(8)?,
+                    first_at: row.get(9)?,
+                    last_at: row.get(10)?,
                 };
                 Ok((key, product))
             })

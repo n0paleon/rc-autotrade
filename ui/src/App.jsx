@@ -1142,8 +1142,9 @@ function ReportPanel({ report, notify }) {
         "product",
         "item_id",
         "fills",
-        "failed",
-        "qty",
+        "filled_qty",
+        "missed",
+        "missed_qty",
         "spent_rlt",
         "avg_buy_rlt",
         "profit_rlt",
@@ -1156,8 +1157,9 @@ function ReportPanel({ report, notify }) {
         item.label || item.itemId,
         item.itemId,
         item.fills,
-        item.failed,
         item.qty,
+        item.failed,
+        item.failedQty,
         item.spentRlt,
         item.avgBuy,
         item.profitRlt,
@@ -1232,7 +1234,9 @@ function ReportPanel({ report, notify }) {
                 {formatInt(totals?.fills ?? 0)}
                 <span className="text-faint"> / {formatInt(totals?.failed ?? 0)}</span>
               </p>
-              <p className="mt-1.5 font-mono text-[13px] uppercase tracking-[0.1em] text-faint">Confirmed / missed</p>
+              <p className="mt-1.5 font-mono text-[13px] uppercase tracking-[0.1em] text-faint">
+                {formatInt(totals?.qty ?? 0)} qty bought / {formatInt(totals?.failedQty ?? 0)} qty missed
+              </p>
             </div>
           </div>
 
@@ -1246,8 +1250,13 @@ function ReportPanel({ report, notify }) {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="truncate text-[13px] text-ink">{item.label || shortId(item.itemId)}</p>
-                    <p className="mt-0.5 font-mono text-[13px] uppercase tracking-[0.08em] text-faint">
-                      {formatInt(item.fills)} filled · {formatInt(item.failed)} missed · {formatInt(item.qty)} qty
+                    <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[13px] uppercase tracking-[0.08em] text-faint">
+                      <span className="whitespace-nowrap">
+                        {formatInt(item.fills)} fills / {formatInt(item.qty)} qty
+                      </span>
+                      <span className="whitespace-nowrap">
+                        {formatInt(item.failed)} missed / {formatInt(item.failedQty)} qty
+                      </span>
                     </p>
                   </div>
                   <div className="shrink-0 text-right">
@@ -1279,8 +1288,8 @@ function ReportPanel({ report, notify }) {
               <thead className="sticky top-0 z-10 bg-night-900">
                 <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
                   <th scope="col" className="px-4 py-2 font-medium">Product</th>
-                  <th scope="col" className="px-3 py-2 font-medium">Fills/missed</th>
-                  <th scope="col" className="px-3 py-2 font-medium">Qty</th>
+                  <th scope="col" className="px-3 py-2 font-medium" title="Filled orders / units actually obtained">Fills/qty</th>
+                  <th scope="col" className="px-3 py-2 font-medium" title="Missed orders / units that were asked for and never obtained">Missed/qty</th>
                   <th scope="col" className="px-3 py-2 font-medium">Spend</th>
                   <th scope="col" className="px-3 py-2 font-medium">Avg buy</th>
                   <th scope="col" className="px-3 py-2 font-medium">Profit</th>
@@ -1299,9 +1308,12 @@ function ReportPanel({ report, notify }) {
                     <td className="max-w-[240px] truncate px-4 py-2 text-ink-dim">{item.label || shortId(item.itemId)}</td>
                     <td className="px-3 py-2">
                       <span className="text-signal">{formatInt(item.fills)}</span>
-                      <span className="text-faint"> / {formatInt(item.failed)}</span>
+                      <span className="text-faint"> / {formatInt(item.qty)}</span>
                     </td>
-                    <td className="px-3 py-2 text-ink-dim">{formatInt(item.qty)}</td>
+                    <td className="px-3 py-2">
+                      <span className="text-danger">{formatInt(item.failed)}</span>
+                      <span className="text-faint"> / {formatInt(item.failedQty)}</span>
+                    </td>
                     <td className="px-3 py-2 text-ink-dim">{formatRlt(item.spentRlt)}</td>
                     <td className="px-3 py-2 text-ink-dim">{fixedPrice(item.avgBuy)}</td>
                     <td className={`px-3 py-2 ${profitClass(item.profitRlt)}`}>{formatSignedRlt(item.profitRlt)}</td>
@@ -1320,9 +1332,12 @@ function ReportPanel({ report, notify }) {
                   <td className="px-4 py-2.5 uppercase tracking-[0.12em] text-faint">Total</td>
                   <td className="px-3 py-2.5 text-ink-dim">
                     {formatInt(totals?.fills ?? 0)}
-                    <span className="text-faint"> / {formatInt(totals?.failed ?? 0)}</span>
+                    <span className="text-faint"> / {formatInt(totals?.qty ?? 0)}</span>
                   </td>
-                  <td className="px-3 py-2.5 text-ink-dim">{formatInt(totals?.qty ?? 0)}</td>
+                  <td className="px-3 py-2.5 text-ink-dim">
+                    {formatInt(totals?.failed ?? 0)}
+                    <span className="text-faint"> / {formatInt(totals?.failedQty ?? 0)}</span>
+                  </td>
                   <td className="px-3 py-2.5 text-ink-dim">{formatRlt(totals?.spentRlt ?? 0)}</td>
                   <td className="px-3 py-2.5 text-faint">—</td>
                   <td className={`px-3 py-2.5 font-semibold ${profitClass(totals?.profitRlt)}`}>

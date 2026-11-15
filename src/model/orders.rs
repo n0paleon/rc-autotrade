@@ -91,7 +91,13 @@ pub struct Product {
     pub label: String,
     pub fills: i64,
     pub failed: i64,
+    /// Units actually obtained by the filled orders.
     pub qty: i64,
+    /// Units the failed orders asked for and never obtained. Legacy rows
+    /// decode as 0: the attempted count for a failed order is only known once
+    /// `requested_qty` exists, so the migration backfills it from the loot log.
+    #[serde(default)]
+    pub failed_qty: i64,
     pub spent_rlt: f64,
     pub profit_rlt: f64,
     pub first_at: i64,
@@ -107,6 +113,7 @@ pub struct ProductView {
     pub fills: i64,
     pub failed: i64,
     pub qty: i64,
+    pub failed_qty: i64,
     pub spent_rlt: f64,
     pub profit_rlt: f64,
     pub first_at: i64,
@@ -123,6 +130,7 @@ pub struct ReportTotals {
     pub fills: i64,
     pub failed: i64,
     pub qty: i64,
+    pub failed_qty: i64,
     pub spent_rlt: f64,
     pub profit_rlt: f64,
     pub margin_pct: Option<f64>,

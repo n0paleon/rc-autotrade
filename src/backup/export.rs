@@ -120,6 +120,7 @@ pub fn build_backup(store: &Store, include_credentials: bool, now: i64) -> Resul
                 "fills": product.fills,
                 "failed": product.failed,
                 "qty": product.qty,
+                "failedQty": product.failed_qty,
                 "spentRlt": product.spent_rlt,
                 "profitRlt": product.profit_rlt,
                 "firstAt": product.first_at,

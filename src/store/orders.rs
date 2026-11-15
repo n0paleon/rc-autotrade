@@ -13,6 +13,14 @@ use super::rows::{row_to_entry, row_to_entry_lite};
 use super::state::{HistoryPage, HistoryQuery};
 use super::targets::{escape_like, product_key};
 
+/// How many units an order asked for, and therefore how many a failed order
+/// missed. `requested_qty` is the attempted count on both current and legacy
+/// failed rows (the migration preserved it before zeroing `qty`), so the
+/// fulfillment count is only a last-resort fallback for an odd in-memory row.
+fn attempted_qty(entry: &OrderEntry) -> i64 {
+    entry.requested_qty.unwrap_or(entry.qty).max(0)
+}
+
 impl Store {
     /// Appends one confirmed/failed order to the permanent loot log.
     pub fn add_history(&mut self, entry: OrderEntry) -> Result<(), String> {
@@ -310,6 +318,7 @@ impl Store {
                 fills: 0,
                 failed: 0,
                 qty: 0,
+                failed_qty: 0,
                 spent_rlt: 0.0,
                 profit_rlt: 0.0,
                 first_at: at,
@@ -327,6 +336,10 @@ impl Store {
 
         if entry.status == "failed" {
             product.failed += 1;
+            // The units the request asked for but never got. `requested_qty`
+            // is the attempted count; legacy rows carry it too (the migration
+            // preserved it), so the sum is exact for new and old rows alike.
+            product.failed_qty += attempted_qty(entry);
         } else {
             product.fills += 1;
             product.qty += entry.qty.max(0);
@@ -366,15 +379,16 @@ impl Store {
     fn write_product(&self, key: &str, product: &Product) -> rusqlite::Result<()> {
         self.db.execute(
             "INSERT INTO report_products
-             (product_key, item_id, label, fills, failed, qty, spent_rlt, profit_rlt,
+             (product_key, item_id, label, fills, failed, qty, failed_qty, spent_rlt, profit_rlt,
               first_at, last_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(product_key) DO UPDATE SET
                item_id = excluded.item_id,
                label = excluded.label,
                fills = excluded.fills,
                failed = excluded.failed,
                qty = excluded.qty,
+               failed_qty = excluded.failed_qty,
                spent_rlt = excluded.spent_rlt,
                profit_rlt = excluded.profit_rlt,
                first_at = excluded.first_at,
@@ -386,6 +400,7 @@ impl Store {
                 product.fills,
                 product.failed,
                 product.qty,
+                product.failed_qty,
                 product.spent_rlt,
                 product.profit_rlt,
                 product.first_at,
@@ -409,6 +424,7 @@ impl Store {
                     fills: product.fills,
                     failed: product.failed,
                     qty: product.qty,
+                    failed_qty: product.failed_qty,
                     spent_rlt: round_price(product.spent_rlt),
                     profit_rlt: round_price(product.profit_rlt),
                     first_at: product.first_at,
@@ -449,6 +465,7 @@ impl Store {
             fills: 0,
             failed: 0,
             qty: 0,
+            failed_qty: 0,
             spent_rlt: 0.0,
             profit_rlt: 0.0,
             margin_pct: None,
@@ -457,6 +474,7 @@ impl Store {
             totals.fills += item.fills;
             totals.failed += item.failed;
             totals.qty += item.qty;
+            totals.failed_qty += item.failed_qty;
             totals.spent_rlt += item.spent_rlt;
             totals.profit_rlt += item.profit_rlt;
         }
