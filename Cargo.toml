@@ -11,6 +11,7 @@ axum = { version = "0.8.9", features = ["ws", "macros"] }
 base64 = "0.23.1"
 futures-util = "0.3.34"
 hex = "0.4.3"
+moka = { version = "0.12", features = ["future"] }
 rustls = { version = "0.23", features = ["aws-lc-rs", "tls12", "ring"] }
 rustls-native-certs = "0.8"
 rustls-pki-types = "1"
