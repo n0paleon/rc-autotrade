@@ -225,6 +225,21 @@ export function successStats(config) {
   };
 }
 
+/**
+ * Filled orders as a share of every order sent upstream. The worker counts an
+ * order the moment it is dispatched, so a result that is still in flight
+ * stays in the denominator and the rate can dip until it lands. The ratio is
+ * clamped because a late duplicate result must never print above 100%.
+ */
+export function winRatePct(filled, sent) {
+  if (filled == null || sent == null) return null;
+  const wins = Number(filled);
+  const attempts = Number(sent);
+  if (!Number.isFinite(wins) || !Number.isFinite(attempts) || attempts <= 0) return null;
+  const rate = (Math.max(0, wins) / attempts) * 100;
+  return Math.max(0, Math.min(100, Math.round(rate)));
+}
+
 export function drawPixelAvatar(canvas, seed, preferredColor) {
   if (!canvas) return;
   const ctx = canvas.getContext("2d");

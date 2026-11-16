@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { WorkerClient, ApiError } from "./lib/client.js";
-import { mergeHistory, fixedPrice, formatInt, formatSignedRlt } from "./lib/format.js";
+import { mergeHistory, fixedPrice, formatInt, formatSignedRlt, winRatePct } from "./lib/format.js";
 import { sound } from "./lib/sound.js";
 import {
   DEFAULT_SETTINGS,
@@ -253,6 +253,7 @@ function deriveBackupReport(data, since) {
   totals.marginPct = totals.spentRlt > 0
     ? Math.round((totals.profitRlt / totals.spentRlt) * 1000) / 10
     : null;
+  totals.successPct = winRatePct(totals.fills, totals.fills + totals.failed);
   return { since, totals, items };
 }
 

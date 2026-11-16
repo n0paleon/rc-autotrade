@@ -36,6 +36,9 @@ fn records_orders_in_history_and_report() {
     assert_eq!(report.items.len(), 1);
     assert_eq!(report.items[0].qty, 2);
     assert!((report.items[0].spent_rlt - 0.2).abs() < 1e-9);
+    // One filled and one failed order: half of the completed attempts won.
+    assert_eq!(report.totals.success_pct, Some(50));
+    assert_eq!(report.items[0].success_pct, Some(50));
 }
 
 #[test]

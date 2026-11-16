@@ -16,7 +16,8 @@ import {
   runtimeHot,
   runtimeReconciling,
   thresholdClass,
-  utilizationClass
+  utilizationClass,
+  winRatePct
 } from "../src/lib/format.js";
 
 test("applies the total price markup used by the target preview", () => {
@@ -161,6 +162,20 @@ test("formats percentages and colors utilization brackets", () => {
   assert.equal(thresholdClass(85, 80, 92), "text-warn");
   assert.equal(thresholdClass(95, 80, 92), "text-danger");
   assert.equal(thresholdClass(undefined, 80, 92), "text-muted");
+});
+
+test("winRatePct uses every sent order as the denominator", () => {
+  assert.equal(winRatePct(0, 0), null);
+  assert.equal(winRatePct(0, 10), 0);
+  assert.equal(winRatePct(5, 10), 50);
+  assert.equal(winRatePct(2, 3), 67);
+  assert.equal(winRatePct(10, 10), 100);
+  // A duplicate or out-of-order result must not print above 100%.
+  assert.equal(winRatePct(11, 10), 100);
+  assert.equal(winRatePct(-1, 10), 0);
+  assert.equal(winRatePct(null, 10), null);
+  assert.equal(winRatePct(5, null), null);
+  assert.equal(winRatePct(5, "not a number"), null);
 });
 
 test("formatPreciseMs keeps sub-millisecond SQLite timings visible", () => {

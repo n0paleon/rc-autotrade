@@ -134,6 +134,8 @@ pub struct ReportTotals {
     pub spent_rlt: f64,
     pub profit_rlt: f64,
     pub margin_pct: Option<f64>,
+    /// Filled orders as a share of completed attempts (fills + failures).
+    pub success_pct: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
