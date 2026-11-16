@@ -125,6 +125,12 @@ fn creates_the_full_schema_and_stamps_the_version() {
         column_exists(&conn, "report_products", "failed_qty").unwrap(),
         "the profit report must track missed units, not just missed orders"
     );
+    for column in ["min_price", "max_price"] {
+        assert!(
+            column_exists(&conn, "item_event_points", column).unwrap(),
+            "the item monitor must store per-bucket price extremes ({column})"
+        );
+    }
 
     let _ = std::fs::remove_dir_all(&dir);
 }

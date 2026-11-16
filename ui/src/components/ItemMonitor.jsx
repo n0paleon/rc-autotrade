@@ -16,7 +16,7 @@ import {
   summarizeActivity,
   typeBreakdown
 } from "../lib/activity.js";
-import { formatInt, formatTime, itemTypeLabel, relTime } from "../lib/format.js";
+import { fixedPrice, formatInt, formatTime, itemTypeLabel, relTime } from "../lib/format.js";
 import { useCollapsed, useMediaQuery } from "../lib/hooks.js";
 import { CollapseToggle } from "./CollapseToggle.jsx";
 import { Icon } from "./ModalShell.jsx";
@@ -421,13 +421,15 @@ export function ItemMonitor({ request, notify }) {
         <>
           {wide ? (
             <div className="report-scroll min-w-0">
-              <table className="w-full min-w-[820px] border-collapse text-left font-mono text-meta tabular-nums">
+              <table className="w-full min-w-[980px] border-collapse text-left font-mono text-meta tabular-nums">
                 <thead className="sticky top-0 z-10 bg-night-900">
                   <tr className="border-b-2 border-line text-label uppercase tracking-[0.08em] text-faint">
                     <th scope="col" className="px-4 py-2 font-medium">Product</th>
                     <th scope="col" className="px-3 py-2 font-medium" title="Item type reported by the market feed or item-info">Type</th>
                     <th scope="col" className="px-3 py-2 font-medium" title="Market frames seen in the selected range and matching the active filters">Frames</th>
                     <th scope="col" className="px-3 py-2 font-medium" title="This product's share of all market frames that matched the active filters. Every row adds up to about 100%.">Share</th>
+                    <th scope="col" className="px-3 py-2 font-medium" title="Cheapest best ask seen in the selected range">Min price</th>
+                    <th scope="col" className="px-3 py-2 font-medium" title="Dearest best ask seen in the selected range">Max price</th>
                     <th scope="col" className="px-3 py-2 font-medium" title="Frames seen in the last 24 hours, regardless of the range filter">Last 24h</th>
                     <th scope="col" className="px-3 py-2 font-medium">Last seen</th>
                     <th scope="col" className="px-4 py-2 font-medium" title="Open the product on the Rollercoin marketplace">Market</th>
@@ -469,6 +471,18 @@ export function ItemMonitor({ request, notify }) {
                         </td>
                         <td className="px-3 py-2 font-semibold text-info">{formatInt(row.events)}</td>
                         <td className="px-3 py-2 tabular-nums text-ink-dim">{share}%</td>
+                        <td
+                          className="whitespace-nowrap px-3 py-2 text-gold"
+                          title="Cheapest market price (best ask) seen for this product in the selected range"
+                        >
+                          {fixedPrice(row.minPrice)}
+                        </td>
+                        <td
+                          className="whitespace-nowrap px-3 py-2 text-gold"
+                          title="Dearest market price (best ask) seen for this product in the selected range"
+                        >
+                          {fixedPrice(row.maxPrice)}
+                        </td>
                         <td className="px-3 py-2 text-muted">{formatInt(row.events24h)}</td>
                         <td
                           className="whitespace-nowrap px-3 py-2 text-faint"
@@ -530,6 +544,14 @@ export function ItemMonitor({ request, notify }) {
                           frames
                         </p>
                       </div>
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-micro tabular-nums">
+                      <span className="text-gold" title="Cheapest best ask in this range">
+                        MIN {fixedPrice(row.minPrice)}
+                      </span>
+                      <span className="text-gold" title="Dearest best ask in this range">
+                        MAX {fixedPrice(row.maxPrice)}
+                      </span>
                     </div>
                     <div className="mt-2 flex items-center gap-2">
                       <span className="shrink-0 font-mono text-micro tabular-nums text-ink-dim">

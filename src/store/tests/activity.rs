@@ -46,6 +46,47 @@ fn item_activity_ranks_every_id_by_frame_count() {
 }
 
 #[test]
+fn item_activity_folds_price_extremes_over_the_selected_range() {
+    let mut store = store("item-activity-prices");
+    let now = now_ms();
+    // The frame's best ask is folded into its 5-minute bucket; the monitor wins
+    // the range's pair by taking the min of the mins and the max of the maxes.
+    store.note_item_event_priced("priced", Some("miner"), now - 4_000, Some(0.42));
+    store.note_item_event_priced("priced", Some("miner"), now - 3_000, Some(0.35));
+    store.note_item_event_priced("priced", Some("miner"), now - 2_000, Some(0.58));
+    let older = now - 4 * 86_400_000;
+    store.note_item_event_priced("priced", Some("miner"), older, Some(0.20));
+    store.note_item_event_priced("priced", Some("miner"), older + 1_000, Some(0.91));
+    // A frame without a listing, and a non-finite price, must not invent an
+    // extreme or poison the pair.
+    store.note_item_event("priced", Some("miner"), now - 1_000);
+    store.note_item_event_priced("priced", Some("miner"), now - 500, Some(f64::NAN));
+
+    let whole = store.item_activity(
+        &ItemActivityQuery {
+            since: older - 1_000,
+            until: now,
+            ..Default::default()
+        },
+        now,
+    );
+    assert_eq!(whole.rows[0].min_price, Some(0.20));
+    assert_eq!(whole.rows[0].max_price, Some(0.91));
+
+    // The same item, scoped to the last day: only the recent bucket counts.
+    let recent = store.item_activity(
+        &ItemActivityQuery {
+            since: now - 86_400_000,
+            until: now,
+            ..Default::default()
+        },
+        now,
+    );
+    assert_eq!(recent.rows[0].min_price, Some(0.35));
+    assert_eq!(recent.rows[0].max_price, Some(0.58));
+}
+
+#[test]
 fn item_activity_filters_by_type_search_and_range() {
     let mut store = store("item-activity-filters");
     let now = now_ms();
@@ -304,8 +345,9 @@ fn item_activity_survives_a_reopen_and_updates_in_place() {
     {
         let mut store = Store::open(dir.clone(), logger.clone()).expect("store");
         for _ in 0..6 {
-            store.note_item_event("persisted", Some("miner"), now - 5_000);
+            store.note_item_event_priced("persisted", Some("miner"), now - 5_000, Some(0.30));
         }
+        store.note_item_event_priced("persisted", Some("miner"), now - 4_000, Some(0.45));
         store.flush_item_events().expect("flush");
         let stored: i64 = store
             .db
@@ -313,7 +355,7 @@ fn item_activity_survives_a_reopen_and_updates_in_place() {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(stored, 6);
+        assert_eq!(stored, 7);
     }
 
     // Counting continues after boot; the second flush must replace the row
@@ -321,13 +363,17 @@ fn item_activity_survives_a_reopen_and_updates_in_place() {
     let mut store = Store::open(dir, logger).expect("reopen");
     let rows = store.item_activity(&ItemActivityQuery::default(), now).rows;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].events, 6);
+    assert_eq!(rows[0].events, 7);
+    assert_eq!(rows[0].min_price, Some(0.30));
+    assert_eq!(rows[0].max_price, Some(0.45));
     for _ in 0..2 {
-        store.note_item_event("persisted", Some("miner"), now - 4_000);
+        store.note_item_event_priced("persisted", Some("miner"), now - 4_000, Some(0.24));
     }
     store.flush_item_events().expect("second flush");
     let rows = store.item_activity(&ItemActivityQuery::default(), now).rows;
-    assert_eq!(rows[0].events, 8);
+    assert_eq!(rows[0].events, 9);
+    assert_eq!(rows[0].min_price, Some(0.24));
+    assert_eq!(rows[0].max_price, Some(0.45));
     let rows_in_table: i64 = store
         .db
         .query_row("SELECT COUNT(*) FROM item_event_points", [], |row| {

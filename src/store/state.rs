@@ -74,6 +74,11 @@ pub(super) struct ItemEventAccum {
     pub(super) events: i64,
     pub(super) last_seen_at: Option<i64>,
     pub(super) item_type: Option<String>,
+    /// Cheapest and dearest best ask seen in this bucket. Kept per bucket so the
+    /// monitor can answer price extremes for any date range by folding the
+    /// buckets it covers, instead of storing one all-time pair per item.
+    pub(super) min_price: Option<f64>,
+    pub(super) max_price: Option<f64>,
 }
 
 /// One `item_event_points` row on its way into the memory map.

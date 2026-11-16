@@ -57,6 +57,11 @@ pub struct ItemActivityRow {
     pub events_24h: i64,
     pub first_at: Option<i64>,
     pub last_at: Option<i64>,
+    /// Cheapest market price (best ask) seen for this item inside the selected
+    /// range. `None` when no frame in that range carried a listing.
+    pub min_price: Option<f64>,
+    /// Dearest best ask seen for this item inside the selected range.
+    pub max_price: Option<f64>,
     /// True when this id is on the target fleet.
     pub tracked: bool,
 }
