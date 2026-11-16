@@ -94,6 +94,39 @@ function Segmented({ label, options, value, onChange }) {
 }
 
 /**
+ * Placeholder shown where the table would be while the worker folds a fresh
+ * window of frames. The padlock stays shut and the gear steps around it until
+ * rows arrive; the shimmering bars preview the table that is coming.
+ */
+function ActivityLoading() {
+  return (
+    <div className="activity-loading" role="status" aria-live="polite">
+      <div className="activity-lock" aria-hidden="true">
+        <Icon name="i-gear" className="activity-gear" />
+        <span className="lock-shackle" />
+        <span className="lock-body" />
+      </div>
+      <p className="activity-loading-title">
+        UNLOCKING MARKET FRAMES
+        <span className="activity-dots" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
+      </p>
+      <p className="activity-loading-hint">
+        Counting best asks per product in the selected range…
+      </p>
+      <div className="activity-loading-rows" aria-hidden="true">
+        {[0, 1, 2, 3].map((index) => (
+          <span className="skeleton activity-row-skeleton" key={index} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
  * Ranked marketplace activity per item id.
  *
  * Every RLT market frame the worker sees is counted per item per hour, whether
@@ -445,7 +478,9 @@ export function ItemMonitor({ request, notify }) {
         </span>
       </div>
 
-      {empty ? (
+      {loading ? (
+        <ActivityLoading />
+      ) : empty ? (
         <div className="flex flex-col items-center justify-center gap-2 px-6 py-10 text-center">
           <Icon name="i-pulse" className="h-6 w-6 text-faint" />
           <p className="font-mono text-body uppercase tracking-[0.14em] text-ink-dim">
@@ -461,9 +496,18 @@ export function ItemMonitor({ request, notify }) {
         </div>
       ) : (
         <>
+          {/* A poll or filter change keeps the old rows on screen, so a thin
+              stepped scan line reports the work without hiding them. */}
+          {refreshing ? (
+            <div
+              className="activity-scan"
+              role="progressbar"
+              aria-label="Refreshing item activity"
+            />
+          ) : null}
           {wide ? (
             <div className="report-scroll min-w-0">
-              <table className="w-full min-w-[980px] border-collapse text-left font-mono text-meta tabular-nums">
+              <table className="w-full min-w-[1080px] border-collapse text-left font-mono text-meta tabular-nums">
                 <thead className="sticky top-0 z-10 bg-night-900">
                   <tr className="border-b-2 border-line text-label uppercase tracking-[0.08em] text-faint">
                     <th scope="col" className="px-4 py-2 font-medium">Product</th>
