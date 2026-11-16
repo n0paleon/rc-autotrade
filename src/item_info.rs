@@ -4,18 +4,16 @@
 //! and writes it back to the target. Miner payloads carry no `rarityGroup`, so
 //! rarity is derived from `data.level`.
 //!
-//! In-flight de-duplication is not implemented: the wire path awaits one
-//! enrichment at a time and the HTTP endpoint is user-triggered, so two
-//! concurrent requests can both hit upstream.
+//! In-flight de-duplication is handled by moka's `try_get_with`: concurrent
+//! requests for the same key coalesce into one upstream resolution.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::time::Duration;
 
+use moka::future::Cache;
 use serde_json::Value;
 
 use crate::api::{ApiClient, Credentials, ItemInfoResult};
-use crate::clock::now_ms;
-use crate::lock::lock;
 use crate::logger::Logger;
 
 pub const DEFAULT_TTL_MS: i64 = 10 * 60 * 1000;
@@ -23,8 +21,6 @@ pub const FAILURE_COOLDOWN_MS: i64 = 5 * 60 * 1000;
 /// Upper bound for the resolution caches. A normal fleet is far below this, so
 /// the cap only ever bites after a long session of previewing arbitrary ids.
 const CACHE_MAX_ENTRIES: usize = 512;
-/// Failure markers older than this no longer suppress a retry.
-const FAILED_MAX_AGE_MS: i64 = 24 * 60 * 60 * 1000;
 pub const ITEM_TYPE_CANDIDATES: [&str; 5] = [
     "mutation_component",
     "miner",
@@ -160,35 +156,11 @@ fn is_type_miss(result: &ItemInfoResult) -> bool {
         && (message.contains("item not found") || message.contains("item type is invalid"))
 }
 
-/// Evicts the oldest entries until `map` is back under `limit`. Only runs when
-/// the cap is exceeded, so the normal path pays a single length check.
-fn trim_to_limit<T>(map: &mut HashMap<String, T>, limit: usize, at: impl Fn(&T) -> i64) {
-    if map.len() <= limit {
-        return;
-    }
-    let excess = map.len() - limit;
-    let mut ages: Vec<(String, i64)> = map
-        .iter()
-        .map(|(key, value)| (key.clone(), at(value)))
-        .collect();
-    ages.sort_by_key(|(_, age)| *age);
-    for (key, _) in ages.into_iter().take(excess) {
-        map.remove(&key);
-    }
-}
-
-#[derive(Debug, Clone)]
-struct Cached {
-    at: i64,
-    value: ItemInfo,
-}
-
 pub struct ItemInfoService {
     api: Arc<ApiClient>,
     logger: Arc<Logger>,
-    ttl_ms: i64,
-    cache: Mutex<HashMap<String, Cached>>,
-    failed_at: Mutex<HashMap<String, i64>>,
+    cache: Cache<String, ItemInfo>,
+    failed_at: Cache<String, ()>,
 }
 
 impl ItemInfoService {
@@ -196,9 +168,14 @@ impl ItemInfoService {
         Self {
             api,
             logger,
-            ttl_ms: DEFAULT_TTL_MS,
-            cache: Mutex::new(HashMap::new()),
-            failed_at: Mutex::new(HashMap::new()),
+            cache: Cache::builder()
+                .max_capacity(CACHE_MAX_ENTRIES as u64)
+                .time_to_live(Duration::from_millis(DEFAULT_TTL_MS as u64))
+                .build(),
+            failed_at: Cache::builder()
+                .max_capacity(CACHE_MAX_ENTRIES as u64)
+                .time_to_live(Duration::from_millis(FAILURE_COOLDOWN_MS as u64))
+                .build(),
         }
     }
 
@@ -214,16 +191,13 @@ impl ItemInfoService {
         fresh: bool,
     ) -> Result<ItemInfo, String> {
         let key = Self::cache_key(item_id, item_type);
-        if !fresh {
-            let cache = lock(&self.cache);
-            if let Some(cached) = cache.get(&key)
-                && now_ms() - cached.at < self.ttl_ms
-            {
-                self.logger.debug_lazy("item-info", || {
-                    format!("cache hit {key} ({})", cached.value.label)
-                });
-                return Ok(cached.value.clone());
-            }
+        if fresh {
+            self.cache.invalidate(&key).await;
+        } else if let Some(cached) = self.cache.get(&key).await {
+            self.logger.debug_lazy("item-info", || {
+                format!("cache hit {key} ({})", cached.label)
+            });
+            return Ok(cached);
         }
 
         self.logger.debug_lazy("item-info", || {
@@ -236,81 +210,80 @@ impl ItemInfoService {
             }
         }
 
-        let mut last_error = String::from("item-info returned no data");
-        let mut last_status = 0u16;
-        for candidate in &candidates {
-            self.logger
-                .debug_lazy("item-info", || format!("querying {item_id} as {candidate}"));
-            let result = self
-                .api
-                .fetch_item_info(credentials, item_id, candidate, "RLT")
-                .await;
-            if result.ok
-                && let Some(data) = result.data
-            {
-                let value = normalize_item_info(&data, item_id, candidate);
-                self.logger.debug_lazy("item-info", || {
-                    format!(
-                        "resolved {item_id} as {candidate} -> {} ({})",
-                        value.label, value.item_type
-                    )
-                });
-                let at = now_ms();
-                let mut cache = lock(&self.cache);
-                cache.insert(
-                    key.clone(),
-                    Cached {
-                        at,
-                        value: value.clone(),
-                    },
-                );
-                cache.insert(
-                    Self::cache_key(item_id, candidate),
-                    Cached {
-                        at,
-                        value: value.clone(),
-                    },
-                );
-                trim_to_limit(&mut cache, CACHE_MAX_ENTRIES, |cached| cached.at);
-                drop(cache);
-                lock(&self.failed_at).remove(&key);
-                return Ok(value);
-            }
-            let type_miss = is_type_miss(&result);
-            last_error = result
-                .error
-                .clone()
-                .unwrap_or_else(|| "item-info returned no data".to_string());
-            last_status = result.status;
-            if type_miss {
-                self.logger.debug_lazy("item-info", || {
-                    format!(
-                        "type {candidate} missed for {item_id} (HTTP {}); trying the next candidate",
-                        result.status
-                    )
-                });
-            } else {
-                break;
-            }
-        }
+        // Concurrent lookups of the same key share one upstream resolution.
+        // `Err` is never cached, so a failed id can be retried after cooldown.
+        let mut resolved_type: Option<String> = None;
+        let slot = &mut resolved_type;
+        let resolved = self
+            .cache
+            .try_get_with(key.clone(), async {
+                let mut last_error = String::from("item-info returned no data");
+                let mut last_status = 0u16;
+                for candidate in &candidates {
+                    self.logger
+                        .debug_lazy("item-info", || format!("querying {item_id} as {candidate}"));
+                    let result = self
+                        .api
+                        .fetch_item_info(credentials, item_id, candidate, "RLT")
+                        .await;
+                    if result.ok
+                        && let Some(data) = result.data
+                    {
+                        let value = normalize_item_info(&data, item_id, candidate);
+                        self.logger.debug_lazy("item-info", || {
+                            format!(
+                                "resolved {item_id} as {candidate} -> {} ({})",
+                                value.label, value.item_type
+                            )
+                        });
+                        *slot = Some(candidate.clone());
+                        return Ok(value);
+                    }
+                    let type_miss = is_type_miss(&result);
+                    last_error = result
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "item-info returned no data".to_string());
+                    last_status = result.status;
+                    if type_miss {
+                        self.logger.debug_lazy("item-info", || {
+                            format!(
+                                "type {candidate} missed for {item_id} (HTTP {}); trying the next candidate",
+                                result.status
+                            )
+                        });
+                    } else {
+                        break;
+                    }
+                }
+                Err((last_error, last_status))
+            })
+            .await;
 
-        let last = {
-            let failed = lock(&self.failed_at);
-            failed.get(&key).copied().unwrap_or(0)
-        };
-        if now_ms() - last > FAILURE_COOLDOWN_MS {
-            let now = now_ms();
-            let mut failed = lock(&self.failed_at);
-            failed.retain(|_, at| now - *at <= FAILED_MAX_AGE_MS);
-            failed.insert(key, now);
-            trim_to_limit(&mut failed, CACHE_MAX_ENTRIES, |at| *at);
-            drop(failed);
-            self.logger.warn(
-                "item-info",
-                format!("could not resolve {item_id}: {last_error} (HTTP {last_status})"),
-            );
+        match resolved {
+            Ok(value) => {
+                if let Some(candidate) = resolved_type
+                    && candidate != item_type
+                {
+                    self.cache
+                        .insert(Self::cache_key(item_id, &candidate), value.clone())
+                        .await;
+                }
+                self.failed_at.remove(&key).await;
+                Ok(value)
+            }
+            Err(error) => {
+                let (last_error, last_status) = error.as_ref().clone();
+                if self.failed_at.get(&key).await.is_none() {
+                    self.failed_at.insert(key.clone(), ()).await;
+                    self.logger.warn(
+                        "item-info",
+                        format!("could not resolve {item_id}: {last_error} (HTTP {last_status})"),
+                    );
+                }
+                Err(last_error)
+            }
         }
-        Err(last_error)
     }
 
     /// Resolves an item without touching the target list (used by the UI when
@@ -330,19 +303,6 @@ impl ItemInfoService {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn trims_resolution_caches_to_the_hard_limit() {
-        let mut cache: HashMap<String, i64> = (0..10).map(|i| (format!("k{i}"), i)).collect();
-        trim_to_limit(&mut cache, 4, |value| *value);
-        assert_eq!(cache.len(), 4);
-        for kept in 6..10 {
-            assert!(cache.contains_key(&format!("k{kept}")));
-        }
-        for evicted in 0..6 {
-            assert!(!cache.contains_key(&format!("k{evicted}")));
-        }
-    }
 
     #[test]
     fn composes_rarity_and_name() {
