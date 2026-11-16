@@ -469,6 +469,7 @@ impl Store {
             spent_rlt: 0.0,
             profit_rlt: 0.0,
             margin_pct: None,
+            success_pct: None,
         };
         for item in &items {
             totals.fills += item.fills;
@@ -482,6 +483,12 @@ impl Store {
         totals.profit_rlt = round_price(totals.profit_rlt);
         totals.margin_pct = if totals.spent_rlt > 0.0 {
             Some((totals.profit_rlt / totals.spent_rlt * 1000.0).round() / 10.0)
+        } else {
+            None
+        };
+        let completed = totals.fills + totals.failed;
+        totals.success_pct = if completed > 0 {
+            Some((totals.fills as f64 / completed as f64 * 100.0).round() as i64)
         } else {
             None
         };
