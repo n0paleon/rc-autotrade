@@ -3,10 +3,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ACTIVITY_PAGE_SIZE,
   ACTIVITY_RANGES,
+  ACTIVITY_SORT_COLUMNS,
   categoryLabel,
   categoryOf,
   categoryOptions,
   DEFAULT_ACTIVITY_RANGE,
+  fetchActivityRows,
+  nextActivitySort,
   nextBatch,
   priceSpreadPct,
   rangeForPreset,
@@ -14,6 +17,7 @@ import {
   rowLabel,
   rowMarketplaceUrl,
   sharePercent,
+  sortActivityRows,
   summarizeActivity,
   typeBreakdown
 } from "../lib/activity.js";
@@ -33,6 +37,11 @@ import { copyText } from "./Modals.jsx";
 /** How often the table re-reads the worker while the tab is visible. */
 const REFRESH_MS = 30_000;
 const SEARCH_DEBOUNCE_MS = 250;
+
+/** Column lookup shared by the table headers and the sort controls. */
+const SORT_COLUMNS = Object.fromEntries(
+  ACTIVITY_SORT_COLUMNS.map((column) => [column.key, column])
+);
 
 function dayLabel(ts) {
   return new Date(ts).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
@@ -94,6 +103,41 @@ function Segmented({ label, options, value, onChange }) {
 }
 
 /**
+ * A column header that doubles as a sort control. Clicking cycles through the
+ * column's default direction, its reverse and the worker's ranked order.
+ */
+function SortableHeader({ column, sort, onSort, title, className = "px-3 py-2 font-medium" }) {
+  const active = sort?.key === column.key;
+  const dir = active ? sort.dir : column.defaultDir;
+  return (
+    <th
+      scope="col"
+      className={className}
+      aria-sort={active ? (dir === "asc" ? "ascending" : "descending") : "none"}
+      title={title}
+    >
+      <button
+        type="button"
+        className="group inline-flex items-center gap-1 whitespace-nowrap transition-colors hover:text-ink"
+        onClick={() => onSort(column.key)}
+        aria-label={`Sort by ${column.label}, currently ${active ? dir : "in the default ranking"}`}
+        title={`${title || column.label} — click to sort${active ? ` (currently ${dir})` : ""}`}
+      >
+        {column.label}
+        <Icon
+          name={dir === "asc" ? "i-caret-up" : "i-caret-down"}
+          className={`h-2 w-2 ${
+            active
+              ? "text-info"
+              : "text-faint opacity-0 transition-opacity group-hover:opacity-100"
+          }`}
+        />
+      </button>
+    </th>
+  );
+}
+
+/**
  * Placeholder shown where the table would be while the worker folds a fresh
  * window of frames. The padlock stays shut and the gear steps around it until
  * rows arrive; the shimmering bars preview the table that is coming.
@@ -150,14 +194,19 @@ export function ItemMonitor({ request, notify }) {
   // Rows loaded so far, appended page by page like the loot log: the reader
   // keeps everything they have already seen and asks for more below it.
   const [rows, setRows] = useState([]);
+  // `null` keeps the worker's ranking; a value re-sorts the rows on screen.
+  const [sort, setSort] = useState(null);
+  // Mirrors `rows` so the poll/refresh callbacks can read the current depth
+  // without becoming dependencies of the load effect (which would reset it).
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
   const [meta, setMeta] = useState(null);
   const [status, setStatus] = useState("loading");
   const [error, setError] = useState("");
   const [refreshedAt, setRefreshedAt] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
-  // The first page is replaced on every poll; later pages are only appended on
-  // demand. Tracking "how many rows we already hold" is what turns the page API
-  // into a load-more cursor.
+  // The number of rows already held is both the next "Load more" offset and the
+  // depth a refresh must re-read to keep those extra pages on screen.
   const requestRef = useRef(request);
   requestRef.current = request;
   // Guards against a stale in-flight page landing after the filters changed.
@@ -181,7 +230,7 @@ export function ItemMonitor({ request, notify }) {
   const preset = ACTIVITY_RANGES.find((item) => item.key === range) || ACTIVITY_RANGES[0];
 
   const fetchPage = useCallback(
-    async (offset) => {
+    async (offset, limit = ACTIVITY_PAGE_SIZE) => {
       // Recomputed per request instead of once per range choice: a rolling
       // window has to move with the clock, otherwise the 30 s poll would keep
       // re-reading the same frozen hour and the counts would never advance.
@@ -189,7 +238,7 @@ export function ItemMonitor({ request, notify }) {
       const params = new URLSearchParams({
         since: String(window.since),
         until: String(window.until),
-        limit: String(ACTIVITY_PAGE_SIZE),
+        limit: String(limit),
         offset: String(offset)
       });
       if (category) params.set("itemType", category);
@@ -213,32 +262,46 @@ export function ItemMonitor({ request, notify }) {
     []
   );
 
-  // Refreshes the first page in place. Any extra pages the reader loaded are
-  // dropped: their contents are a snapshot of an older moment, and keeping them
-  // under a fresh head would mix two different counts in one table.
-  const load = useCallback(async () => {
-    const generation = ++generationRef.current;
-    try {
-      const { activity, window } = await fetchPage(0);
-      if (generation !== generationRef.current) return;
-      setRows(Array.isArray(activity.rows) ? activity.rows : []);
-      setMeta(describe(activity, window));
-      setError("");
-      setStatus("ready");
-      setRefreshedAt(Date.now());
-    } catch (caught) {
-      if (generation !== generationRef.current) return;
-      setError(caught?.message || "Could not load item activity.");
-      // A failed poll must not blank a table that already has rows.
-      setStatus((previous) => (previous === "loading" ? "error" : "stale"));
-    }
-  }, [describe, fetchPage]);
+  // `preserveDepth` is the difference between a refetch and a reset. A filter
+  // change starts again from page one; a manual refresh or a poll re-reads every
+  // row already on screen, keeping the reader's load-more progress intact.
+  const load = useCallback(
+    async (preserveDepth = false) => {
+      const generation = ++generationRef.current;
+      try {
+        let nextRows;
+        let activity;
+        let window;
+        if (preserveDepth) {
+          ({ rows: nextRows, activity, window } = await fetchActivityRows(
+            fetchPage,
+            rowsRef.current.length
+          ));
+        } else {
+          ({ activity, window } = await fetchPage(0));
+          nextRows = Array.isArray(activity.rows) ? activity.rows : [];
+        }
+        if (generation !== generationRef.current) return;
+        setRows(nextRows);
+        setMeta(describe(activity, window));
+        setError("");
+        setStatus("ready");
+        setRefreshedAt(Date.now());
+      } catch (caught) {
+        if (generation !== generationRef.current) return;
+        setError(caught?.message || "Could not load item activity.");
+        // A failed poll must not blank a table that already has rows.
+        setStatus((previous) => (previous === "loading" ? "error" : "stale"));
+      }
+    },
+    [describe, fetchPage]
+  );
 
   // Manual refresh gets the same accountable state as a filter change: the
   // button reports the work instead of looking inert while the request runs.
   const refresh = useCallback(() => {
     setStatus((previous) => (previous === "loading" ? "loading" : "refreshing"));
-    load();
+    load(true);
   }, [load]);
 
   // Appends the next page below what is already on screen.
@@ -261,7 +324,9 @@ export function ItemMonitor({ request, notify }) {
       if (generation !== generationRef.current) return;
       setError(caught?.message || "Could not load more products.");
     } finally {
-      if (generation === generationRef.current) setLoadingMore(false);
+      // Always release the button: a refresh during this request changes the
+      // generation, but the loader must not stay stuck on "Loading…".
+      setLoadingMore(false);
     }
   }, [describe, fetchPage, rows.length]);
 
@@ -269,14 +334,12 @@ export function ItemMonitor({ request, notify }) {
     let alive = true;
     generationRef.current += 1;
     setStatus((previous) => (previous === "ready" || previous === "stale" ? "refreshing" : "loading"));
-    const run = async () => {
-      if (!alive) return;
-      await load();
-    };
-    run();
+    // The first mount and every filter change reset to the first page.
+    load(false);
     const timer = setInterval(() => {
-      // Polling a hidden tab wastes requests and battery on a phone.
-      if (document.visibilityState === "visible") run();
+      // Polling a hidden tab wastes requests and battery on a phone. A visible
+      // poll is a refetch, so it keeps the depth reached through "Load more".
+      if (document.visibilityState === "visible" && alive) load(true);
     }, REFRESH_MS);
     return () => {
       alive = false;
@@ -296,9 +359,17 @@ export function ItemMonitor({ request, notify }) {
     if (!category || menu.some((option) => option.key === category)) return menu;
     return [...menu, { key: category, count: 0 }];
   }, [category, meta]);
-  // Filtering and ranking happen in the worker, so the rows it returns are
-  // already ordered.
-  const filtered = rows;
+  // Denominator for the share column: every frame that matched the active
+  // category/search filters, so the rows add up to about 100% and 180 of 2 176
+  // reads 8% rather than 100%. It is also the basis of the "share" sort.
+  const totalEvents = meta?.totalEvents ?? 0;
+  // The worker ranks rows by frame count. An explicit sort reorders only the
+  // rows currently loaded; "Load more" still appends by the worker's ranking
+  // and the whole visible list is re-sorted afterwards.
+  const filtered = useMemo(
+    () => (sort ? sortActivityRows(rows, sort, { totalEvents }) : rows),
+    [rows, sort, totalEvents]
+  );
   const summary = useMemo(() => summarizeActivity(filtered), [filtered]);
   // The header summary comes from the range-wide totals, so it describes every
   // product in the window — not just the rows loaded so far.
@@ -307,10 +378,6 @@ export function ItemMonitor({ request, notify }) {
   // The rows already held are the cursor of the next request; the helper keeps
   // the "is there more" rule in one place with the tests that cover it.
   const { hasMore } = nextBatch({ shown, total: totalRows });
-  // Denominator for the share column: every frame that matched the active
-  // category/search filters, so the rows add up to about 100% and 180 of 2 176
-  // reads 8% rather than 100%.
-  const totalEvents = meta?.totalEvents ?? 0;
   const loading = status === "loading";
   const empty = !loading && filtered.length === 0;
   // Follow the window the last response was computed for, so the caption
@@ -319,6 +386,11 @@ export function ItemMonitor({ request, notify }) {
   const caption = rangeCaption(captionWindow.since, captionWindow.until);
 
   const pickCategory = useCallback((value) => setCategory(value), []);
+  const pickSort = useCallback((key) => setSort((current) => nextActivitySort(current, key)), []);
+  const toggleSortDir = useCallback(
+    () => setSort((current) => (current ? { ...current, dir: current.dir === "asc" ? "desc" : "asc" } : null)),
+    []
+  );
 
   const copyId = useCallback(
     async (row) => {
@@ -459,6 +531,37 @@ export function ItemMonitor({ request, notify }) {
             %
           </span>
         </div>
+        {/* Sorting is client-side over the rows on screen, so it works on the
+            phone list too (which has no column headers to click). */}
+        <select
+          className="input input-sm w-full px-2 sm:w-auto sm:shrink-0"
+          value={sort?.key ?? ""}
+          onChange={(event) => {
+            const column = SORT_COLUMNS[event.target.value];
+            setSort(column ? { key: column.key, dir: column.defaultDir } : null);
+          }}
+          aria-label="Sort item activity rows"
+          title="Re-sort the rows currently shown; ranked keeps the worker's order"
+        >
+          <option value="">Sort: ranked</option>
+          {ACTIVITY_SORT_COLUMNS.map((column) => (
+            <option key={column.key} value={column.key}>
+              Sort: {column.label}
+            </option>
+          ))}
+        </select>
+        {sort ? (
+          <button
+            className="btn btn-ghost btn-sm"
+            type="button"
+            onClick={toggleSortDir}
+            aria-label={`Sort direction: ${sort.dir === "asc" ? "ascending" : "descending"}`}
+            title={sort.dir === "asc" ? "Ascending — click for descending" : "Descending — click for ascending"}
+          >
+            <Icon name={sort.dir === "asc" ? "i-caret-up" : "i-caret-down"} className="h-2.5 w-2.5" />
+            {sort.dir === "asc" ? "ASC" : "DESC"}
+          </button>
+        ) : null}
         <span className="flex flex-wrap items-center gap-2 font-mono text-[11px] uppercase tracking-[0.08em] text-faint sm:ml-auto">
           <span title="Every RLT market frame counted for the products matching the active filters in this range, including ids below the row cap">
             Frames{" "}
@@ -510,15 +613,15 @@ export function ItemMonitor({ request, notify }) {
               <table className="w-full min-w-[1080px] border-collapse text-left font-mono text-meta tabular-nums">
                 <thead className="sticky top-0 z-10 bg-night-900">
                   <tr className="border-b-2 border-line text-label uppercase tracking-[0.08em] text-faint">
-                    <th scope="col" className="px-4 py-2 font-medium">Product</th>
-                    <th scope="col" className="px-3 py-2 font-medium" title="Item type reported by the market feed or item-info">Type</th>
-                    <th scope="col" className="px-3 py-2 font-medium" title="Market frames seen in the selected range and matching the active filters">Frames</th>
-                    <th scope="col" className="px-3 py-2 font-medium" title="This product's share of all market frames that matched the active filters. Every row adds up to about 100%.">Share</th>
-                    <th scope="col" className="px-3 py-2 font-medium" title="Cheapest best ask seen in the selected range">Min price</th>
-                    <th scope="col" className="px-3 py-2 font-medium" title="Dearest best ask seen in the selected range">Max price</th>
-                    <th scope="col" className="px-3 py-2 font-medium" title="Distance between max and min price as a percent of the min price: (max - min) / min x 100">Spread</th>
-                    <th scope="col" className="px-3 py-2 font-medium" title="Frames seen in the last 24 hours, regardless of the range filter">Last 24h</th>
-                    <th scope="col" className="px-3 py-2 font-medium">Last seen</th>
+                    <SortableHeader column={SORT_COLUMNS.product} sort={sort} onSort={pickSort} className="px-4 py-2 font-medium" />
+                    <SortableHeader column={SORT_COLUMNS.type} sort={sort} onSort={pickSort} title="Item type reported by the market feed or item-info" />
+                    <SortableHeader column={SORT_COLUMNS.frames} sort={sort} onSort={pickSort} title="Market frames seen in the selected range and matching the active filters" />
+                    <SortableHeader column={SORT_COLUMNS.share} sort={sort} onSort={pickSort} title="This product's share of all market frames that matched the active filters. Every row adds up to about 100%." />
+                    <SortableHeader column={SORT_COLUMNS.minPrice} sort={sort} onSort={pickSort} title="Cheapest best ask seen in the selected range" />
+                    <SortableHeader column={SORT_COLUMNS.maxPrice} sort={sort} onSort={pickSort} title="Dearest best ask seen in the selected range" />
+                    <SortableHeader column={SORT_COLUMNS.spread} sort={sort} onSort={pickSort} title="Distance between max and min price as a percent of the min price: (max - min) / min x 100" />
+                    <SortableHeader column={SORT_COLUMNS.events24h} sort={sort} onSort={pickSort} title="Frames seen in the last 24 hours, regardless of the range filter" />
+                    <SortableHeader column={SORT_COLUMNS.lastSeen} sort={sort} onSort={pickSort} title="Most recent market frame seen for this product" />
                     <th scope="col" className="px-4 py-2 font-medium" title="Open the product on the Rollercoin marketplace">Market</th>
                   </tr>
                 </thead>

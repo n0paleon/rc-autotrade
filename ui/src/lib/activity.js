@@ -38,6 +38,9 @@ export const DEFAULT_ACTIVITY_RANGE = "1h";
 /** Rows per page, mirrored from `ITEM_ACTIVITY_PAGE_SIZE` in `src/constants.rs`. */
 export const ACTIVITY_PAGE_SIZE = 25;
 
+/** Max rows the API serves per request, mirrored from `ITEM_ACTIVITY_LIMIT`. */
+export const ACTIVITY_MAX_ROWS = 250;
+
 /**
  * The window for one preset, as an inclusive `{since, until}` pair.
  *
@@ -233,4 +236,156 @@ export function nextBatch({ shown = 0, total = 0 } = {}) {
     remaining,
     hasMore: remaining > 0
   };
+}
+
+/** A finite number, or `null` for anything that cannot be ordered. */
+function numberOrNull(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+/**
+ * Columns the deck can re-sort on the client.
+ *
+ * The worker still ships rows in its own rank order; sorting here only touches
+ * the rows already on screen, which is what "sort the displayed data" means.
+ * Each column carries the accessor used for ordering and the direction a first
+ * click applies (counts start high-to-low, text starts low-to-high).
+ */
+export const ACTIVITY_SORT_COLUMNS = Object.freeze([
+  {
+    key: "product",
+    label: "Product",
+    defaultDir: "asc",
+    value: (row) => rowLabel(row).text.toLowerCase()
+  },
+  {
+    key: "type",
+    label: "Type",
+    defaultDir: "asc",
+    value: (row) => categoryLabel(categoryOf(row)).toLowerCase()
+  },
+  {
+    key: "frames",
+    label: "Frames",
+    defaultDir: "desc",
+    value: (row) => numberOrNull(row?.events)
+  },
+  {
+    key: "share",
+    label: "Share",
+    defaultDir: "desc",
+    value: (row, ctx) => sharePercent(row?.events, ctx?.totalEvents)
+  },
+  {
+    key: "minPrice",
+    label: "Min price",
+    defaultDir: "desc",
+    value: (row) => numberOrNull(row?.minPrice)
+  },
+  {
+    key: "maxPrice",
+    label: "Max price",
+    defaultDir: "desc",
+    value: (row) => numberOrNull(row?.maxPrice)
+  },
+  {
+    key: "spread",
+    label: "Spread",
+    defaultDir: "desc",
+    value: (row) => priceSpreadPct(row)
+  },
+  {
+    key: "events24h",
+    label: "Last 24h",
+    defaultDir: "desc",
+    value: (row) => numberOrNull(row?.events24h)
+  },
+  {
+    key: "lastSeen",
+    label: "Last seen",
+    defaultDir: "desc",
+    value: (row) => numberOrNull(row?.lastAt)
+  }
+]);
+
+/** Deterministic tiebreak so equal keys never reshuffle between polls. */
+function tieBreak(a, b) {
+  return String(a?.itemId ?? "").localeCompare(String(b?.itemId ?? ""));
+}
+
+/**
+ * Reorder a copy of `rows` by a column, without mutating the input.
+ *
+ * Rows with no value for the column (unpriced products, unknown timestamps)
+ * sink to the bottom in both directions. An unknown sort key returns the rows
+ * in their original order, which is the worker's ranking.
+ */
+export function sortActivityRows(rows, sort, ctx = {}) {
+  const list = Array.isArray(rows) ? rows.slice() : [];
+  const column = ACTIVITY_SORT_COLUMNS.find((item) => item.key === sort?.key);
+  if (!column) return list;
+  const sign = sort?.dir === "asc" ? 1 : -1;
+  list.sort((a, b) => {
+    const aValue = column.value(a, ctx);
+    const bValue = column.value(b, ctx);
+    const aMissing = aValue === null || aValue === undefined;
+    const bMissing = bValue === null || bValue === undefined;
+    if (aMissing || bMissing) {
+      if (aMissing && bMissing) return tieBreak(a, b);
+      return aMissing ? 1 : -1;
+    }
+    const comparison =
+      typeof aValue === "string" || typeof bValue === "string"
+        ? String(aValue).localeCompare(String(bValue))
+        : Number(aValue) - Number(bValue);
+    return comparison !== 0 ? comparison * sign : tieBreak(a, b);
+  });
+  return list;
+}
+
+/**
+ * Re-read `count` ranked rows from offset zero through a paged fetcher.
+ *
+ * This is the deck's refresh path: it rebuilds every page the reader appended
+ * with "Load more" instead of snapping back to the first page. Overlapping or
+ * duplicate ids are dropped so a rank that shifted between pages cannot show a
+ * product twice. The short-page rule stops before asking for an empty tail.
+ */
+export async function fetchActivityRows(fetchPage, count) {
+  const wanted = Math.max(ACTIVITY_PAGE_SIZE, Math.floor(Number(count) || 0));
+  const collected = [];
+  const seen = new Set();
+  let firstActivity = null;
+  let window;
+  let offset = 0;
+  while (collected.length < wanted) {
+    const limit = Math.min(ACTIVITY_MAX_ROWS, wanted - collected.length);
+    const { activity, window: pageWindow } = await fetchPage(offset, limit);
+    window = pageWindow;
+    firstActivity ??= activity;
+    const batch = Array.isArray(activity?.rows) ? activity.rows : [];
+    for (const row of batch) {
+      const id = String(row?.itemId ?? "");
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      collected.push(row);
+    }
+    if (batch.length < limit) break;
+    offset += batch.length;
+  }
+  return { rows: collected, activity: firstActivity, window };
+}
+
+/**
+ * Cycle a column's sort on a header click: default direction → reverse →
+ * ranked order. Switching columns starts that column at its default direction.
+ */
+export function nextActivitySort(current, key) {
+  const column = ACTIVITY_SORT_COLUMNS.find((item) => item.key === key);
+  if (!column) return null;
+  if (!current || current.key !== key) return { key, dir: column.defaultDir };
+  if (current.dir !== column.defaultDir) return null;
+  return { key, dir: column.defaultDir === "asc" ? "desc" : "asc" };
 }
