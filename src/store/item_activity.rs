@@ -12,16 +12,48 @@ use crate::model::{ItemActivityReport, ItemActivityRow, ItemTypeTotal};
 use super::Store;
 use super::state::{ItemActivityQuery, ItemEventAccum, ItemEventRow, item_event_bucket_at};
 
+/// Relative distance between a range's cheapest and dearest best ask, as a
+/// percentage of the cheaper price: `(max - min) / min * 100`.
+///
+/// Using the minimum as the base keeps the number intuitive ("max is 30% above
+/// min") and matches the filter's meaning: a 30% threshold keeps items whose
+/// best ask moved by at least a third of its lowest observed value. A missing or
+/// non-positive base cannot define a ratio, so it yields `None`.
+fn price_spread_pct(min: Option<f64>, max: Option<f64>) -> Option<f64> {
+    match (min, max) {
+        (Some(low), Some(high))
+            if low.is_finite() && low > 0.0 && high.is_finite() && high >= low =>
+        {
+            Some((high - low) / low * 100.0)
+        }
+        _ => None,
+    }
+}
+
 impl Store {
     // ── per-item market activity ────────────────────────────────────────────
 
-    /// Counts one market frame for `item_id` into its hourly bucket and stamps
-    /// the catalogue entry, so an id that was never added to the fleet still
-    /// appears (and gets a name) on the item monitor.
+    /// Counts one market frame for `item_id` into its bucket and stamps the
+    /// catalogue entry, so an id that was never added to the fleet still appears
+    /// (and gets a name) on the item monitor.
     ///
     /// Everything stays in memory on the frame path; the flusher below writes
     /// the batches in one transaction.
     pub fn note_item_event(&mut self, item_id: &str, item_type: Option<&str>, at: i64) {
+        self.note_item_event_priced(item_id, item_type, at, None);
+    }
+
+    /// Frame-path variant that also folds the frame's best ask into the bucket's
+    /// running min/max. The market feed reports a price for every RLT listing,
+    /// so the item monitor can answer "how cheap/dear was this in the selected
+    /// range" for ids that were never targets either.
+    pub fn note_item_event_priced(
+        &mut self,
+        item_id: &str,
+        item_type: Option<&str>,
+        at: i64,
+        price: Option<f64>,
+    ) {
         let key = item_id.to_ascii_lowercase();
         if key.is_empty() {
             return;
@@ -33,6 +65,10 @@ impl Store {
             accum.last_seen_at = Some(at);
             if let Some(item_type) = item_type.filter(|value| !value.is_empty()) {
                 accum.item_type = Some(item_type.to_ascii_lowercase());
+            }
+            if let Some(price) = price.filter(|value| value.is_finite() && *value > 0.0) {
+                accum.min_price = Some(accum.min_price.map_or(price, |low| low.min(price)));
+                accum.max_price = Some(accum.max_price.map_or(price, |high| high.max(price)));
             }
         }
         self.item_event_dirty.insert((bucket, key.clone()));
@@ -62,9 +98,9 @@ impl Store {
     /// Pagination happens **after** ranking and after the per-type totals are
     /// summed, so page 2 is the next slice of the same ordering and the type
     /// summary always describes the whole range rather than the current page.
-    /// The per-type totals are also summed before the category and search
-    /// filters are applied: the deck keeps one badge per known type on screen,
-    /// and those counts must not vanish while the table is narrowed.
+    /// The per-type totals are also summed before the category, search and
+    /// spread filters are applied: the deck keeps one badge per known type on
+    /// screen, and those counts must not vanish while the table is narrowed.
     pub fn item_activity(&self, query: &ItemActivityQuery, now: i64) -> ItemActivityReport {
         let since = if query.since > 0 {
             query.since
@@ -82,6 +118,11 @@ impl Store {
             requested => requested.min(ITEM_ACTIVITY_LIMIT),
         };
         let offset = query.offset;
+        // 0 (and any non-finite value) means "no threshold": keep every row,
+        // including the ones with no priced frames.
+        let min_spread = query
+            .min_spread_pct
+            .filter(|value| value.is_finite() && *value > 0.0);
 
         struct Aggregate {
             events: i64,
@@ -89,6 +130,10 @@ impl Store {
             first_at: i64,
             last_at: i64,
             item_type: String,
+            // Folded from the per-bucket extremes of the buckets in range:
+            // min of the mins and max of the maxes is the range's true pair.
+            min_price: Option<f64>,
+            max_price: Option<f64>,
         }
 
         let mut aggregates: HashMap<&str, Aggregate> = HashMap::new();
@@ -112,12 +157,21 @@ impl Store {
                     first_at: i64::MAX,
                     last_at: i64::MIN,
                     item_type: String::new(),
+                    min_price: None,
+                    max_price: None,
                 });
             if in_range {
                 entry.events += accum.events;
                 entry.first_at = entry.first_at.min((*bucket).max(since));
                 let last_frame = accum.last_seen_at.unwrap_or(bucket_end);
                 entry.last_at = entry.last_at.max(last_frame.clamp(since, until));
+                if let Some(low) = accum.min_price {
+                    entry.min_price = Some(entry.min_price.map_or(low, |current| current.min(low)));
+                }
+                if let Some(high) = accum.max_price {
+                    entry.max_price =
+                        Some(entry.max_price.map_or(high, |current| current.max(high)));
+                }
             }
             if in_day {
                 entry.events_24h += accum.events;
@@ -156,6 +210,9 @@ impl Store {
                 let tracked = self.find_config(item_id).is_some();
                 let first_at = (aggregate.first_at != i64::MAX).then_some(aggregate.first_at);
                 let last_at = (aggregate.last_at != i64::MIN).then_some(aggregate.last_at);
+                // Derives from the range's own extremes, so the displayed spread
+                // and the min-spread filter describe the same window.
+                let spread = price_spread_pct(aggregate.min_price, aggregate.max_price);
                 ItemActivityRow {
                     item_id: item_id.to_string(),
                     item_type,
@@ -166,6 +223,9 @@ impl Store {
                     events_24h: aggregate.events_24h,
                     first_at,
                     last_at,
+                    min_price: aggregate.min_price,
+                    max_price: aggregate.max_price,
+                    price_spread_pct: spread,
                     tracked,
                 }
             })
@@ -189,6 +249,13 @@ impl Store {
 
         rows.retain(|row| {
             if !wanted_type.is_empty() && row.item_type != wanted_type {
+                return false;
+            }
+            // With a threshold set, a row with no priced frames cannot qualify:
+            // it has no distance to measure against the requested minimum.
+            if let Some(minimum) = min_spread
+                && !row.price_spread_pct.is_some_and(|spread| spread >= minimum)
+            {
                 return false;
             }
             if term.is_empty() {
@@ -251,12 +318,15 @@ impl Store {
                 let mut statement = tx
                     .prepare_cached(
                         "INSERT INTO item_event_points
-                             (item_id, bucket_at, item_type, events, last_seen_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5)
+                             (item_id, bucket_at, item_type, events, last_seen_at,
+                              min_price, max_price)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                          ON CONFLICT(item_id, bucket_at) DO UPDATE SET
                            events = excluded.events,
                            item_type = COALESCE(excluded.item_type, item_type),
-                           last_seen_at = excluded.last_seen_at",
+                           last_seen_at = excluded.last_seen_at,
+                           min_price = excluded.min_price,
+                           max_price = excluded.max_price",
                     )
                     .map_err(|e| format!("could not cache item event statement: {e}"))?;
                 for ((bucket, item_id), accum) in &pending {
@@ -266,7 +336,9 @@ impl Store {
                             bucket,
                             accum.item_type,
                             accum.events,
-                            accum.last_seen_at
+                            accum.last_seen_at,
+                            accum.min_price,
+                            accum.max_price
                         ])
                         .map_err(|e| format!("could not record item event point: {e}"))?;
                 }
@@ -286,7 +358,8 @@ impl Store {
             let mut statement = self
                 .db
                 .prepare(
-                    "SELECT item_id, bucket_at, item_type, events, last_seen_at
+                    "SELECT item_id, bucket_at, item_type, events, last_seen_at,
+                            min_price, max_price
                      FROM item_event_points WHERE bucket_at >= ?1",
                 )
                 .map_err(|e| format!("could not prepare item event read: {e}"))?;
@@ -300,6 +373,8 @@ impl Store {
                             events: row.get(3)?,
                             last_seen_at: row.get(4)?,
                             item_type: row.get(2)?,
+                            min_price: row.get(5)?,
+                            max_price: row.get(6)?,
                         },
                     })
                 })

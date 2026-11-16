@@ -46,6 +46,151 @@ fn item_activity_ranks_every_id_by_frame_count() {
 }
 
 #[test]
+fn item_activity_folds_price_extremes_over_the_selected_range() {
+    let mut store = store("item-activity-prices");
+    let now = now_ms();
+    // The frame's best ask is folded into its 5-minute bucket; the monitor wins
+    // the range's pair by taking the min of the mins and the max of the maxes.
+    store.note_item_event_priced("priced", Some("miner"), now - 4_000, Some(0.42));
+    store.note_item_event_priced("priced", Some("miner"), now - 3_000, Some(0.35));
+    store.note_item_event_priced("priced", Some("miner"), now - 2_000, Some(0.58));
+    let older = now - 4 * 86_400_000;
+    store.note_item_event_priced("priced", Some("miner"), older, Some(0.20));
+    store.note_item_event_priced("priced", Some("miner"), older + 1_000, Some(0.91));
+    // A frame without a listing, and a non-finite price, must not invent an
+    // extreme or poison the pair.
+    store.note_item_event("priced", Some("miner"), now - 1_000);
+    store.note_item_event_priced("priced", Some("miner"), now - 500, Some(f64::NAN));
+
+    let whole = store.item_activity(
+        &ItemActivityQuery {
+            since: older - 1_000,
+            until: now,
+            ..Default::default()
+        },
+        now,
+    );
+    assert_eq!(whole.rows[0].min_price, Some(0.20));
+    assert_eq!(whole.rows[0].max_price, Some(0.91));
+    // (0.91 - 0.20) / 0.20 * 100 = 355%: the spread is derived from the range's
+    // own extremes, not from an all-time pair.
+    assert_close(whole.rows[0].price_spread_pct, 355.0);
+
+    // The same item, scoped to the last day: only the recent bucket counts.
+    let recent = store.item_activity(
+        &ItemActivityQuery {
+            since: now - 86_400_000,
+            until: now,
+            ..Default::default()
+        },
+        now,
+    );
+    assert_eq!(recent.rows[0].min_price, Some(0.35));
+    assert_eq!(recent.rows[0].max_price, Some(0.58));
+    assert_close(
+        recent.rows[0].price_spread_pct,
+        (0.58 - 0.35) / 0.35 * 100.0,
+    );
+}
+
+fn assert_close(actual: Option<f64>, expected: f64) {
+    let value = actual.expect("a spread for a priced row");
+    assert!(
+        (value - expected).abs() < 1e-6,
+        "expected {expected}, got {value}"
+    );
+}
+
+#[test]
+fn item_activity_computes_spread_and_filters_by_minimum() {
+    let mut store = store("item-activity-spread");
+    let now = now_ms();
+    // Four products with exact binary price distances: 100%, 50%, 0%, and no
+    // price at all. Exact fractions keep the threshold checks off float edges.
+    store.note_item_event_priced("wide", Some("miner"), now - 1_000, Some(0.25));
+    store.note_item_event_priced("wide", Some("miner"), now - 900, Some(0.5));
+    store.note_item_event_priced("narrow", Some("miner"), now - 1_000, Some(0.25));
+    store.note_item_event_priced("narrow", Some("miner"), now - 900, Some(0.375));
+    store.note_item_event_priced("flat", Some("rack"), now - 1_000, Some(0.25));
+    store.note_item_event_priced("flat", Some("rack"), now - 900, Some(0.25));
+    store.note_item_event("unpriced", Some("rack"), now - 1_000);
+
+    let all = store.item_activity(&ItemActivityQuery::default(), now);
+    assert_eq!(all.total_rows, 4);
+    let spread = |id: &str| {
+        all.rows
+            .iter()
+            .find(|row| row.item_id == id)
+            .expect("row")
+            .price_spread_pct
+    };
+    assert_close(spread("wide"), 100.0);
+    assert_close(spread("narrow"), 50.0);
+    assert_close(spread("flat"), 0.0);
+    assert_eq!(spread("unpriced"), None);
+
+    // 60% keeps only the wide product; unpriced/flat/narrow are dropped.
+    let wide_only = store.item_activity(
+        &ItemActivityQuery {
+            min_spread_pct: Some(60.0),
+            ..Default::default()
+        },
+        now,
+    );
+    assert_eq!(wide_only.total_rows, 1);
+    assert_eq!(wide_only.rows[0].item_id, "wide");
+    assert_eq!(wide_only.total_events, 2);
+
+    // The threshold is inclusive, and the type summary still describes the
+    // whole range before the filter narrows the table.
+    let at_fifty = store.item_activity(
+        &ItemActivityQuery {
+            min_spread_pct: Some(50.0),
+            ..Default::default()
+        },
+        now,
+    );
+    let mut ids: Vec<&str> = at_fifty
+        .rows
+        .iter()
+        .map(|row| row.item_id.as_str())
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec!["narrow", "wide"]);
+    let types: Vec<(&str, i64, i64)> = at_fifty
+        .type_totals
+        .iter()
+        .map(|total| (total.item_type.as_str(), total.events, total.items))
+        .collect();
+    assert_eq!(types, vec![("miner", 4, 2), ("rack", 3, 2)]);
+
+    // A filter that nothing reaches is an empty page, not an error, and still
+    // reports the whole-range type summary.
+    let none = store.item_activity(
+        &ItemActivityQuery {
+            min_spread_pct: Some(120.0),
+            ..Default::default()
+        },
+        now,
+    );
+    assert_eq!(none.total_rows, 0);
+    assert!(none.rows.is_empty());
+    assert_eq!(none.type_totals, all.type_totals);
+
+    // 0 and a negative threshold are "no filter", so the unpriced row returns.
+    for threshold in [Some(0.0), Some(-1.0), None] {
+        let report = store.item_activity(
+            &ItemActivityQuery {
+                min_spread_pct: threshold,
+                ..Default::default()
+            },
+            now,
+        );
+        assert_eq!(report.total_rows, 4, "threshold {threshold:?}");
+    }
+}
+
+#[test]
 fn item_activity_filters_by_type_search_and_range() {
     let mut store = store("item-activity-filters");
     let now = now_ms();
@@ -304,8 +449,9 @@ fn item_activity_survives_a_reopen_and_updates_in_place() {
     {
         let mut store = Store::open(dir.clone(), logger.clone()).expect("store");
         for _ in 0..6 {
-            store.note_item_event("persisted", Some("miner"), now - 5_000);
+            store.note_item_event_priced("persisted", Some("miner"), now - 5_000, Some(0.30));
         }
+        store.note_item_event_priced("persisted", Some("miner"), now - 4_000, Some(0.45));
         store.flush_item_events().expect("flush");
         let stored: i64 = store
             .db
@@ -313,7 +459,7 @@ fn item_activity_survives_a_reopen_and_updates_in_place() {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(stored, 6);
+        assert_eq!(stored, 7);
     }
 
     // Counting continues after boot; the second flush must replace the row
@@ -321,13 +467,17 @@ fn item_activity_survives_a_reopen_and_updates_in_place() {
     let mut store = Store::open(dir, logger).expect("reopen");
     let rows = store.item_activity(&ItemActivityQuery::default(), now).rows;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].events, 6);
+    assert_eq!(rows[0].events, 7);
+    assert_eq!(rows[0].min_price, Some(0.30));
+    assert_eq!(rows[0].max_price, Some(0.45));
     for _ in 0..2 {
-        store.note_item_event("persisted", Some("miner"), now - 4_000);
+        store.note_item_event_priced("persisted", Some("miner"), now - 4_000, Some(0.24));
     }
     store.flush_item_events().expect("second flush");
     let rows = store.item_activity(&ItemActivityQuery::default(), now).rows;
-    assert_eq!(rows[0].events, 8);
+    assert_eq!(rows[0].events, 9);
+    assert_eq!(rows[0].min_price, Some(0.24));
+    assert_eq!(rows[0].max_price, Some(0.45));
     let rows_in_table: i64 = store
         .db
         .query_row("SELECT COUNT(*) FROM item_event_points", [], |row| {

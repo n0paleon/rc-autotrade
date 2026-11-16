@@ -9,6 +9,7 @@ import {
   DEFAULT_ACTIVITY_RANGE,
   filterActivityRows,
   nextBatch,
+  priceSpreadPct,
   rangeForPreset,
   rangeSpansDays,
   rowLabel,
@@ -135,6 +136,73 @@ test("filtering matches names, ids and categories, mirroring the server", () => 
   );
   assert.equal(filterActivityRows(rows).length, 3);
   assert.deepEqual(filterActivityRows(null, { query: "x" }), []);
+});
+
+test("priceSpreadPct is the distance between min and max as a share of min", () => {
+  // Exact binary fractions keep the assertions free of rounding drift.
+  assert.equal(priceSpreadPct({ minPrice: 0.25, maxPrice: 0.375 }), 50);
+  assert.equal(priceSpreadPct({ minPrice: 0.25, maxPrice: 0.5 }), 100);
+  assert.equal(priceSpreadPct({ minPrice: 0.25, maxPrice: 0.25 }), 0);
+  // The worker's own value wins when present, so the deck and the filter agree
+  // even if their floats round a hair differently.
+  assert.equal(priceSpreadPct({ priceSpreadPct: 29.9, minPrice: 0.25, maxPrice: 0.375 }), 29.9);
+  // Missing, non-positive or inverted prices cannot define a distance.
+  for (const row of [
+    null,
+    {},
+    { minPrice: 0, maxPrice: 0.375 },
+    { minPrice: -1, maxPrice: 0.375 },
+    { minPrice: 0.5, maxPrice: 0.25 },
+    { minPrice: NaN, maxPrice: 0.375 },
+    { minPrice: 0.25, maxPrice: undefined }
+  ]) {
+    assert.equal(priceSpreadPct(row), null, JSON.stringify(row));
+  }
+});
+
+test("filterActivityRows applies a minimum spread like the worker", () => {
+  const priced = [
+    { itemId: "wide", minPrice: 0.25, maxPrice: 0.5 },
+    { itemId: "edge", minPrice: 0.25, maxPrice: 0.375 },
+    { itemId: "narrow", minPrice: 0.25, maxPrice: 0.3125 },
+    { itemId: "unpriced" }
+  ];
+  const ids = (result) => result.map((row) => row.itemId);
+  assert.deepEqual(ids(filterActivityRows(priced)), [
+    "wide",
+    "edge",
+    "narrow",
+    "unpriced"
+  ]);
+  // The threshold is inclusive, and rows with no priced frames drop out.
+  assert.deepEqual(ids(filterActivityRows(priced, { minSpreadPct: 30 })), ["wide", "edge"]);
+  assert.deepEqual(ids(filterActivityRows(priced, { minSpreadPct: 25 })), [
+    "wide",
+    "edge",
+    "narrow"
+  ]);
+  assert.deepEqual(ids(filterActivityRows(priced, { minSpreadPct: 120 })), []);
+  // 0 / junk / negatives mean no filter, same as the server.
+  for (const value of [0, -5, "abc", NaN, Infinity]) {
+    assert.equal(
+      filterActivityRows(priced, { minSpreadPct: value }).length,
+      4,
+      `${value} must not filter`
+    );
+  }
+  // It composes with the category and text filters.
+  assert.deepEqual(
+    ids(filterActivityRows(priced, { itemType: "miner", minSpreadPct: 30 })),
+    [],
+    "rows without a type do not match a category filter"
+  );
+  assert.deepEqual(
+    ids(filterActivityRows(
+      priced.map((row) => ({ ...row, itemType: "miner" })),
+      { itemType: "miner", minSpreadPct: 30 }
+    )),
+    ["wide", "edge"]
+  );
 });
 
 test("an unresolved row keeps a readable fallback and says it is pending", () => {

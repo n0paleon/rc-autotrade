@@ -20,8 +20,16 @@ async fn item_activity_ranks_ids_outside_the_fleet_and_names_them_from_item_info
         let logger = Arc::new(Logger::new("error"));
         let mut store = Store::open(dir.clone(), logger).expect("store");
         let now = now_ms();
-        for _ in 0..7 {
-            store.note_item_event("stranger-busy", Some("mutation_component"), now);
+        for (index, price) in [0.42, 0.35, 0.58, 0.40, 0.44, 0.39, 0.51]
+            .into_iter()
+            .enumerate()
+        {
+            store.note_item_event_priced(
+                "stranger-busy",
+                Some("mutation_component"),
+                now - index as i64 * 1_000,
+                Some(price),
+            );
         }
         for _ in 0..2 {
             store.note_item_event("stranger-quiet", Some("rack"), now);
@@ -90,6 +98,51 @@ async fn item_activity_ranks_ids_outside_the_fleet_and_names_them_from_item_info
     assert_eq!(rows[0]["events"], 7);
     assert_eq!(rows[0]["tracked"], false);
     assert_eq!(rows[0]["itemType"], "mutation_component");
+    // Price extremes travel through the same row payload, scoped to the range
+    // the request asked for rather than an all-time pair.
+    assert_eq!(rows[0]["minPrice"], 0.35);
+    assert_eq!(rows[0]["maxPrice"], 0.58);
+    assert!(rows[1]["minPrice"].is_null(), "a priceless row stays null");
+    assert!(rows[1]["maxPrice"].is_null());
+    // The spread column is computed from those same extremes: 65.7% for the
+    // busy product, and null for the one with no priced frames.
+    let spread = rows[0]["priceSpreadPct"].as_f64().expect("spread");
+    assert!((spread - (0.58 - 0.35) / 0.35 * 100.0).abs() < 1e-6);
+    assert!(rows[1]["priceSpreadPct"].is_null());
+
+    // minSpreadPct narrows the table server-side; the header still covers the
+    // whole range, and a priceless row cannot satisfy a threshold.
+    let spread_filtered: Value = client
+        .get(format!("{base}/api/item-activity?days=1&minSpreadPct=60"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(spread_filtered["activity"]["totalRows"], 1);
+    let spread_rows = spread_filtered["activity"]["rows"].as_array().unwrap();
+    assert_eq!(spread_rows.len(), 1);
+    assert_eq!(spread_rows[0]["itemId"], "stranger-busy");
+    assert_eq!(
+        spread_filtered["activity"]["typeTotals"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "the type summary still describes the whole range"
+    );
+    let no_spread: Value = client
+        .get(format!("{base}/api/item-activity?days=1&minSpreadPct=100"))
+        .bearer_auth(TOKEN)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(no_spread["activity"]["rows"].as_array().unwrap().is_empty());
     // The mock upstream answers every item-info call with the same payload, so
     // the row must be named from it rather than left as a raw id.
     assert_eq!(rows[0]["label"], "Rare Hashboard");

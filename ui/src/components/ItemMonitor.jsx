@@ -8,6 +8,7 @@ import {
   categoryOptions,
   DEFAULT_ACTIVITY_RANGE,
   nextBatch,
+  priceSpreadPct,
   rangeForPreset,
   rangeSpansDays,
   rowLabel,
@@ -16,7 +17,14 @@ import {
   summarizeActivity,
   typeBreakdown
 } from "../lib/activity.js";
-import { formatInt, formatTime, itemTypeLabel, relTime } from "../lib/format.js";
+import {
+  fixedPrice,
+  formatInt,
+  formatPercent,
+  formatTime,
+  itemTypeLabel,
+  relTime
+} from "../lib/format.js";
 import { useCollapsed, useMediaQuery } from "../lib/hooks.js";
 import { CollapseToggle } from "./CollapseToggle.jsx";
 import { Icon } from "./ModalShell.jsx";
@@ -86,6 +94,39 @@ function Segmented({ label, options, value, onChange }) {
 }
 
 /**
+ * Placeholder shown where the table would be while the worker folds a fresh
+ * window of frames. The padlock stays shut and the gear steps around it until
+ * rows arrive; the shimmering bars preview the table that is coming.
+ */
+function ActivityLoading() {
+  return (
+    <div className="activity-loading" role="status" aria-live="polite">
+      <div className="activity-lock" aria-hidden="true">
+        <Icon name="i-gear" className="activity-gear" />
+        <span className="lock-shackle" />
+        <span className="lock-body" />
+      </div>
+      <p className="activity-loading-title">
+        UNLOCKING MARKET FRAMES
+        <span className="activity-dots" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
+      </p>
+      <p className="activity-loading-hint">
+        Counting best asks per product in the selected range…
+      </p>
+      <div className="activity-loading-rows" aria-hidden="true">
+        {[0, 1, 2, 3].map((index) => (
+          <span className="skeleton activity-row-skeleton" key={index} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
  * Ranked marketplace activity per item id.
  *
  * Every RLT market frame the worker sees is counted per item per hour, whether
@@ -102,6 +143,10 @@ export function ItemMonitor({ request, notify }) {
   const [category, setCategory] = useState("");
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
+  // Separate draft/committed pair for the min-spread filter so typing a number
+  // does not fire a request for every keystroke, same as the name search.
+  const [spreadDraft, setSpreadDraft] = useState("");
+  const [spread, setSpread] = useState(0);
   // Rows loaded so far, appended page by page like the loot log: the reader
   // keeps everything they have already seen and asks for more below it.
   const [rows, setRows] = useState([]);
@@ -125,6 +170,14 @@ export function ItemMonitor({ request, notify }) {
     return () => clearTimeout(timer);
   }, [draft]);
 
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const value = Number(spreadDraft.trim());
+      setSpread(Number.isFinite(value) && value > 0 ? value : 0);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [spreadDraft]);
+
   const preset = ACTIVITY_RANGES.find((item) => item.key === range) || ACTIVITY_RANGES[0];
 
   const fetchPage = useCallback(
@@ -141,10 +194,11 @@ export function ItemMonitor({ request, notify }) {
       });
       if (category) params.set("itemType", category);
       if (query) params.set("q", query);
+      if (spread > 0) params.set("minSpreadPct", String(spread));
       const data = await requestRef.current(`/api/item-activity?${params.toString()}`);
       return { activity: data?.activity || {}, window };
     },
-    [category, preset.key, query]
+    [category, preset.key, query, spread]
   );
 
   const describe = useCallback(
@@ -306,7 +360,7 @@ export function ItemMonitor({ request, notify }) {
         <div
           className={`flex min-w-0 flex-wrap items-center gap-1.5${collapsed ? " max-lg:hidden" : ""}`}
           role="group"
-          aria-label="Frames per item type in the selected range, independent of the category and search filters"
+          aria-label="Frames per item type in the selected range, independent of the category, search and spread filters"
         >
           <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-faint">
             Frames by type
@@ -351,9 +405,9 @@ export function ItemMonitor({ request, notify }) {
       <div className="collapse-frame" id="item-activity-body" inert={collapsed || undefined}>
         <div className="collapse-body">
           <div className="flex flex-wrap items-center gap-2 border-b-2 border-line bg-night-950/40 px-4 py-2.5">
-        {/* Phone: search and the category select each take a full row, so the
-            select cannot slide over the search icon. From `sm` up they sit
-            inline on a fixed 220 px search, leaving room for the counters. */}
+        {/* Phone: search, category and min-spread each take a full row. From
+            `sm` up they sit inline on fixed-width controls, leaving the rest
+            of the row for the counters. */}
         <div className="relative w-full min-w-0 sm:w-auto sm:shrink-0 sm:basis-[220px]">
           <Icon name="i-search" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" />
           <input
@@ -384,8 +438,29 @@ export function ItemMonitor({ request, notify }) {
             </option>
           ))}
         </select>
+        <div className="relative w-full min-w-0 sm:w-auto sm:shrink-0 sm:basis-[130px]">
+          <input
+            className="input input-sm w-full pl-2 pr-7"
+            type="number"
+            min="0"
+            step="any"
+            inputMode="decimal"
+            autoComplete="off"
+            value={spreadDraft}
+            onChange={(event) => setSpreadDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setSpreadDraft("");
+            }}
+            placeholder="Min spread %"
+            aria-label="Filter item activity by minimum min/max price distance in percent"
+            title="Keep only products whose min/max price distance is at least this percent of the lowest price"
+          />
+          <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 font-mono text-label text-faint">
+            %
+          </span>
+        </div>
         <span className="flex flex-wrap items-center gap-2 font-mono text-[11px] uppercase tracking-[0.08em] text-faint sm:ml-auto">
-          <span title="Every RLT market frame counted for the products matching the active category/search filters in this range, including ids below the row cap">
+          <span title="Every RLT market frame counted for the products matching the active filters in this range, including ids below the row cap">
             Frames{" "}
             <strong className="tabular-nums text-info">
               {formatInt(totalEvents || summary.total)}
@@ -403,7 +478,9 @@ export function ItemMonitor({ request, notify }) {
         </span>
       </div>
 
-      {empty ? (
+      {loading ? (
+        <ActivityLoading />
+      ) : empty ? (
         <div className="flex flex-col items-center justify-center gap-2 px-6 py-10 text-center">
           <Icon name="i-pulse" className="h-6 w-6 text-faint" />
           <p className="font-mono text-body uppercase tracking-[0.14em] text-ink-dim">
@@ -419,15 +496,27 @@ export function ItemMonitor({ request, notify }) {
         </div>
       ) : (
         <>
+          {/* A poll or filter change keeps the old rows on screen, so a thin
+              stepped scan line reports the work without hiding them. */}
+          {refreshing ? (
+            <div
+              className="activity-scan"
+              role="progressbar"
+              aria-label="Refreshing item activity"
+            />
+          ) : null}
           {wide ? (
             <div className="report-scroll min-w-0">
-              <table className="w-full min-w-[820px] border-collapse text-left font-mono text-meta tabular-nums">
+              <table className="w-full min-w-[1080px] border-collapse text-left font-mono text-meta tabular-nums">
                 <thead className="sticky top-0 z-10 bg-night-900">
                   <tr className="border-b-2 border-line text-label uppercase tracking-[0.08em] text-faint">
                     <th scope="col" className="px-4 py-2 font-medium">Product</th>
                     <th scope="col" className="px-3 py-2 font-medium" title="Item type reported by the market feed or item-info">Type</th>
                     <th scope="col" className="px-3 py-2 font-medium" title="Market frames seen in the selected range and matching the active filters">Frames</th>
                     <th scope="col" className="px-3 py-2 font-medium" title="This product's share of all market frames that matched the active filters. Every row adds up to about 100%.">Share</th>
+                    <th scope="col" className="px-3 py-2 font-medium" title="Cheapest best ask seen in the selected range">Min price</th>
+                    <th scope="col" className="px-3 py-2 font-medium" title="Dearest best ask seen in the selected range">Max price</th>
+                    <th scope="col" className="px-3 py-2 font-medium" title="Distance between max and min price as a percent of the min price: (max - min) / min x 100">Spread</th>
                     <th scope="col" className="px-3 py-2 font-medium" title="Frames seen in the last 24 hours, regardless of the range filter">Last 24h</th>
                     <th scope="col" className="px-3 py-2 font-medium">Last seen</th>
                     <th scope="col" className="px-4 py-2 font-medium" title="Open the product on the Rollercoin marketplace">Market</th>
@@ -469,6 +558,24 @@ export function ItemMonitor({ request, notify }) {
                         </td>
                         <td className="px-3 py-2 font-semibold text-info">{formatInt(row.events)}</td>
                         <td className="px-3 py-2 tabular-nums text-ink-dim">{share}%</td>
+                        <td
+                          className="whitespace-nowrap px-3 py-2 text-gold"
+                          title="Cheapest market price (best ask) seen for this product in the selected range"
+                        >
+                          {fixedPrice(row.minPrice)}
+                        </td>
+                        <td
+                          className="whitespace-nowrap px-3 py-2 text-gold"
+                          title="Dearest market price (best ask) seen for this product in the selected range"
+                        >
+                          {fixedPrice(row.maxPrice)}
+                        </td>
+                        <td
+                          className="whitespace-nowrap px-3 py-2 font-semibold text-info"
+                          title="(max price - min price) / min price x 100 in the selected range"
+                        >
+                          {formatPercent(priceSpreadPct(row), 1)}
+                        </td>
                         <td className="px-3 py-2 text-muted">{formatInt(row.events24h)}</td>
                         <td
                           className="whitespace-nowrap px-3 py-2 text-faint"
@@ -530,6 +637,20 @@ export function ItemMonitor({ request, notify }) {
                           frames
                         </p>
                       </div>
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-micro tabular-nums">
+                      <span className="text-gold" title="Cheapest best ask in this range">
+                        MIN {fixedPrice(row.minPrice)}
+                      </span>
+                      <span className="text-gold" title="Dearest best ask in this range">
+                        MAX {fixedPrice(row.maxPrice)}
+                      </span>
+                      <span
+                        className="font-semibold text-info"
+                        title="(max price - min price) / min price x 100 in this range"
+                      >
+                        SPREAD {formatPercent(priceSpreadPct(row), 1)}
+                      </span>
                     </div>
                     <div className="mt-2 flex items-center gap-2">
                       <span className="shrink-0 font-mono text-micro tabular-nums text-ink-dim">

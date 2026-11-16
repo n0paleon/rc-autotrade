@@ -34,7 +34,17 @@ impl Engine {
                     .as_deref()
                     .is_none_or(|currency| currency == "RLT")
                 {
-                    store.note_item_event(&item_id, event.item_type.as_deref(), received_at);
+                    // The ladder is sorted cheapest-first, so the first listing
+                    // is the frame's market price. Folding it into the same
+                    // bucket as the frame count keeps the monitor's price
+                    // extremes in step with the activity it describes.
+                    let best_price = event.listings.first().map(|listing| listing.unit_price);
+                    store.note_item_event_priced(
+                        &item_id,
+                        event.item_type.as_deref(),
+                        received_at,
+                        best_price,
+                    );
                 }
                 self.handle_market(store, &event, &item_id, raw, received_at)
             }

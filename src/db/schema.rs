@@ -155,6 +155,10 @@ CREATE TABLE IF NOT EXISTS item_event_points (
   item_type   TEXT,
   events      INTEGER NOT NULL DEFAULT 0,
   last_seen_at INTEGER,
+  -- Best ask extremes for this slice. Stored per bucket, not per item, so the
+  -- monitor can fold only the buckets inside the requested range.
+  min_price   REAL,
+  max_price   REAL,
   PRIMARY KEY (item_id, bucket_at)
 ) WITHOUT ROWID;
 
@@ -288,6 +292,11 @@ pub(super) fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
         "INTEGER NOT NULL DEFAULT 0",
     )?;
     add_column_if_missing(conn, "item_catalog", "last_attempt_at", "INTEGER")?;
+
+    // Per-range price extremes on the item monitor. Old buckets simply have no
+    // price recorded and render "—" until a new frame folds one into them.
+    add_column_if_missing(conn, "item_event_points", "min_price", "REAL")?;
+    add_column_if_missing(conn, "item_event_points", "max_price", "REAL")?;
 
     // Schema v8 unifies `paused` + `dry_run` into `settings.mode`. When the
     // upgrade has to do the mapping, the two legacy columns are still the

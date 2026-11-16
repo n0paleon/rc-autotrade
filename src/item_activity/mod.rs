@@ -49,13 +49,18 @@ pub struct ActivityView {
     pub pages: usize,
     pub has_more: bool,
     /// Frames and ids per item type, summed over the whole range before the
-    /// category/search filters. The header summary uses this, so it does not
-    /// shrink when the reader pages forward or selects a category.
+    /// category/search/spread filters. The header summary uses this, so it does
+    /// not shrink when the reader pages forward or selects a filter.
     pub type_totals: Vec<crate::model::ItemTypeTotal>,
     pub rows: Vec<crate::model::ItemActivityRow>,
     /// Ids in the response whose name still has to be looked up.
     pub unresolved: usize,
 }
+
+/// Upper bound for the min-spread filter, so a huge number cannot turn the
+/// request into a meaningless "show nothing" query while still allowing the
+/// extreme spreads a thin book can produce.
+const MAX_SPREAD_PCT: f64 = 1_000_000.0;
 
 /// Validated filters for one monitor request.
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +69,8 @@ pub struct ActivityFilters {
     pub until: i64,
     pub item_type: String,
     pub q: String,
+    /// Minimum min/max price distance in percent; `None` means no filter.
+    pub min_spread_pct: Option<f64>,
     pub limit: usize,
     pub offset: usize,
 }
@@ -78,7 +85,10 @@ impl ActivityFilters {
     ///   table never claims a range the store already pruned.
     /// * `until` defaults to now and is clamped to `[since + 1 bucket, now]`.
     /// * a non-positive or inverted direct range falls back to `days`, keeping
-    ///   a bad timestamp from returning an empty table.
+    ///   a bad timestamp from returning an empty table;
+    /// * `minSpreadPct` keeps only products whose min/max price distance is at
+    ///   least that percentage; non-numeric, non-positive and huge values are
+    ///   ignored so a malformed filter cannot blank the whole table.
     pub fn parse(params: &std::collections::HashMap<String, String>, now: i64) -> Self {
         let retention_start = now - ITEM_EVENT_HISTORY_DAYS * 86_400_000;
         let days = params
@@ -130,6 +140,14 @@ impl ActivityFilters {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty() && value.chars().count() <= 64)
             .unwrap_or_default();
+        // A positive, finite percentage narrows the table to products whose
+        // best ask moved at least that much; 0, junk and out-of-range values
+        // are dropped so a stray query cannot turn into an empty monitor.
+        let min_spread_pct = params
+            .get("minSpreadPct")
+            .or_else(|| params.get("min_spread_pct"))
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0 && *value <= MAX_SPREAD_PCT);
         let limit = params
             .get("limit")
             .and_then(|value| value.parse::<usize>().ok())
@@ -148,6 +166,7 @@ impl ActivityFilters {
             until,
             item_type,
             q,
+            min_spread_pct,
             limit,
             offset,
         }
@@ -160,6 +179,7 @@ impl ActivityFilters {
             until: self.until,
             item_type: self.item_type.clone(),
             q: self.q.clone(),
+            min_spread_pct: self.min_spread_pct,
             limit: self.limit,
             offset: self.offset,
         }
