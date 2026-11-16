@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import {
   ACTIVITY_RANGES,
   ACTIVITY_SORT_COLUMNS,
+  BOOTSTRAP_TARGET_DEFAULTS,
+  bootstrapTargetDraft,
   categoryLabel,
   categoryOf,
   categoryOptions,
@@ -231,6 +233,51 @@ test("marketplace links carry the resolved type and the raw id", () => {
     rowMarketplaceUrl({ itemId: "x y", itemType: "" }),
     "https://rollercoin.com/marketplace/buy/mutation_component/x%20y"
   );
+});
+
+test("a target draft bootstraps from the row's identity and cheapest price", () => {
+  const draft = bootstrapTargetDraft({
+    itemId: "6319f7baa8ce530569ed16b9",
+    itemType: "miner",
+    label: "Epic Hashboard",
+    minPrice: 0.012345,
+    maxPrice: 0.02
+  });
+  assert.equal(draft.itemId, "6319f7baa8ce530569ed16b9");
+  assert.equal(draft.itemType, "miner");
+  assert.equal(draft.label, "Epic Hashboard");
+  // The ceiling is the cheapest price actually seen, not the dearest.
+  assert.equal(draft.targetPrice, 0.012345);
+  // Quantity fields are the conservative defaults, ready to submit or edit.
+  assert.equal(draft.desiredQty, BOOTSTRAP_TARGET_DEFAULTS.desiredQty);
+  assert.equal(draft.highStockThreshold, BOOTSTRAP_TARGET_DEFAULTS.highStockThreshold);
+  assert.equal(draft.minAcceptableQty, BOOTSTRAP_TARGET_DEFAULTS.minAcceptableQty);
+  assert.ok(draft.highStockThreshold >= draft.desiredQty);
+  assert.ok(draft.minAcceptableQty <= draft.desiredQty);
+});
+
+test("a bootstrap draft survives missing names, types and prices", () => {
+  const unnamed = bootstrapTargetDraft({ itemId: "abc-123", itemType: "  RACK  ", label: "  " });
+  assert.equal(unnamed.label, "", "the modal falls back to its own auto-label");
+  // A raw feed type is normalised like the worker does; empty gets the default.
+  assert.equal(unnamed.itemType, "rack");
+  assert.equal(bootstrapTargetDraft({ itemId: "x" }).itemType, "mutation_component");
+
+  // An unpriced or invalid row leaves the ceiling empty rather than guessing.
+  for (const price of [undefined, null, NaN, 0, -1, "nope"]) {
+    assert.equal(
+      bootstrapTargetDraft({ itemId: "abc-123", minPrice: price }).targetPrice,
+      null,
+      `${price} must not become a target price`
+    );
+  }
+  assert.deepEqual(bootstrapTargetDraft(null), {
+    itemId: "",
+    itemType: "mutation_component",
+    label: "",
+    targetPrice: null,
+    ...BOOTSTRAP_TARGET_DEFAULTS
+  });
 });
 
 test("share is a proportion of every frame in the range, not of the leader", () => {

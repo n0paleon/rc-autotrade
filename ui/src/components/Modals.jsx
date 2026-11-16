@@ -66,28 +66,49 @@ function validateTargetLocally(target) {
   return errors;
 }
 
-export function TargetModal({ config, onClose, worker, notify, markupPct = 0 }) {
+/**
+ * Initial value of one form field. An existing target always wins; otherwise a
+ * bootstrap draft from item activity can supply a starting value. Anything
+ * missing stays empty, which is the normal "Deploy target" experience.
+ */
+function initialField(config, prefill, key) {
+  if (config) return String(config[key] ?? "");
+  const value = prefill?.[key];
+  return value === null || value === undefined || value === "" ? "" : String(value);
+}
+
+export function TargetModal({ config, onClose, worker, notify, markupPct = 0, prefill = null }) {
   const { closeRef, close } = useModalClose();
   const editing = Boolean(config);
-  const [itemId, setItemId] = useState(config?.itemId || "");
-  const [itemType, setItemType] = useState(config?.itemType || "mutation_component");
-  const [targetPrice, setTargetPrice] = useState(config ? String(config.targetPrice) : "");
-  const [desiredQty, setDesiredQty] = useState(config ? String(config.desiredQty) : "");
+  const [itemId, setItemId] = useState(config?.itemId || prefill?.itemId || "");
+  const [itemType, setItemType] = useState(config?.itemType || prefill?.itemType || "mutation_component");
+  const [targetPrice, setTargetPrice] = useState(initialField(config, prefill, "targetPrice"));
+  const [desiredQty, setDesiredQty] = useState(initialField(config, prefill, "desiredQty"));
   const [highStockThreshold, setHighStockThreshold] = useState(
-    config ? String(config.highStockThreshold) : ""
+    initialField(config, prefill, "highStockThreshold")
   );
   const [minAcceptableQty, setMinAcceptableQty] = useState(
-    config ? String(config.minAcceptableQty) : ""
+    initialField(config, prefill, "minAcceptableQty")
   );
   const [allowPartialOrder, setAllowPartialOrder] = useState(config?.allowPartialOrder !== false);
   const [active, setActive] = useState(config?.active !== false);
   const [errors, setErrors] = useState({});
   const [busy, setBusy] = useState(false);
-  const [auto, setAuto] = useState({
-    state: config ? (config.label ? "ready" : "loading") : "idle",
-    label: config?.label || (config ? "Resolving item name…" : "Waiting for an item ID…"),
-    rarity: "",
-    color: ""
+  const [auto, setAuto] = useState(() => {
+    if (config) {
+      return {
+        state: config.label ? "ready" : "loading",
+        label: config.label || "Resolving item name…",
+        rarity: "",
+        color: ""
+      };
+    }
+    if (prefill?.label) {
+      // The name is already known from item activity, so show it immediately.
+      // The usual preview lookup still runs below to fill in rarity and colour.
+      return { state: "ready", label: prefill.label, rarity: "", color: "" };
+    }
+    return { state: "idle", label: "Waiting for an item ID…", rarity: "", color: "" };
   });
   const lookupSeq = useRef(0);
   const lookupRef = useRef(null);

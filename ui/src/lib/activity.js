@@ -159,6 +159,37 @@ export function rowMarketplaceUrl(row) {
 }
 
 /**
+ * Defaults for a target deployed straight from an item-activity row.
+ *
+ * Conservative sniping: buy up to 10 units, double at 20 in stock and accept
+ * partial fills down to 1. They are starting values, not worker settings — the
+ * operator can edit every one of them before the deploy is submitted.
+ */
+export const BOOTSTRAP_TARGET_DEFAULTS = Object.freeze({
+  desiredQty: 10,
+  highStockThreshold: 20,
+  minAcceptableQty: 1
+});
+
+/**
+ * Builds the Deploy-target form draft from one activity row.
+ *
+ * The cheapest best ask seen in the selected range becomes the target ceiling,
+ * so a bootstrapped target only buys at or below a price the market has actually
+ * paid. Identity (id, type, resolved name) comes from the row; the quantity
+ * fields come from the conservative defaults above. An unpriced row leaves
+ * `targetPrice` null so the operator must choose a ceiling before deploying.
+ */
+export function bootstrapTargetDraft(row) {
+  const itemId = String(row?.itemId || "");
+  const itemType = String(row?.itemType || "").trim().toLowerCase() || "mutation_component";
+  const label = String(row?.label || "").trim();
+  const min = Number(row?.minPrice);
+  const targetPrice = Number.isFinite(min) && min > 0 ? min : null;
+  return { itemId, itemType, label, targetPrice, ...BOOTSTRAP_TARGET_DEFAULTS };
+}
+
+/**
  * A row's share of **all frames counted in the range**, as a whole percentage.
  *
  * This is a proportion of the whole, not a proportion of the leader: with 180

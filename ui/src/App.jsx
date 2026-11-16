@@ -2574,7 +2574,7 @@ const INSIGHT_TABS = [
  * panels above the working deck. Only the active peer stays mounted, so its
  * polling stops when another tab takes the slot.
  */
-function InsightTabs({ request, configs, notify, onEdit }) {
+function InsightTabs({ request, configs, notify, onEdit, onDeploy }) {
   const [tab, setTab] = useState("market");
 
   return (
@@ -2606,7 +2606,7 @@ function InsightTabs({ request, configs, notify, onEdit }) {
         className="tab-panel min-w-0"
       >
         {tab === "market" ? <MemoActivityChart request={request} /> : null}
-        {tab === "items" ? <MemoItemMonitor request={request} notify={notify} /> : null}
+        {tab === "items" ? <MemoItemMonitor request={request} notify={notify} onDeploy={onDeploy} /> : null}
         {tab === "trends" ? <MemoTrendPanel configs={configs} onEdit={onEdit} /> : null}
       </div>
     </div>
@@ -2628,6 +2628,11 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
   // a new snapshot. The ref always points at the newest worker instance.
   const workerRef = useRef(worker);
   workerRef.current = worker;
+  // `configs` changes on every market tick, but the activity bootstrap only
+  // needs it at click time. Reading it through a ref keeps the callback stable
+  // so a market frame does not redraw the item-activity table.
+  const configsRef = useRef(snapshot.configs || []);
+  configsRef.current = snapshot.configs || [];
 
   const openMonitor = useCallback(() => setMonitorOpen(true), []);
   const recentAverage = snapshot.benchmark?.recent?.avg;
@@ -2751,6 +2756,24 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
     setModal({ type: "target", config: null });
   }, []);
 
+  /**
+   * Opens the target form straight from an item-activity row. An item already on
+   * the fleet opens its Edit form (the id is fixed after deployment); everything
+   * else opens Deploy with the row's identity, cheapest observed price and the
+   * conservative quantity defaults already filled in.
+   */
+  const deployFromActivity = useCallback((draft) => {
+    const key = String(draft?.itemId || "").toLowerCase();
+    const existing = (configsRef.current || []).find(
+      (config) => String(config?.itemId || "").toLowerCase() === key
+    );
+    if (existing) {
+      setModal({ type: "target", config: existing });
+    } else {
+      setModal({ type: "target", config: null, prefill: draft });
+    }
+  }, []);
+
   const resetStats = useCallback(async () => {
     const confirmed = await askConfirm({
       title: "RESET LIFETIME STATS",
@@ -2830,6 +2853,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           configs={snapshot.configs || []}
           notify={notify}
           onEdit={openTargetModal}
+          onDeploy={deployFromActivity}
         />
       </div>
       <main id="deck-main" tabIndex={-1} className="deck-enter deck-enter-3 mx-auto mt-4 grid w-full max-w-[1600px] scroll-mt-28 gap-4 px-3 pb-10 sm:px-4 lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start lg:px-6 xl:grid-cols-[minmax(0,1fr)_380px]">
@@ -2901,6 +2925,7 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
       {modal?.type === "target" ? (
         <TargetModal
           config={modal.config}
+          prefill={modal.prefill}
           onClose={() => setModal(null)}
           worker={worker}
           notify={notify}

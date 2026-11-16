@@ -4,6 +4,7 @@ import {
   ACTIVITY_PAGE_SIZE,
   ACTIVITY_RANGES,
   ACTIVITY_SORT_COLUMNS,
+  bootstrapTargetDraft,
   categoryLabel,
   categoryOf,
   categoryOptions,
@@ -180,7 +181,7 @@ function ActivityLoading() {
  * product name as soon as one is known and falls back to the short id until
  * then.
  */
-export function ItemMonitor({ request, notify }) {
+export function ItemMonitor({ request, notify, onDeploy }) {
   const [range, setRange] = useState(DEFAULT_ACTIVITY_RANGE);
   const [collapsed, setCollapsed] = useCollapsed("item-activity");
   const panelRef = useRef(null);
@@ -404,6 +405,10 @@ export function ItemMonitor({ request, notify }) {
     [notify]
   );
 
+  // Bootstrap a target from the row in one click. The parent decides whether
+  // that opens Deploy (off-fleet) or Edit (already on the fleet).
+  const deploy = useCallback((row) => onDeploy?.(bootstrapTargetDraft(row)), [onDeploy]);
+
   const live = status === "ready" || status === "refreshing";
   const refreshing = status === "refreshing";
   const stale = status === "stale";
@@ -610,7 +615,7 @@ export function ItemMonitor({ request, notify }) {
           ) : null}
           {wide ? (
             <div className="report-scroll min-w-0">
-              <table className="w-full min-w-[1080px] border-collapse text-left font-mono text-meta tabular-nums">
+              <table className="w-full min-w-[1180px] border-collapse text-left font-mono text-meta tabular-nums">
                 <thead className="sticky top-0 z-10 bg-night-900">
                   <tr className="border-b-2 border-line text-label uppercase tracking-[0.08em] text-faint">
                     <SortableHeader column={SORT_COLUMNS.product} sort={sort} onSort={pickSort} className="px-4 py-2 font-medium" />
@@ -623,6 +628,7 @@ export function ItemMonitor({ request, notify }) {
                     <SortableHeader column={SORT_COLUMNS.events24h} sort={sort} onSort={pickSort} title="Frames seen in the last 24 hours, regardless of the range filter" />
                     <SortableHeader column={SORT_COLUMNS.lastSeen} sort={sort} onSort={pickSort} title="Most recent market frame seen for this product" />
                     <th scope="col" className="px-4 py-2 font-medium" title="Open the product on the Rollercoin marketplace">Market</th>
+                    <th scope="col" className="px-4 py-2 font-medium" title="Open the target form with this item's id, type, name and cheapest observed price already filled in">Target</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-line/40">
@@ -698,6 +704,17 @@ export function ItemMonitor({ request, notify }) {
                             <Icon name="i-external" className="h-3.5 w-3.5" />
                           </a>
                         </td>
+                        <td className="px-4 py-2">
+                          <button
+                            className="icon-btn h-8 w-8 text-info"
+                            type="button"
+                            title={row.tracked ? `Edit ${name.text} in the target fleet` : `Deploy ${name.text} to the target fleet`}
+                            aria-label={row.tracked ? `Edit target for ${name.text}` : `Deploy target for ${name.text}`}
+                            onClick={() => deploy(row)}
+                          >
+                            <Icon name={row.tracked ? "i-edit" : "i-target"} className="h-3.5 w-3.5" />
+                          </button>
+                        </td>
                       </tr>
                     );
                   })}
@@ -762,6 +779,16 @@ export function ItemMonitor({ request, notify }) {
                       <span className="min-w-0 shrink-0 font-mono text-micro uppercase tracking-[0.08em] text-faint">
                         24h {formatInt(row.events24h)}
                       </span>
+                      <button
+                        className="btn btn-ghost btn-sm ml-auto text-info"
+                        type="button"
+                        title={row.tracked ? `Edit ${name.text} in the target fleet` : `Deploy ${name.text} to the target fleet`}
+                        aria-label={row.tracked ? `Edit target for ${name.text}` : `Deploy target for ${name.text}`}
+                        onClick={() => deploy(row)}
+                      >
+                        <Icon name={row.tracked ? "i-edit" : "i-target"} className="h-3 w-3" />
+                        {row.tracked ? "EDIT" : "DEPLOY"}
+                      </button>
                       <a
                         className="icon-btn h-9 w-9 shrink-0"
                         href={rowMarketplaceUrl(row)}
