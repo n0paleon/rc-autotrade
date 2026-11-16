@@ -121,6 +121,11 @@ pub struct ItemActivityQuery {
     /// Case-insensitive substring over the resolved name and the item id.
     #[serde(default)]
     pub q: String,
+    /// Keep only rows whose min/max price distance is at least this percent.
+    /// `None` (or 0) means no spread filter. Rows without priced frames are
+    /// excluded whenever a threshold is set.
+    #[serde(rename = "minSpreadPct", default)]
+    pub min_spread_pct: Option<f64>,
     /// Rows per page. Clamped to [`crate::constants::ITEM_ACTIVITY_LIMIT`].
     #[serde(default)]
     pub limit: usize,

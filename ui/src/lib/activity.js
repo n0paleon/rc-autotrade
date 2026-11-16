@@ -86,18 +86,46 @@ export function categoryOptions(typeTotals) {
 }
 
 /**
- * Filters rows by category and a free-text term.
+ * Relative distance between a row's cheapest and dearest best ask, as a percent
+ * of the cheaper price: `(max - min) / min * 100`. The worker already ships this
+ * as `priceSpreadPct`; deriving it from the extremes as a fallback keeps the
+ * deck correct against an older worker and makes the helper usable with plain
+ * test rows. `null` when a price is missing or the minimum is not positive.
+ */
+export function priceSpreadPct(row) {
+  if (!row || typeof row !== "object") return null;
+  const provided = row.priceSpreadPct;
+  if (provided !== null && provided !== undefined) {
+    const number = Number(provided);
+    return Number.isFinite(number) ? number : null;
+  }
+  const min = Number(row.minPrice);
+  const max = Number(row.maxPrice);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min <= 0 || max < min) return null;
+  return ((max - min) / min) * 100;
+}
+
+/**
+ * Filters rows by category, a free-text term and a minimum price spread.
  *
  * The term matches the resolved product name *and* the raw item id, so an id
- * copied out of a loot row is findable before its name resolves. Matching and
- * trimming mirror the server (`Store::item_activity`); a client filter can only
- * narrow what the server already ranked, never widen it.
+ * copied out of a loot row is findable before its name resolves. A positive
+ * `minSpreadPct` keeps only products whose min/max price distance reaches that
+ * threshold; rows without priced frames cannot qualify. Matching mirrors the
+ * server (`Store::item_activity`); a client filter can only narrow what the
+ * server already ranked, never widen it.
  */
-export function filterActivityRows(rows, { itemType = "", query = "" } = {}) {
+export function filterActivityRows(rows, { itemType = "", query = "", minSpreadPct = 0 } = {}) {
   const type = String(itemType || "").trim().toLowerCase();
   const term = String(query || "").trim().toLowerCase();
+  const threshold = Number(minSpreadPct);
+  const hasThreshold = Number.isFinite(threshold) && threshold > 0;
   return (Array.isArray(rows) ? rows : []).filter((row) => {
     if (type && categoryOf(row) !== type) return false;
+    if (hasThreshold) {
+      const spread = priceSpreadPct(row);
+      if (spread === null || spread < threshold) return false;
+    }
     if (!term) return true;
     return (
       String(row?.label || "").toLowerCase().includes(term) ||

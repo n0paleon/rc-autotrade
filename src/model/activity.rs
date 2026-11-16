@@ -62,6 +62,10 @@ pub struct ItemActivityRow {
     pub min_price: Option<f64>,
     /// Dearest best ask seen for this item inside the selected range.
     pub max_price: Option<f64>,
+    /// Relative distance between the range's min and max best ask, in percent:
+    /// `(max - min) / min * 100`. `None` when either extreme is missing (or the
+    /// minimum is not positive), so a row with no priced frames has no spread.
+    pub price_spread_pct: Option<f64>,
     /// True when this id is on the target fleet.
     pub tracked: bool,
 }

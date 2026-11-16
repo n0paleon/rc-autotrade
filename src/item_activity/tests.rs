@@ -89,6 +89,7 @@ fn defaults_to_the_last_week_and_one_page() {
     assert_eq!(filters.since, NOW - 7 * DAY);
     assert_eq!(filters.item_type, "");
     assert_eq!(filters.q, "");
+    assert_eq!(filters.min_spread_pct, None);
     assert_eq!(filters.limit, crate::constants::ITEM_ACTIVITY_PAGE_SIZE);
     assert_eq!(filters.offset, 0);
 }
@@ -187,6 +188,36 @@ fn filters_are_trimmed_and_bounded() {
     assert_eq!(junk.q, "");
     // An explicit zero is not a page size; fall back to the default.
     assert_eq!(junk.limit, crate::constants::ITEM_ACTIVITY_PAGE_SIZE);
+}
+
+#[test]
+fn min_spread_filter_is_parsed_and_bounded() {
+    let filters = ActivityFilters::parse(&params(&[("minSpreadPct", " 30.5 ")]), NOW);
+    assert_eq!(filters.min_spread_pct, Some(30.5));
+    assert_eq!(filters.query().min_spread_pct, Some(30.5));
+
+    // A snake_case alias from an older/raw client is still understood.
+    let alias = ActivityFilters::parse(&params(&[("min_spread_pct", "12")]), NOW);
+    assert_eq!(alias.min_spread_pct, Some(12.0));
+
+    // 0, negatives, junk, non-finite values and absurd maxima mean "no filter"
+    // rather than an empty table.
+    for value in ["0", "-5", "abc", "NaN", "inf", "2000000"] {
+        let ignored = ActivityFilters::parse(&params(&[("minSpreadPct", value)]), NOW);
+        assert_eq!(
+            ignored.min_spread_pct, None,
+            "{value} must not become a spread filter"
+        );
+    }
+
+    // The filter composes with the rest of the query without disturbing them.
+    let combined = ActivityFilters::parse(
+        &params(&[("minSpreadPct", "30"), ("itemType", "miner"), ("q", "hash")]),
+        NOW,
+    );
+    assert_eq!(combined.min_spread_pct, Some(30.0));
+    assert_eq!(combined.item_type, "miner");
+    assert_eq!(combined.q, "hash");
 }
 
 #[test]

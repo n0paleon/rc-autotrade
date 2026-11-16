@@ -12,6 +12,24 @@ use crate::model::{ItemActivityReport, ItemActivityRow, ItemTypeTotal};
 use super::Store;
 use super::state::{ItemActivityQuery, ItemEventAccum, ItemEventRow, item_event_bucket_at};
 
+/// Relative distance between a range's cheapest and dearest best ask, as a
+/// percentage of the cheaper price: `(max - min) / min * 100`.
+///
+/// Using the minimum as the base keeps the number intuitive ("max is 30% above
+/// min") and matches the filter's meaning: a 30% threshold keeps items whose
+/// best ask moved by at least a third of its lowest observed value. A missing or
+/// non-positive base cannot define a ratio, so it yields `None`.
+fn price_spread_pct(min: Option<f64>, max: Option<f64>) -> Option<f64> {
+    match (min, max) {
+        (Some(low), Some(high))
+            if low.is_finite() && low > 0.0 && high.is_finite() && high >= low =>
+        {
+            Some((high - low) / low * 100.0)
+        }
+        _ => None,
+    }
+}
+
 impl Store {
     // ── per-item market activity ────────────────────────────────────────────
 
@@ -80,9 +98,9 @@ impl Store {
     /// Pagination happens **after** ranking and after the per-type totals are
     /// summed, so page 2 is the next slice of the same ordering and the type
     /// summary always describes the whole range rather than the current page.
-    /// The per-type totals are also summed before the category and search
-    /// filters are applied: the deck keeps one badge per known type on screen,
-    /// and those counts must not vanish while the table is narrowed.
+    /// The per-type totals are also summed before the category, search and
+    /// spread filters are applied: the deck keeps one badge per known type on
+    /// screen, and those counts must not vanish while the table is narrowed.
     pub fn item_activity(&self, query: &ItemActivityQuery, now: i64) -> ItemActivityReport {
         let since = if query.since > 0 {
             query.since
@@ -100,6 +118,11 @@ impl Store {
             requested => requested.min(ITEM_ACTIVITY_LIMIT),
         };
         let offset = query.offset;
+        // 0 (and any non-finite value) means "no threshold": keep every row,
+        // including the ones with no priced frames.
+        let min_spread = query
+            .min_spread_pct
+            .filter(|value| value.is_finite() && *value > 0.0);
 
         struct Aggregate {
             events: i64,
@@ -146,7 +169,8 @@ impl Store {
                     entry.min_price = Some(entry.min_price.map_or(low, |current| current.min(low)));
                 }
                 if let Some(high) = accum.max_price {
-                    entry.max_price = Some(entry.max_price.map_or(high, |current| current.max(high)));
+                    entry.max_price =
+                        Some(entry.max_price.map_or(high, |current| current.max(high)));
                 }
             }
             if in_day {
@@ -186,6 +210,9 @@ impl Store {
                 let tracked = self.find_config(item_id).is_some();
                 let first_at = (aggregate.first_at != i64::MAX).then_some(aggregate.first_at);
                 let last_at = (aggregate.last_at != i64::MIN).then_some(aggregate.last_at);
+                // Derives from the range's own extremes, so the displayed spread
+                // and the min-spread filter describe the same window.
+                let spread = price_spread_pct(aggregate.min_price, aggregate.max_price);
                 ItemActivityRow {
                     item_id: item_id.to_string(),
                     item_type,
@@ -198,6 +225,7 @@ impl Store {
                     last_at,
                     min_price: aggregate.min_price,
                     max_price: aggregate.max_price,
+                    price_spread_pct: spread,
                     tracked,
                 }
             })
@@ -221,6 +249,13 @@ impl Store {
 
         rows.retain(|row| {
             if !wanted_type.is_empty() && row.item_type != wanted_type {
+                return false;
+            }
+            // With a threshold set, a row with no priced frames cannot qualify:
+            // it has no distance to measure against the requested minimum.
+            if let Some(minimum) = min_spread
+                && !row.price_spread_pct.is_some_and(|spread| spread >= minimum)
+            {
                 return false;
             }
             if term.is_empty() {
