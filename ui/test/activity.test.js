@@ -3,11 +3,16 @@ import assert from "node:assert/strict";
 
 import {
   ACTIVITY_RANGES,
+  ACTIVITY_SORT_COLUMNS,
+  BOOTSTRAP_TARGET_DEFAULTS,
+  bootstrapTargetDraft,
   categoryLabel,
   categoryOf,
   categoryOptions,
   DEFAULT_ACTIVITY_RANGE,
+  fetchActivityRows,
   filterActivityRows,
+  nextActivitySort,
   nextBatch,
   priceSpreadPct,
   rangeForPreset,
@@ -15,6 +20,7 @@ import {
   rowLabel,
   rowMarketplaceUrl,
   sharePercent,
+  sortActivityRows,
   summarizeActivity,
   typeBreakdown
 } from "../src/lib/activity.js";
@@ -229,6 +235,51 @@ test("marketplace links carry the resolved type and the raw id", () => {
   );
 });
 
+test("a target draft bootstraps from the row's identity and cheapest price", () => {
+  const draft = bootstrapTargetDraft({
+    itemId: "6319f7baa8ce530569ed16b9",
+    itemType: "miner",
+    label: "Epic Hashboard",
+    minPrice: 0.012345,
+    maxPrice: 0.02
+  });
+  assert.equal(draft.itemId, "6319f7baa8ce530569ed16b9");
+  assert.equal(draft.itemType, "miner");
+  assert.equal(draft.label, "Epic Hashboard");
+  // The ceiling is the cheapest price actually seen, not the dearest.
+  assert.equal(draft.targetPrice, 0.012345);
+  // Quantity fields are the conservative defaults, ready to submit or edit.
+  assert.equal(draft.desiredQty, BOOTSTRAP_TARGET_DEFAULTS.desiredQty);
+  assert.equal(draft.highStockThreshold, BOOTSTRAP_TARGET_DEFAULTS.highStockThreshold);
+  assert.equal(draft.minAcceptableQty, BOOTSTRAP_TARGET_DEFAULTS.minAcceptableQty);
+  assert.ok(draft.highStockThreshold >= draft.desiredQty);
+  assert.ok(draft.minAcceptableQty <= draft.desiredQty);
+});
+
+test("a bootstrap draft survives missing names, types and prices", () => {
+  const unnamed = bootstrapTargetDraft({ itemId: "abc-123", itemType: "  RACK  ", label: "  " });
+  assert.equal(unnamed.label, "", "the modal falls back to its own auto-label");
+  // A raw feed type is normalised like the worker does; empty gets the default.
+  assert.equal(unnamed.itemType, "rack");
+  assert.equal(bootstrapTargetDraft({ itemId: "x" }).itemType, "mutation_component");
+
+  // An unpriced or invalid row leaves the ceiling empty rather than guessing.
+  for (const price of [undefined, null, NaN, 0, -1, "nope"]) {
+    assert.equal(
+      bootstrapTargetDraft({ itemId: "abc-123", minPrice: price }).targetPrice,
+      null,
+      `${price} must not become a target price`
+    );
+  }
+  assert.deepEqual(bootstrapTargetDraft(null), {
+    itemId: "",
+    itemType: "mutation_component",
+    label: "",
+    targetPrice: null,
+    ...BOOTSTRAP_TARGET_DEFAULTS
+  });
+});
+
 test("share is a proportion of every frame in the range, not of the leader", () => {
   // The exact numbers from the report that showed 180 of 2 176 as "100%".
   const total = 2_176;
@@ -361,4 +412,132 @@ test("the next batch cursor is the number of rows already held", () => {
     remaining: 0,
     hasMore: false
   });
+});
+
+const sortableRows = [
+  { itemId: "a", label: "Zeta Drill", itemType: "miner", events: 12, events24h: 3, lastAt: 500, minPrice: 0.5, maxPrice: 1.0 },
+  { itemId: "b", label: "Alpha Coil", itemType: "rack", events: 40, events24h: 9, lastAt: 900, minPrice: 0.25, maxPrice: 0.5 },
+  { itemId: "c", label: "", itemType: "battery", events: 12, events24h: 7, lastAt: 100, minPrice: null, maxPrice: null }
+];
+
+const ids = (list) => list.map((row) => row.itemId);
+
+test("every rendered column has a sort definition with sane defaults", () => {
+  assert.deepEqual(
+    ACTIVITY_SORT_COLUMNS.map((column) => column.key),
+    ["product", "type", "frames", "share", "minPrice", "maxPrice", "spread", "events24h", "lastSeen"]
+  );
+  for (const column of ACTIVITY_SORT_COLUMNS) {
+    assert.ok(column.label, `${column.key} needs a label`);
+    assert.ok(["asc", "desc"].includes(column.defaultDir), `${column.key} needs a direction`);
+    assert.equal(typeof column.value, "function", `${column.key} needs an accessor`);
+  }
+  // Counts start high-to-low, names low-to-high.
+  assert.equal(ACTIVITY_SORT_COLUMNS.find((column) => column.key === "frames").defaultDir, "desc");
+  assert.equal(ACTIVITY_SORT_COLUMNS.find((column) => column.key === "product").defaultDir, "asc");
+});
+
+test("sorting numeric columns works both ways without mutating the input", () => {
+  assert.deepEqual(ids(sortActivityRows(sortableRows, { key: "frames", dir: "desc" })), ["b", "a", "c"]);
+  assert.deepEqual(ids(sortActivityRows(sortableRows, { key: "frames", dir: "asc" })), ["a", "c", "b"]);
+  assert.deepEqual(ids(sortActivityRows(sortableRows, { key: "events24h", dir: "desc" })), ["b", "c", "a"]);
+  assert.deepEqual(ids(sortActivityRows(sortableRows, { key: "lastSeen", dir: "asc" })), ["c", "a", "b"]);
+  // The original order is the worker's ranking and is never changed in place.
+  assert.deepEqual(ids(sortableRows), ["a", "b", "c"]);
+});
+
+test("text sorts are case-insensitive and unresolved ids get a readable label", () => {
+  assert.deepEqual(ids(sortActivityRows(sortableRows, { key: "product", dir: "asc" })), ["b", "c", "a"]);
+  assert.deepEqual(ids(sortActivityRows(sortableRows, { key: "product", dir: "desc" })), ["a", "c", "b"]);
+  // Types use their display label, not the raw feed key: batteries < miners < racks.
+  assert.deepEqual(ids(sortActivityRows(sortableRows, { key: "type", dir: "asc" })), ["c", "a", "b"]);
+});
+
+test("missing numeric values sink to the bottom in either direction", () => {
+  // Row "c" is unpriced, so it must stay last even when prices sort ascending.
+  assert.deepEqual(ids(sortActivityRows(sortableRows, { key: "minPrice", dir: "asc" })), ["b", "a", "c"]);
+  assert.deepEqual(ids(sortActivityRows(sortableRows, { key: "minPrice", dir: "desc" })), ["a", "b", "c"]);
+  assert.deepEqual(ids(sortActivityRows(sortableRows, { key: "spread", dir: "desc" })), ["a", "b", "c"]);
+});
+
+test("shares sort by the same proportion the column displays", () => {
+  const ctx = { totalEvents: 100 };
+  assert.deepEqual(ids(sortActivityRows(sortableRows, { key: "share", dir: "desc" }, ctx)), ["b", "a", "c"]);
+  assert.deepEqual(ids(sortActivityRows(sortableRows, { key: "share", dir: "asc" }, ctx)), ["a", "c", "b"]);
+});
+
+test("ties keep a stable order and an unknown sort keeps the ranking", () => {
+  // "a" and "c" both have 12 frames; the id breaks the tie the same way in both
+  // directions so a poll never reshuffles equal rows.
+  assert.deepEqual(ids(sortActivityRows(sortableRows, { key: "frames", dir: "desc" })), ["b", "a", "c"]);
+  assert.deepEqual(ids(sortActivityRows(sortableRows, { key: "frames", dir: "asc" })), ["a", "c", "b"]);
+  assert.deepEqual(ids(sortActivityRows(sortableRows, null)), ["a", "b", "c"]);
+  assert.deepEqual(ids(sortActivityRows(sortableRows, { key: "nope", dir: "desc" })), ["a", "b", "c"]);
+  assert.deepEqual(sortActivityRows(null, { key: "frames", dir: "desc" }), []);
+});
+
+test("a header click cycles default direction, reverse, then ranked", () => {
+  assert.deepEqual(nextActivitySort(null, "frames"), { key: "frames", dir: "desc" });
+  assert.deepEqual(nextActivitySort({ key: "frames", dir: "desc" }, "frames"), { key: "frames", dir: "asc" });
+  assert.deepEqual(nextActivitySort({ key: "frames", dir: "asc" }, "frames"), null);
+  // Switching columns starts the new one at its own default direction.
+  assert.deepEqual(nextActivitySort({ key: "frames", dir: "asc" }, "product"), { key: "product", dir: "asc" });
+  assert.equal(nextActivitySort({ key: "frames", dir: "desc" }, "market"), null);
+});
+
+test("a refetch rebuilds every loaded page instead of snapping to page one", async () => {
+  const all = Array.from({ length: 60 }, (_, index) => ({ itemId: `row-${index}` }));
+  const calls = [];
+  // Mocks the API: skip/take over a fixed ranking, with range-wide meta.
+  const fetchPage = async (offset, limit) => {
+    calls.push([offset, limit]);
+    return {
+      activity: { rows: all.slice(offset, offset + limit), totalRows: 60, totalEvents: 600 },
+      window: { since: 1, until: 2 }
+    };
+  };
+
+  // 60 loaded rows fit in one request (the API's cap is 250).
+  const fresh = await fetchActivityRows(fetchPage, 60);
+  assert.deepEqual(ids(fresh.rows), ids(all), "all 60 rows survive the refetch");
+  assert.deepEqual(calls, [[0, 60]]);
+  assert.equal(fresh.activity.totalRows, 60);
+  assert.deepEqual(fresh.window, { since: 1, until: 2 });
+
+  // Asking for more than the cap pages through instead of losing rows.
+  const many = Array.from({ length: 300 }, (_, index) => ({ itemId: `x-${index}` }));
+  let pagedCalls = 0;
+  const paged = await fetchActivityRows(
+    async (offset, limit) => {
+      pagedCalls += 1;
+      return {
+        activity: { rows: many.slice(offset, offset + limit) },
+        window: { since: 0, until: 1 }
+      };
+    },
+    300
+  );
+  assert.deepEqual(ids(paged.rows), ids(many));
+  assert.ok(pagedCalls >= 2, "more than 250 rows needs more than one request");
+});
+
+test("a refetch stops on a short page and drops ids that shifted between pages", async () => {
+  // Only 12 rows exist; asking to rebuild 50 must not loop on empty pages.
+  const twelve = Array.from({ length: 12 }, (_, index) => ({ itemId: `row-${index}` }));
+  let calls = 0;
+  const short = await fetchActivityRows(async () => {
+    calls += 1;
+    return { activity: { rows: twelve }, window: {} };
+  }, 50);
+  assert.deepEqual(ids(short.rows), ids(twelve));
+  assert.equal(calls, 1, "a short page ends the walk");
+
+  // A rank that shifts can put the same id twice in the rebuilt rows; one id
+  // must appear once no matter how the worker ordered the pages.
+  const shifted = [{ itemId: "a" }, { itemId: "b" }, { itemId: "b" }, { itemId: "c" }];
+  const deduped = await fetchActivityRows(
+    async () => ({ activity: { rows: shifted }, window: {} }),
+    10
+  );
+  assert.deepEqual(ids(deduped.rows), ["a", "b", "c"]);
 });
