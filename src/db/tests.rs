@@ -137,7 +137,8 @@ fn creates_the_full_schema_and_stamps_the_version() {
 
 /// A database from before `failed_qty` kept no missed-unit total, but the loot
 /// log still holds every failed attempt. The upgrade must rebuild the column
-/// from `requested_qty` instead of starting every product at 0.
+/// from `requested_qty` instead of starting every product at 0. The same goes
+/// for `wins`, which only counts non-negative-profit fills.
 #[test]
 fn backfills_missed_units_from_the_loot_log() {
     let dir = temp_dir("failed-qty");
@@ -175,12 +176,13 @@ fn backfills_missed_units_from_the_loot_log() {
                  last_at     INTEGER NOT NULL
              );
              -- Legacy failed rows stored the attempted count in qty.
-             INSERT INTO orders (id, item_id, label, qty, status, at)
-             VALUES ('o1', 'item-1', 'Hashboard', 4, 'failed', 1),
-                    ('o2', 'item-1', 'Hashboard', 6, 'failed', 2),
-                    ('o3', 'item-1', 'Hashboard', 2, 'filled', 3);
+             INSERT INTO orders (id, item_id, label, qty, status, at, profit_rlt)
+             VALUES ('o1', 'item-1', 'Hashboard', 4, 'failed', 1, 0),
+                    ('o2', 'item-1', 'Hashboard', 6, 'failed', 2, 0),
+                    ('o3', 'item-1', 'Hashboard', 2, 'filled', 3, 0.5),
+                    ('o4', 'item-1', 'Hashboard', 2, 'filled', 4, -0.5);
              INSERT INTO report_products (product_key, item_id, label, fills, failed, qty, first_at, last_at)
-             VALUES ('item-1', 'item-1', 'Hashboard', 1, 2, 2, 1, 3);",
+             VALUES ('item-1', 'item-1', 'Hashboard', 2, 2, 4, 1, 4);",
         )
         .unwrap();
         conn.pragma_update(None, "user_version", 7).unwrap();
@@ -204,7 +206,72 @@ fn backfills_missed_units_from_the_loot_log() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(qty, 2);
+    assert_eq!(qty, 4);
+    // Only the profitable fill is a win; the loss is not.
+    let wins: i64 = conn
+        .query_row(
+            "SELECT wins FROM report_products WHERE product_key = 'item-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(wins, 1);
+    drop(conn);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn backfills_session_wins_from_the_loot_log() {
+    let dir = temp_dir("stats-wins");
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(DB_FILENAME);
+    {
+        let conn = Connection::open(&file).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE orders (
+                 id TEXT PRIMARY KEY,
+                 item_id TEXT NOT NULL DEFAULT '',
+                 label TEXT NOT NULL DEFAULT '',
+                 qty INTEGER NOT NULL DEFAULT 0,
+                 unit_price REAL NOT NULL DEFAULT 0,
+                 total_price REAL NOT NULL DEFAULT 0,
+                 target_price REAL NOT NULL DEFAULT 0,
+                 profit_rlt REAL NOT NULL DEFAULT 0,
+                 status TEXT NOT NULL,
+                 at INTEGER NOT NULL,
+                 latency_ms INTEGER,
+                 note TEXT,
+                 message TEXT
+             );
+             INSERT INTO orders (id, item_id, label, qty, profit_rlt, status, at)
+             VALUES ('o1', 'item-1', 'Hashboard', 1, 0.4, 'filled', 1),
+                    ('o2', 'item-1', 'Hashboard', 1, 0, 'filled', 2),
+                    ('o3', 'item-1', 'Hashboard', 1, -0.3, 'filled', 3),
+                    ('o4', 'item-1', 'Hashboard', 0, 0, 'failed', 4);
+             CREATE TABLE stats (
+                 id INTEGER PRIMARY KEY CHECK (id = 1),
+                 since INTEGER NOT NULL,
+                 profit_rlt REAL NOT NULL DEFAULT 0,
+                 spent_rlt REAL NOT NULL DEFAULT 0,
+                 bought INTEGER NOT NULL DEFAULT 0,
+                 filled INTEGER NOT NULL DEFAULT 0,
+                 failed INTEGER NOT NULL DEFAULT 0,
+                 orders_sent INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO stats (id, since, filled, failed, orders_sent)
+             VALUES (1, 1, 3, 1, 4);",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 7).unwrap();
+    }
+
+    let logger = Logger::new("error");
+    let conn = open(&dir, &logger, None).unwrap();
+    let wins: i64 = conn
+        .query_row("SELECT wins FROM stats WHERE id = 1", [], |row| row.get(0))
+        .unwrap();
+    // A profitable fill and a break-even fill count; the loss does not.
+    assert_eq!(wins, 2);
     drop(conn);
     let _ = std::fs::remove_dir_all(&dir);
 }

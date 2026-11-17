@@ -191,13 +191,14 @@ impl Store {
         .map_err(|e| format!("could not write settings: {e}"))?;
         tx.execute(
             "UPDATE stats SET since = ?1, profit_rlt = ?2, spent_rlt = ?3, bought = ?4,
-                    filled = ?5, failed = ?6, orders_sent = ?7 WHERE id = 1",
+                    filled = ?5, wins = ?6, failed = ?7, orders_sent = ?8 WHERE id = 1",
             params![
                 stats.since,
                 stats.profit_rlt,
                 stats.spent_rlt,
                 stats.bought,
                 stats.filled,
+                stats.wins,
                 stats.failed,
                 stats.orders_sent
             ],

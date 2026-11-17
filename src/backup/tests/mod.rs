@@ -221,6 +221,56 @@ fn skips_invalid_targets_and_rebuilds_the_report_from_orders() {
 }
 
 #[test]
+fn old_backups_rebuild_win_counters_from_the_loot_log() {
+    let payload = json!({
+        "kind": BACKUP_KIND,
+        "formatVersion": 1,
+        "schemaVersion": crate::db::SCHEMA_VERSION,
+        "exportedAt": NOW,
+        "data": {
+            "createdAt": NOW,
+            "reportSince": NOW,
+            "settings": { "delayPerOrder": 250 },
+            "stats": { "since": NOW },
+            "targets": [],
+            "orders": [
+                { "id": "o1", "itemId": "item-1", "label": "Hashboard", "qty": 1,
+                  "totalPrice": 0.2, "profitRlt": 0.5, "status": "filled", "at": NOW },
+                { "id": "o2", "itemId": "item-1", "label": "Hashboard", "qty": 1,
+                  "totalPrice": 0.2, "profitRlt": 0.0, "status": "filled", "at": NOW + 1 },
+                { "id": "o3", "itemId": "item-1", "label": "Hashboard", "qty": 1,
+                  "totalPrice": 0.2, "profitRlt": -0.25, "status": "filled", "at": NOW + 2 },
+                { "id": "o4", "itemId": "item-1", "label": "Hashboard", "qty": 0,
+                  "totalPrice": 0.0, "profitRlt": 0.0, "status": "failed", "at": NOW + 3 }
+            ],
+            // A pre-fix backup: no `wins` field on the aggregate row.
+            "reportProducts": [
+                { "productKey": "item-1", "itemId": "item-1", "label": "Hashboard",
+                  "fills": 3, "failed": 1, "qty": 3, "profitRlt": 0.25 }
+            ]
+        }
+    });
+
+    let parsed = parse_backup(&payload, NOW);
+    assert!(parsed.ok, "errors: {:?}", parsed.errors);
+    let value = parsed.value.unwrap();
+
+    let (mut destination, _dir) = store("old-winrate-backup");
+    restore_backup(&mut destination, &value, false, false, NOW).unwrap();
+
+    let report = destination.report_view();
+    assert_eq!(report.totals.fills, 3);
+    assert_eq!(report.totals.wins, 2);
+    assert_eq!(report.totals.success_pct, Some(50));
+
+    // The session counters come from the same old backup and get the same fix.
+    assert_eq!(destination.state.stats.filled, 3);
+    assert_eq!(destination.state.stats.wins, 2);
+    assert_eq!(destination.state.stats.failed, 1);
+    assert_eq!(destination.state.stats.orders_sent, 4);
+}
+
+#[test]
 fn creates_a_consistent_sqlite_snapshot() {
     let (store, dir) = store("snapshot");
     let path = create_database_snapshot(&store, "pre-import", NOW).unwrap();

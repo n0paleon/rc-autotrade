@@ -173,6 +173,7 @@ function deriveBackupStats(data, now) {
     spentRlt: filled.reduce((sum, order) => sum + (Number(order?.totalPrice) || 0), 0),
     bought: filled.reduce((sum, order) => sum + (Number(order?.qty) || 0), 0),
     filled: filled.length,
+    wins: filled.filter((order) => Number(order?.profitRlt ?? 0) >= 0).length,
     failed: orders.length - filled.length,
     ordersSent: orders.length
   };
@@ -181,19 +182,40 @@ function deriveBackupStats(data, now) {
     : derived;
 }
 
+// Same key the worker uses for report_products: non-empty item id wins,
+// otherwise "label:" plus the name, otherwise "unknown".
+function backupProductKey(entry) {
+  const id = String(entry?.itemId ?? "").trim().toLowerCase();
+  if (id) return id;
+  const label = String(entry?.label ?? "").trim().toLowerCase();
+  return label ? `label:${label}` : "unknown";
+}
+
 function deriveBackupReport(data, since) {
+  const orders = Array.isArray(data.orders) ? data.orders : [];
+  // Backups do not carry the win counter, but they carry every loot row, so
+  // rebuild it here: only non-failed orders with profit >= 0 are wins.
+  const winsByKey = new Map();
+  for (const order of orders) {
+    if (order?.status !== "failed" && Number(order?.profitRlt ?? 0) >= 0) {
+      const key = backupProductKey(order);
+      winsByKey.set(key, (winsByKey.get(key) || 0) + 1);
+    }
+  }
+
   let products = Array.isArray(data.reportProducts)
     ? data.reportProducts.filter((product) => product && typeof product === "object")
     : [];
-  if (products.length === 0 && Array.isArray(data.orders)) {
+  if (products.length === 0 && orders.length > 0) {
     const grouped = new Map();
-    for (const order of data.orders) {
+    for (const order of orders) {
       const key = String(order?.itemId || order?.label || "unknown").toLowerCase();
       const product = grouped.get(key) || {
         productKey: key,
         itemId: order?.itemId || "",
         label: order?.label || "",
         fills: 0,
+        wins: 0,
         failed: 0,
         qty: 0,
         failedQty: 0,
@@ -207,6 +229,7 @@ function deriveBackupReport(data, since) {
         product.failedQty += Math.max(0, Number(order?.requestedQty ?? order?.qty) || 0);
       } else {
         product.fills += 1;
+        if (Number(order?.profitRlt ?? 0) >= 0) product.wins += 1;
         product.qty += Number(order?.qty) || 0;
         product.spentRlt += Number(order?.totalPrice) || 0;
         product.profitRlt += Number(order?.profitRlt) || 0;
@@ -228,30 +251,35 @@ function deriveBackupReport(data, since) {
     const profitRlt = Number(product.profitRlt) || 0;
     const fills = Number(product.fills) || 0;
     const failed = Number(product.failed) || 0;
+    const wins = product.wins != null
+      ? Number(product.wins) || 0
+      : winsByKey.get(String(product.productKey || backupProductKey(product))) || 0;
     const completed = fills + failed;
     return {
       ...product,
       qty,
       failedQty,
+      wins,
       avgBuy: qty > 0 ? spentRlt / qty : 0,
       marginPct: spentRlt > 0 ? Math.round((profitRlt / spentRlt) * 1000) / 10 : null,
-      successPct: completed > 0 ? Math.round((fills / completed) * 100) : null
+      successPct: completed > 0 ? Math.round((wins / completed) * 100) : null
     };
   }).sort((a, b) => b.profitRlt - a.profitRlt || b.spentRlt - a.spentRlt);
   const totals = items.reduce((sum, item) => {
     sum.fills += Number(item.fills) || 0;
+    sum.wins += Number(item.wins) || 0;
     sum.failed += Number(item.failed) || 0;
     sum.qty += Number(item.qty) || 0;
     sum.failedQty += Number(item.failedQty) || 0;
     sum.spentRlt += Number(item.spentRlt) || 0;
     sum.profitRlt += Number(item.profitRlt) || 0;
     return sum;
-  }, { products: items.length, fills: 0, failed: 0, qty: 0, failedQty: 0, spentRlt: 0, profitRlt: 0, marginPct: null });
+  }, { products: items.length, fills: 0, wins: 0, failed: 0, qty: 0, failedQty: 0, spentRlt: 0, profitRlt: 0, marginPct: null });
   totals.products = items.length;
   totals.marginPct = totals.spentRlt > 0
     ? Math.round((totals.profitRlt / totals.spentRlt) * 1000) / 10
     : null;
-  totals.successPct = winRatePct(totals.fills, totals.fills + totals.failed);
+  totals.successPct = winRatePct(totals.wins, totals.fills + totals.failed);
   return { since, totals, items };
 }
 
@@ -1069,13 +1097,14 @@ export function useWorker({ notify }) {
             spentRlt: 0,
             bought: 0,
             filled: 0,
+            wins: 0,
             failed: 0,
             ordersSent: 0
           },
           report: {
             since: resetAt,
             items: [],
-            totals: { products: 0, fills: 0, failed: 0, qty: 0, failedQty: 0, spentRlt: 0, profitRlt: 0, marginPct: null }
+            totals: { products: 0, fills: 0, wins: 0, failed: 0, qty: 0, failedQty: 0, spentRlt: 0, profitRlt: 0, marginPct: null }
           },
           history: [],
           historyTotal: 0,

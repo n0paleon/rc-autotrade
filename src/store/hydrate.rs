@@ -36,8 +36,8 @@ impl Store {
         self.db
             .execute(
                 "INSERT OR IGNORE INTO stats
-                 (id, since, profit_rlt, spent_rlt, bought, filled, failed, orders_sent)
-                 VALUES (1, ?1, 0, 0, 0, 0, 0, 0)",
+                 (id, since, profit_rlt, spent_rlt, bought, filled, wins, failed, orders_sent)
+                 VALUES (1, ?1, 0, 0, 0, 0, 0, 0, 0)",
                 params![now],
             )
             .map_err(|e| format!("could not seed stats: {e}"))?;
@@ -102,7 +102,7 @@ impl Store {
         let stats_row = self
             .db
             .query_row(
-                "SELECT since, profit_rlt, spent_rlt, bought, filled, failed, orders_sent
+                "SELECT since, profit_rlt, spent_rlt, bought, filled, wins, failed, orders_sent
                  FROM stats WHERE id = 1",
                 [],
                 |row| {
@@ -112,8 +112,9 @@ impl Store {
                         spent_rlt: row.get(2)?,
                         bought: row.get(3)?,
                         filled: row.get(4)?,
-                        failed: row.get(5)?,
-                        orders_sent: row.get(6)?,
+                        wins: row.get(5)?,
+                        failed: row.get(6)?,
+                        orders_sent: row.get(7)?,
                     })
                 },
             )
@@ -214,7 +215,7 @@ impl Store {
         let mut statement = self
             .db
             .prepare(
-                "SELECT product_key, item_id, label, fills, failed, qty, failed_qty,
+                "SELECT product_key, item_id, label, fills, wins, failed, qty, failed_qty,
                         spent_rlt, profit_rlt, first_at, last_at FROM report_products",
             )
             .map_err(|e| format!("could not prepare report read: {e}"))?;
@@ -225,13 +226,14 @@ impl Store {
                     item_id: row.get(1)?,
                     label: row.get(2)?,
                     fills: row.get(3)?,
-                    failed: row.get(4)?,
-                    qty: row.get(5)?,
-                    failed_qty: row.get(6)?,
-                    spent_rlt: row.get(7)?,
-                    profit_rlt: row.get(8)?,
-                    first_at: row.get(9)?,
-                    last_at: row.get(10)?,
+                    wins: row.get(4)?,
+                    failed: row.get(5)?,
+                    qty: row.get(6)?,
+                    failed_qty: row.get(7)?,
+                    spent_rlt: row.get(8)?,
+                    profit_rlt: row.get(9)?,
+                    first_at: row.get(10)?,
+                    last_at: row.get(11)?,
                 };
                 Ok((key, product))
             })

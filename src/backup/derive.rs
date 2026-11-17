@@ -11,9 +11,13 @@ pub(super) fn derive_stats(orders: &[OrderEntry], now: i64) -> Stats {
     let mut profit = 0.0;
     let mut bought = 0i64;
     let mut filled = 0i64;
+    let mut wins = 0i64;
     for order in orders {
         if order.status == "filled" {
             filled += 1;
+            if order.profit_rlt >= 0.0 {
+                wins += 1;
+            }
             bought += order.qty;
             spent += order.total_price;
             profit += order.profit_rlt;
@@ -28,6 +32,7 @@ pub(super) fn derive_stats(orders: &[OrderEntry], now: i64) -> Stats {
         spent_rlt: round_price(spent),
         bought,
         filled,
+        wins,
         failed: orders.len() as i64 - filled,
         orders_sent: orders.len() as i64,
     }
