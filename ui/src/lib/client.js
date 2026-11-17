@@ -114,6 +114,10 @@ export class WorkerClient {
     this.reconnectTimer = null;
     this.pingTimer = null;
     this.disposed = false;
+    // Item ids the deck wants live quotes for. Counted, because the target form
+    // may be opened by more than one component in the future; the worker also
+    // reference-counts per socket. Re-sent after every reconnect.
+    this.watchedItems = new Map();
   }
 
   async login(rawUrl, token) {
@@ -180,6 +184,45 @@ export class WorkerClient {
     }
   }
 
+  /**
+   * Asks the worker to stream compact live quotes for one item.
+   *
+   * The subscription survives a socket reconnect: every open replays the
+   * current set, so a form left open while the feed reconnects keeps updating.
+   * Duplicate calls are counted and released by matching unwatch calls.
+   */
+  watchItem(itemId) {
+    const key = String(itemId || "").trim().toLowerCase();
+    if (!key) return false;
+    const count = this.watchedItems.get(key) || 0;
+    this.watchedItems.set(key, count + 1);
+    if (count === 0) this.#send({ type: "watch", itemId: key });
+    return true;
+  }
+
+  unwatchItem(itemId) {
+    const key = String(itemId || "").trim().toLowerCase();
+    if (!key) return;
+    const count = this.watchedItems.get(key) || 0;
+    if (count <= 0) return;
+    if (count === 1) {
+      this.watchedItems.delete(key);
+      this.#send({ type: "unwatch", itemId: key });
+    } else {
+      this.watchedItems.set(key, count - 1);
+    }
+  }
+
+  #send(message) {
+    if (this.socket?.readyState !== WebSocket.OPEN) return false;
+    try {
+      this.socket.send(JSON.stringify(message));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   connectSocket() {
     if (this.disposed || !this.isAuthenticated) return;
     this.#closeSocket();
@@ -216,6 +259,11 @@ export class WorkerClient {
       this.#setStatus("online");
       this.#startPing();
       this.resync();
+      // A reconnect starts a fresh server-side watch registry. Replay the
+      // items a form is still waiting on before the next frame arrives.
+      for (const itemId of this.watchedItems.keys()) {
+        this.#send({ type: "watch", itemId });
+      }
     });
 
     socket.addEventListener("message", (event) => {
@@ -333,6 +381,7 @@ export class WorkerClient {
     this.reconnectTimer = null;
     this.#closeSocket();
     this.socket = null;
+    this.watchedItems.clear();
     this.token = "";
     this.baseUrl = "";
     this.#setStatus("idle");

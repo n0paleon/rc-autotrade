@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { WorkerClient, ApiError } from "./lib/client.js";
-import { mergeHistory, fixedPrice, formatInt, formatSignedRlt, winRatePct } from "./lib/format.js";
+import {
+  mergeHistory,
+  fixedPrice,
+  formatInt,
+  formatSignedRlt,
+  normalizeItemId,
+  winRatePct
+} from "./lib/format.js";
+import { mergeQuote } from "./lib/quote.js";
 import { sound } from "./lib/sound.js";
 import {
   DEFAULT_SETTINGS,
@@ -114,16 +122,6 @@ function nextMutationVersion(versions, key) {
 function invalidateMutationVersions(versions) {
   for (const [key, version] of versions.current) {
     versions.current.set(key, version + 1);
-  }
-}
-
-function normalizeTargetId(itemId) {
-  const value = String(itemId || "").trim();
-  if (!/^https?:\/\//i.test(value)) return value;
-  try {
-    return new URL(value).pathname.split("/").filter(Boolean).at(-1) || value;
-  } catch {
-    return value;
   }
 }
 
@@ -334,6 +332,9 @@ export function useWorker({ notify }) {
   const chattyRef = useRef(false);
 
   const [snapshot, setSnapshot] = useState(null);
+  // Compact live quotes for items a form is watching. Kept outside `snapshot`
+  // because they can belong to ids that are not targets yet.
+  const [quotes, setQuotes] = useState({});
   const [logs, setLogs] = useState([]);
   // Monotonic total of every line appended to the live system log. The `logs`
   // state is capped, so its length cannot drive the feed's events/min readout.
@@ -487,6 +488,10 @@ export function useWorker({ notify }) {
               Number(data.rawHigh)
             )
           }));
+          break;
+        }
+        case "quote": {
+          setQuotes((previous) => mergeQuote(previous, data));
           break;
         }
         case "order": {
@@ -669,6 +674,7 @@ export function useWorker({ notify }) {
         setAuthError(message);
         setSnapshot(null);
         setConnected(false);
+        setQuotes({});
         clearStoredToken();
         clientRef.current?.logout();
       }
@@ -729,6 +735,7 @@ export function useWorker({ notify }) {
     clearStoredToken();
     setSnapshot(null);
     setConnected(false);
+    setQuotes({});
     setAuthError("");
     setStatus("idle");
     setLatency(null);
@@ -748,6 +755,8 @@ export function useWorker({ notify }) {
   const requestText = useCallback((path, options) => clientRef.current.requestText(path, options), []);
   const requestBlob = useCallback((path, options) => clientRef.current.requestBlob(path, options), []);
   const resync = useCallback(() => clientRef.current?.resync(), []);
+  const watchItem = useCallback((itemId) => clientRef.current?.watchItem(itemId), []);
+  const unwatchItem = useCallback((itemId) => clientRef.current?.unwatchItem(itemId), []);
   const getConnection = useCallback(
     () => ({
       baseUrl: clientRef.current?.baseUrl || window.location.origin,
@@ -835,7 +844,7 @@ export function useWorker({ notify }) {
 
   const saveTarget = useCallback(
     async (target, originalId) => {
-      const itemId = originalId || normalizeTargetId(target.itemId);
+      const itemId = originalId || normalizeItemId(target.itemId);
       const key = String(itemId).toLowerCase();
       const version = nextMutationVersion(configMutationVersions, key);
       const previousConfig = snapshot?.configs?.find(
@@ -1237,6 +1246,7 @@ export function useWorker({ notify }) {
 
   return {
     snapshot,
+    quotes,
     logs,
     logCount,
     status,
@@ -1249,6 +1259,8 @@ export function useWorker({ notify }) {
     logout,
     request,
     resync,
+    watchItem,
+    unwatchItem,
     getConnection,
     saveTarget,
     deleteTarget,

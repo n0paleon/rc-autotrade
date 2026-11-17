@@ -13,7 +13,7 @@ use crate::constants::{
     MARKET_BROADCAST_INTERVAL_MS, MARKET_COALESCE_MAX, PRICE_SAMPLE_FEED_IDLE_MS,
 };
 use crate::engine::{EngineEvent, MarketTick};
-use crate::events::is_marketplace_frame;
+use crate::events::{is_marketplace_frame, market_quote, normalize_upstream_event};
 use crate::lock::lock;
 use crate::server::AppState;
 
@@ -37,6 +37,29 @@ pub(super) fn process_frame(state: &Arc<AppState>, raw: Value, at: i64) {
     };
     state.last_frame_at.store(at, Ordering::Relaxed);
     dispatch(state, events);
+    broadcast_watched_quote(state, &raw, at);
+}
+
+/// Pushes a compact quote to the deck for every item a target form is watching.
+///
+/// Only ids that actually have a subscriber are considered, so the hot path is
+/// unchanged when no form is open. While a form is open the frame is normalised
+/// a second time: the engine already did so, but its result is internal and not
+/// worth threading an optional out-parameter through the decision path. The
+/// subscription set is tiny and normally holds one id, so this only runs for
+/// the few seconds an operator is editing a target.
+fn broadcast_watched_quote(state: &Arc<AppState>, raw: &Value, at: i64) {
+    if !state.has_item_watchers() {
+        return;
+    }
+    let event = normalize_upstream_event(raw);
+    let Some(quote) = market_quote(&event, at) else {
+        return;
+    };
+    if !state.is_item_watched(&quote.item_id) || !state.quote_is_due(&quote.item_id, at) {
+        return;
+    }
+    state.broadcast_serialized("quote", &quote);
 }
 
 /// One sampler tick: write a close for every target the feed has gone quiet on.
