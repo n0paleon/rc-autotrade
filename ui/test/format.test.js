@@ -12,6 +12,7 @@ import {
   marketplaceUrl,
   matchesLootFilter,
   mergeHistory,
+  normalizeItemId,
   runtimeEffectiveStock,
   runtimeHot,
   runtimeReconciling,
@@ -121,6 +122,20 @@ test("runtimeEffectiveStock prefers the tick over the snapshot floor", () => {
   assert.equal(runtimeEffectiveStock({ runtime: { reconcile: { floor: 4 } } }), 4);
   assert.equal(runtimeEffectiveStock({ runtime: {} }), null);
   assert.equal(runtimeEffectiveStock({}), null);
+});
+
+test("normalises raw ids and marketplace URLs for live lookups", () => {
+  assert.equal(normalizeItemId("  64490fc1547cfab9a2759638 "), "64490fc1547cfab9a2759638");
+  assert.equal(
+    normalizeItemId(
+      "https://rollercoin.com/marketplace/buy/mutation_component/6571aa39ca8bfef34adcd9e9?tab=orders#top"
+    ),
+    "6571aa39ca8bfef34adcd9e9"
+  );
+  assert.equal(normalizeItemId("https://rollercoin.com/"), "https://rollercoin.com/");
+  assert.equal(normalizeItemId("not a url/"), "not a url/");
+  assert.equal(normalizeItemId(""), "");
+  assert.equal(normalizeItemId(null), "");
 });
 
 test("builds the Rollercoin marketplace URL for an item", () => {

@@ -95,6 +95,52 @@ pub struct UpstreamEvent {
     pub fill: Option<FillEvent>,
 }
 
+/// Compact live quote for an arbitrary item the deck is watching.
+///
+/// The regular `MarketTick` is target-shaped: it carries the planner inputs,
+/// trend payload and order state for an item on the fleet. A target form only
+/// needs the current best ask and the marketplace's allowed band, including for
+/// ids that are not targets yet, so this payload stays deliberately small.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MarketQuote {
+    pub item_id: String,
+    pub price: f64,
+    pub stock: i64,
+    pub allowed_price_min: Option<f64>,
+    pub allowed_price_max: Option<f64>,
+    pub item_type: Option<String>,
+    pub at: i64,
+}
+
+/// Builds the live quote for one normalised market frame.
+///
+/// Only RLT market frames qualify. A frame without a listing has no best ask,
+/// so it cannot produce a quote; a fill frame is not a price update at all.
+pub fn market_quote(event: &UpstreamEvent, at: i64) -> Option<MarketQuote> {
+    if event.kind != Kind::Market {
+        return None;
+    }
+    if event
+        .currency
+        .as_deref()
+        .is_some_and(|currency| currency != "RLT")
+    {
+        return None;
+    }
+    let item_id = event.item_id.clone()?;
+    let best = event.listings.first()?;
+    Some(MarketQuote {
+        item_id,
+        price: best.unit_price,
+        stock: best.quantity,
+        allowed_price_min: event.allowed_price_min,
+        allowed_price_max: event.allowed_price_max,
+        item_type: event.item_type.clone(),
+        at,
+    })
+}
+
 /// `X !== undefined && X !== null && X !== ""`
 fn defined(value: Option<&Value>) -> Option<&Value> {
     match value {
@@ -467,5 +513,69 @@ mod tests {
             "value": {}
         })));
         assert!(!is_marketplace_frame(&json!({ "value": {} })));
+    }
+
+    #[test]
+    fn a_market_frame_becomes_a_compact_live_quote() {
+        let event = normalize_upstream_event(&json!({
+            "cmd": "marketplace_orders_update",
+            "value": {
+                "currency": "RLT",
+                "item_type": "rack",
+                "item_id": "64490FC1547CFAB9A2759638",
+                "data": {
+                    "allowedPriceMin": 367_500,
+                    "allowedPriceMax": 666_225_000,
+                    "list": [
+                        { "price": 735_000, "quantity": 7 },
+                        { "price": 700_000, "quantity": 3 }
+                    ]
+                }
+            }
+        }));
+
+        let quote = market_quote(&event, 1_234).expect("quote");
+        assert_eq!(quote.item_id, "64490fc1547cfab9a2759638");
+        assert_eq!(quote.price, 0.7);
+        assert_eq!(quote.stock, 3);
+        assert_eq!(quote.allowed_price_min, Some(0.3675));
+        assert_eq!(quote.allowed_price_max, Some(666.225));
+        assert_eq!(quote.item_type.as_deref(), Some("rack"));
+        assert_eq!(quote.at, 1_234);
+    }
+
+    #[test]
+    fn non_rlt_and_non_market_frames_produce_no_quote() {
+        let non_rlt = normalize_upstream_event(&json!({
+            "cmd": "marketplace_orders_update",
+            "value": {
+                "currency": "USDT",
+                "item_id": "abc12345",
+                "data": { "list": [{ "price": 735_000, "quantity": 7 }] }
+            }
+        }));
+        assert!(market_quote(&non_rlt, 1).is_none());
+
+        let fill = normalize_upstream_event(&json!({
+            "cmd": "marketplace_orders_filled",
+            "value": {
+                "item_id": "abc12345",
+                "order_id": "order-7",
+                "count": 5,
+                "price": 500_000,
+                "status": 12
+            }
+        }));
+        assert!(market_quote(&fill, 1).is_none());
+
+        let empty_ladder = normalize_upstream_event(&json!({
+            "cmd": "marketplace_orders_update",
+            "value": {
+                "currency": "RLT",
+                "item_id": "abc12345",
+                "data": { "list": [] }
+            }
+        }));
+        assert!(market_quote(&empty_ladder, 1).is_none());
     }
 }

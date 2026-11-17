@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Icon, ModalShell, ToggleRow, useModalClose } from "./ModalShell.jsx";
-import { applyTotalPriceMarkup, fixedPrice, shortId } from "../lib/format.js";
-import { tabKeyDown } from "../lib/hooks.js";
+import {
+  applyTotalPriceMarkup,
+  fixedPrice,
+  normalizeItemId,
+  relTime,
+  shortId
+} from "../lib/format.js";
+import { tabKeyDown, useNow } from "../lib/hooks.js";
+import { isQuoteFresh, quoteFor } from "../lib/quote.js";
 
 export async function copyText(text) {
   try {
@@ -36,6 +43,9 @@ function focusFirstInvalid(form) {
     form?.querySelector('[aria-invalid="true"]')?.focus();
   });
 }
+
+/** Ids the worker can stream live quotes for: the same shape the API accepts. */
+const WATCHABLE_ITEM_ID = /^[A-Za-z0-9_-]{6,64}$/;
 
 function validateTargetLocally(target) {
   const errors = {};
@@ -114,6 +124,14 @@ export function TargetModal({ config, onClose, worker, notify, markupPct = 0, pr
   const lookupRef = useRef(null);
   const editLookupDone = useRef(false);
 
+  // The id the worker matches market frames against. Input may be a raw id or
+  // a marketplace URL; both must resolve to the same live-quote key.
+  const lookupId = useMemo(() => normalizeItemId(itemId), [itemId]);
+  const now = useNow(1000);
+  const liveQuote = quoteFor(worker?.quotes, lookupId);
+  const quoteLive = isQuoteFresh(liveQuote, now);
+  const runtime = config?.runtime || {};
+
   const lookup = useCallback(async () => {
     const raw = itemId.trim();
     if (!raw) {
@@ -164,6 +182,67 @@ export function TargetModal({ config, onClose, worker, notify, markupPct = 0, pr
     const timer = setTimeout(() => lookupRef.current?.(), 450);
     return () => clearTimeout(timer);
   }, [itemId, editing]);
+
+  // Watch the current item so the worker streams a compact quote even when the
+  // id is not on the target fleet yet. A short debounce keeps typing from
+  // subscribing to every partial id; the cleanup always releases the key.
+  const watchItem = worker?.watchItem;
+  const unwatchItem = worker?.unwatchItem;
+  useEffect(() => {
+    if (!WATCHABLE_ITEM_ID.test(lookupId)) return undefined;
+    const key = lookupId.toLowerCase();
+    const timer = setTimeout(() => watchItem?.(key), editing ? 0 : 350);
+    return () => {
+      clearTimeout(timer);
+      unwatchItem?.(key);
+    };
+  }, [editing, lookupId, unwatchItem, watchItem]);
+
+  // Before the first watched frame arrives, an existing target already has a
+  // hydrated runtime. It is a snapshot, not live, so the UI labels it cached.
+  const marketPrice = Number.isFinite(liveQuote?.price)
+    ? liveQuote.price
+    : Number.isFinite(runtime.lastPrice)
+      ? runtime.lastPrice
+      : null;
+  const minPrice = Number.isFinite(liveQuote?.allowedPriceMin)
+    ? liveQuote.allowedPriceMin
+    : Number.isFinite(runtime.allowedPriceMin)
+      ? runtime.allowedPriceMin
+      : null;
+  const maxPrice = Number.isFinite(liveQuote?.allowedPriceMax)
+    ? liveQuote.allowedPriceMax
+    : Number.isFinite(runtime.allowedPriceMax)
+      ? runtime.allowedPriceMax
+      : null;
+  const hasQuoteFallback = marketPrice !== null || minPrice !== null || maxPrice !== null;
+  const quoteState = !lookupId
+    ? "idle"
+    : liveQuote
+      ? quoteLive
+        ? "live"
+        : "stale"
+      : hasQuoteFallback
+        ? "cached"
+        : "waiting";
+  const quoteStateText =
+    quoteState === "live"
+      ? "Live"
+      : quoteState === "stale"
+        ? `Stale · ${relTime(liveQuote.receivedAt)}`
+        : quoteState === "cached"
+          ? "Cached snapshot"
+          : quoteState === "waiting"
+            ? worker?.status === "online"
+              ? "Waiting for frame"
+              : "Worker offline"
+            : "No item ID";
+  const targetNumber = Number(targetPrice);
+  const inRange =
+    Number.isFinite(marketPrice) &&
+    Number.isFinite(targetNumber) &&
+    targetNumber > 0 &&
+    marketPrice <= targetNumber;
 
   const maxSpend = useMemo(() => {
     const price = Number(targetPrice) || 0;
@@ -287,6 +366,82 @@ export function TargetModal({ config, onClose, worker, notify, markupPct = 0, pr
             <strong className="mt-1 block text-[14px] font-medium text-ink">{auto.label}</strong>
             <small className="mt-0.5 block text-meta leading-snug text-faint">
               From Rollercoin item-info: rarity + item name. Falls back to the item name when rarity is absent.
+            </small>
+          </div>
+
+          <div
+            className={`sm:col-span-2 border-2 bg-night-950/50 px-3 py-2.5 ${
+              quoteState === "live"
+                ? "border-signal/50"
+                : quoteState === "stale"
+                  ? "border-gold/50"
+                  : "border-line"
+            }`}
+            aria-label="Live market prices for this item"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="label">Live market</span>
+              <span
+                className={`flex items-center gap-1.5 font-mono text-micro uppercase tracking-[0.08em] ${
+                  quoteState === "live"
+                    ? "text-signal"
+                    : quoteState === "stale"
+                      ? "text-gold"
+                      : "text-faint"
+                }`}
+                role="status"
+              >
+                <span
+                  className={`led ${
+                    quoteState === "live"
+                      ? "led-pulse bg-signal"
+                      : quoteState === "stale"
+                        ? "bg-gold"
+                        : quoteState === "cached"
+                          ? "bg-info"
+                          : "bg-faint"
+                  }`}
+                  aria-hidden="true"
+                />
+                {quoteStateText}
+              </span>
+            </div>
+            <dl className="mt-2 grid grid-cols-3 gap-[2px] border-2 border-line bg-line">
+              <div className="min-w-0 bg-night-900/70 px-2 py-1.5">
+                <dt className="label" title="Live best ask from the item's newest market frame">
+                  Market price
+                </dt>
+                <dd
+                  className={`mt-0.5 flex items-baseline gap-1 font-mono text-[15px] font-bold leading-none tabular-nums ${
+                    inRange ? "text-signal" : "text-info"
+                  }`}
+                >
+                  {fixedPrice(marketPrice)}
+                  <span className="text-[11px] font-normal text-faint">RLT</span>
+                </dd>
+              </div>
+              <div className="min-w-0 bg-night-900/70 px-2 py-1.5">
+                <dt className="label" title="Lowest allowed listing price from the latest live frame">
+                  Min price
+                </dt>
+                <dd className="mt-0.5 flex items-baseline gap-1 font-mono text-[15px] font-bold leading-none tabular-nums text-info">
+                  {fixedPrice(minPrice)}
+                  <span className="text-[11px] font-normal text-faint">RLT</span>
+                </dd>
+              </div>
+              <div className="min-w-0 bg-night-900/70 px-2 py-1.5">
+                <dt className="label" title="Highest allowed listing price from the latest live frame">
+                  Max price
+                </dt>
+                <dd className="mt-0.5 flex items-baseline gap-1 font-mono text-[15px] font-bold leading-none tabular-nums text-pink">
+                  {fixedPrice(maxPrice)}
+                  <span className="text-[11px] font-normal text-faint">RLT</span>
+                </dd>
+              </div>
+            </dl>
+            <small className="mt-1.5 block text-meta leading-snug text-faint">
+              Best ask and the marketplace&apos;s allowed price band, pushed live by the worker&apos;s market feed
+              for this item.
             </small>
           </div>
 

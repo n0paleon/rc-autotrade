@@ -51,6 +51,26 @@ export function shortId(value) {
   return value ? `${String(value).slice(0, 6)}…${String(value).slice(-4)}` : "—";
 }
 
+/**
+ * Normalises the free-text item field to the id the worker matches against.
+ *
+ * A raw id is trimmed and kept as-is. A marketplace URL is reduced to its last
+ * non-empty path segment, mirroring `normalize_item_id` in the backend. A URL
+ * that cannot be parsed falls back to the raw text so the form still has
+ * something to validate and the worker can reject it with a proper message.
+ */
+export function normalizeItemId(value) {
+  const text = String(value ?? "").trim();
+  if (!/^https?:\/\//i.test(text)) return text;
+  try {
+    const url = new URL(text);
+    const path = url.pathname.split("/").filter(Boolean).at(-1);
+    return path || text;
+  } catch {
+    return text;
+  }
+}
+
 export const ITEM_TYPE_LABELS = Object.freeze({
   miner: "miners",
   mutation_component: "parts",

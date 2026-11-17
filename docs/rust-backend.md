@@ -124,7 +124,7 @@ Rollercoin session — two of either will duplicate orders.
 | `GET /api/benchmark/history` | ➕ | Rust-only: local-clock buckets (`?hours=1..168&bucket=5m..1d&stage=total&tzOffsetMs=`) with per-bucket avg/p95/jitter plus a range summary, for the expanded latency chart |
 | `GET /api/item-info` | ✅ | resolver with type fallbacks; updates the target label/rarity |
 | `POST /api/session/push`, `/refresh` | ✅ | bridge merge rules + coalesced refresh |
-| `WS /ws` (`rcw.v1`) | ✅ | token as 2nd subprotocol or `?token=`; `hello`, `snapshot`, `ping`/`pong`, `refresh`, broadcasts |
+| `WS /ws` (`rcw.v1`) | ✅ | token as 2nd subprotocol or `?token=`; `hello`, `snapshot`, `ping`/`pong`, `refresh`, `watch`/`unwatch` per-item live `quote` broadcasts, state broadcasts |
 
 Static files: `dist/` is served with an SPA fallback to `index.html`, same as the
 Bun worker.

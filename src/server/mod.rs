@@ -37,7 +37,10 @@ mod sessions;
 mod settings;
 mod system;
 mod views;
+mod watch;
 mod ws;
+
+use watch::WatchRegistry;
 
 #[cfg(test)]
 mod tests;
@@ -67,6 +70,9 @@ pub struct AppState {
     /// buffer is shared (`Bytes`) so each socket clones a handle instead of
     /// re-encoding the payload.
     pub hub: broadcast::Sender<Bytes>,
+    /// Items a control socket asked to follow for the target form. Kept out of
+    /// `hub` frames until a frame for that exact id arrives.
+    watched: Mutex<WatchRegistry>,
     /// Queue into the market coalescer. `None` before the worker starts.
     pub market: Mutex<Option<tokio::sync::mpsc::Sender<Box<MarketTick>>>>,
     /// Bumped when the worker access key is rotated so open control sockets
@@ -120,6 +126,7 @@ impl AppState {
             last_frame_at: AtomicI64::new(0),
             config,
             hub,
+            watched: Mutex::new(WatchRegistry::default()),
             market: Mutex::new(None),
             auth_epoch,
             refresh_lock: tokio::sync::Mutex::new(()),
@@ -145,6 +152,31 @@ impl AppState {
     /// True while at least one control socket is connected.
     pub fn has_control_clients(&self) -> bool {
         self.hub.receiver_count() > 0
+    }
+
+    /// Registers one live-quote subscriber for `item_id`.
+    pub fn watch_item(&self, item_id: &str) {
+        lock(&self.watched).watch(item_id);
+    }
+
+    /// Releases one live-quote subscriber for `item_id`.
+    pub fn unwatch_item(&self, item_id: &str) {
+        lock(&self.watched).unwatch(item_id);
+    }
+
+    /// True while any item on any socket is being watched. The frame path uses
+    /// this to skip the extra normalisation entirely on a headless worker.
+    pub fn has_item_watchers(&self) -> bool {
+        !lock(&self.watched).is_empty()
+    }
+
+    pub fn is_item_watched(&self, item_id: &str) -> bool {
+        lock(&self.watched).contains(item_id)
+    }
+
+    /// True when a quote for `item_id` may be sent at `at`.
+    pub fn quote_is_due(&self, item_id: &str, at: i64) -> bool {
+        lock(&self.watched).quote_is_due(item_id, at)
     }
 
     pub fn set_port(&self, port: u16) {

@@ -1,6 +1,6 @@
 //! `/ws` control socket: handshake, auth and the per-socket frame loop.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,6 +21,7 @@ use super::views::{
 use crate::clock::now_ms;
 use crate::constants::{APP_NAME, APP_VERSION, TELEMETRY_INTERVAL_SECS};
 use crate::lock::lock;
+use crate::validation;
 
 pub(super) async fn ws_handler(
     ws: WebSocketUpgrade,
@@ -80,6 +81,10 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, authorized: bool
     telemetry_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     telemetry_tick.tick().await; // the first tick is immediate
     let mut alive = true;
+    // Item ids this socket asked the worker to follow for a live quote. The
+    // registry is reference-counted, so this set is also the cleanup list for
+    // every exit path below.
+    let mut watched_items: HashSet<String> = HashSet::new();
 
     let hello = {
         let mut snapshot = current_snapshot(&state);
@@ -154,6 +159,21 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, authorized: bool
                                 let frame = json!({ "type": "snapshot", "data": snapshot, "at": now_ms() });
                                 if sender.send(Message::Text(frame.to_string().into())).await.is_err() {
                                     break;
+                                }
+                            }
+                            "watch" | "unwatch" => {
+                                let item_id = validation::normalize_item_id(
+                                    message.get("itemId").unwrap_or(&Value::Null),
+                                );
+                                if let Some(item_id) = item_id {
+                                    let key = item_id.to_ascii_lowercase();
+                                    if kind == "watch" {
+                                        if watched_items.insert(key.clone()) {
+                                            state.watch_item(&key);
+                                        }
+                                    } else if watched_items.remove(&key) {
+                                        state.unwatch_item(&key);
+                                    }
                                 }
                             }
                             _ => {}
@@ -243,6 +263,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>, authorized: bool
                 break;
             }
         }
+    }
+    for item_id in watched_items {
+        state.unwatch_item(&item_id);
     }
     state.logger.debug_lazy("control", || {
         format!(

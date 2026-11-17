@@ -325,7 +325,7 @@ async fn feed_to_fill_round_trip() {
 
 #[tokio::test]
 async fn control_socket_pushes_live_telemetry() {
-    use futures_util::StreamExt;
+    use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message as WsMessage;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -408,6 +408,61 @@ async fn control_socket_pushes_live_telemetry() {
     assert!(
         latency_seen,
         "no periodic `latency` push reached the socket"
+    );
+
+    // A target form subscribes to one id and must receive compact quotes even
+    // though the stream is separate from the full target `market` ticks.
+    const WATCHED_ID: &str = "6571aa39ca8bfef34adcd9e9";
+    socket
+        .send(WsMessage::Text(
+            json!({ "type": "watch", "itemId": WATCHED_ID })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .expect("send watch");
+
+    let mut quote = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while quote.is_none() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let Ok(Some(Ok(message))) = tokio::time::timeout(remaining, socket.next()).await else {
+            break;
+        };
+        let WsMessage::Text(text) = message else {
+            continue;
+        };
+        let Ok(frame) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        if frame.get("type").and_then(Value::as_str) == Some("quote") {
+            quote = frame.get("data").cloned();
+        }
+    }
+    let quote = quote.expect("no `quote` push reached the socket");
+    assert_eq!(quote["itemId"], WATCHED_ID);
+    assert!(quote["price"].as_f64().is_some_and(|price| price > 0.0));
+    assert!(quote["allowedPriceMin"].as_f64().is_some());
+    assert!(quote["allowedPriceMax"].as_f64().is_some());
+
+    socket
+        .send(WsMessage::Text(
+            json!({ "type": "unwatch", "itemId": WATCHED_ID })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .expect("send unwatch");
+    assert!(
+        wait_for("watch released", {
+            let state = state.clone();
+            move || !state.has_item_watchers()
+        })
+        .await,
+        "unwatch did not release the item subscription"
     );
 
     server.abort();
