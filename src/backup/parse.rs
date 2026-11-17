@@ -338,6 +338,8 @@ pub fn parse_backup(raw: &Value, now: i64) -> ParseOutcome {
             spent_rlt: non_negative(stats.get("spentRlt"), derived.spent_rlt),
             bought: whole(stats.get("bought"), derived.bought, 1_000_000_000),
             filled: whole(stats.get("filled"), derived.filled, 1_000_000_000),
+            // Old backups have no win counter; the loot log can rebuild it.
+            wins: whole(stats.get("wins"), derived.wins, 1_000_000_000),
             failed: whole(stats.get("failed"), derived.failed, 1_000_000_000),
             orders_sent: whole(stats.get("ordersSent"), derived.orders_sent, 1_000_000_000),
         },

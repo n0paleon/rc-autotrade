@@ -62,6 +62,8 @@ CREATE TABLE IF NOT EXISTS stats (
   spent_rlt   REAL NOT NULL DEFAULT 0,
   bought      INTEGER NOT NULL DEFAULT 0,
   filled      INTEGER NOT NULL DEFAULT 0,
+  -- Non-negative-profit fills; the session winrate numerator.
+  wins        INTEGER NOT NULL DEFAULT 0,
   failed      INTEGER NOT NULL DEFAULT 0,
   orders_sent INTEGER NOT NULL DEFAULT 0
 );
@@ -98,6 +100,8 @@ CREATE TABLE IF NOT EXISTS report_products (
   item_id     TEXT NOT NULL DEFAULT '',
   label       TEXT NOT NULL DEFAULT '',
   fills       INTEGER NOT NULL DEFAULT 0,
+  -- Fills that broke even or made profit. Losing fills are not wins.
+  wins        INTEGER NOT NULL DEFAULT 0,
   failed      INTEGER NOT NULL DEFAULT 0,
   qty         INTEGER NOT NULL DEFAULT 0,
   -- Units an order asked for but never obtained. Unlike `qty` (fulfilled
@@ -265,6 +269,40 @@ pub(super) fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
             "UPDATE report_products AS p SET failed_qty = COALESCE((
                  SELECT SUM(COALESCE(o.requested_qty, 0)) FROM orders o
                  WHERE o.status = 'failed' AND (
+                   CASE
+                     WHEN trim(o.item_id) <> '' THEN lower(trim(o.item_id))
+                     WHEN trim(o.label) <> '' THEN 'label:' || lower(trim(o.label))
+                     ELSE 'unknown'
+                   END
+                 ) = p.product_key
+             ), 0)",
+        )?;
+    }
+
+    // The session winrate has the same definition as the report winrate. An
+    // upgraded database rebuilds it from the loot log instead of showing 0%.
+    if add_column_if_missing(conn, "stats", "wins", "INTEGER NOT NULL DEFAULT 0")? {
+        conn.execute_batch(
+            "UPDATE stats SET wins = (
+                 SELECT COUNT(*) FROM orders
+                 WHERE status <> 'failed' AND profit_rlt >= 0
+             ) WHERE id = 1",
+        )?;
+    }
+
+    // Wins are the non-negative-profit fills behind the report winrate. The loot
+    // log keeps every order's profit, so an upgraded database can rebuild the
+    // counter exactly instead of reporting 0% until the next fill.
+    if add_column_if_missing(
+        conn,
+        "report_products",
+        "wins",
+        "INTEGER NOT NULL DEFAULT 0",
+    )? {
+        conn.execute_batch(
+            "UPDATE report_products AS p SET wins = COALESCE((
+                 SELECT COUNT(*) FROM orders o
+                 WHERE o.status <> 'failed' AND o.profit_rlt >= 0 AND (
                    CASE
                      WHEN trim(o.item_id) <> '' THEN lower(trim(o.item_id))
                      WHEN trim(o.label) <> '' THEN 'label:' || lower(trim(o.label))

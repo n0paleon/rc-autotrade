@@ -8,6 +8,10 @@ pub struct Stats {
     pub spent_rlt: f64,
     pub bought: i64,
     pub filled: i64,
+    /// Filled orders with non-negative profit. Zero profit is a win. This is
+    /// the numerator of the session winrate (the fill count stays in `filled`).
+    #[serde(default)]
+    pub wins: i64,
     pub failed: i64,
     pub orders_sent: i64,
 }

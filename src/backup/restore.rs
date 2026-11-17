@@ -100,13 +100,14 @@ pub fn restore_backup(
 
     tx.execute(
         "UPDATE stats SET since = ?1, profit_rlt = ?2, spent_rlt = ?3, bought = ?4,
-                filled = ?5, failed = ?6, orders_sent = ?7 WHERE id = 1",
+                filled = ?5, wins = ?6, failed = ?7, orders_sent = ?8 WHERE id = 1",
         params![
             stats.since,
             stats.profit_rlt,
             stats.spent_rlt,
             stats.bought,
             stats.filled,
+            stats.wins,
             stats.failed,
             stats.orders_sent
         ],
@@ -196,6 +197,23 @@ pub fn restore_backup(
         )
         .map_err(|error| format!("could not restore profit row: {error}"))?;
     }
+
+    // Backups written before the winrate fix have no `wins` counter. The loot
+    // log restored above still carries every order's profit, so rebuild the
+    // counter here rather than restoring a report that reads 0% winrate.
+    tx.execute_batch(
+        "UPDATE report_products AS p SET wins = COALESCE((
+             SELECT COUNT(*) FROM orders o
+             WHERE o.status <> 'failed' AND o.profit_rlt >= 0 AND (
+               CASE
+                 WHEN trim(o.item_id) <> '' THEN lower(trim(o.item_id))
+                 WHEN trim(o.label) <> '' THEN 'label:' || lower(trim(o.label))
+                 ELSE 'unknown'
+               END
+             ) = p.product_key
+         ), 0)",
+    )
+    .map_err(|error| format!("could not rebuild win counters: {error}"))?;
 
     tx.execute(
         "INSERT INTO meta (key, value) VALUES ('created_at', ?1)

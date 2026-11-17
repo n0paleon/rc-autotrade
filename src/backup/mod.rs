@@ -57,6 +57,8 @@ impl From<ReportProduct> for Product {
             item_id: value.item_id,
             label: value.label,
             fills: value.fills,
+            // Backups carry no win counter; restore rebuilds it from the loot log.
+            wins: 0,
             failed: value.failed,
             qty: value.qty,
             failed_qty: value.failed_qty,

@@ -36,6 +36,7 @@ impl State {
                 spent_rlt: 0.0,
                 bought: 0,
                 filled: 0,
+                wins: 0,
                 failed: 0,
                 orders_sent: 0,
             },

@@ -42,6 +42,47 @@ fn records_orders_in_history_and_report() {
 }
 
 #[test]
+fn report_winrate_counts_only_non_negative_profit_fills() {
+    let mut store = store("winrate-profit");
+    let at = now_ms();
+
+    let mut win = make_entry("o1", "item-1", "Hashboard", "filled", 1, at);
+    win.profit_rlt = 0.05;
+    store.add_history(win).unwrap();
+
+    // Breaking even still counts as a win.
+    let mut even = make_entry("o2", "item-1", "Hashboard", "filled", 1, at + 1);
+    even.profit_rlt = 0.0;
+    store.add_history(even).unwrap();
+
+    // A losing fill is a completed attempt but not a win.
+    let mut loss = make_entry("o3", "item-1", "Hashboard", "filled", 1, at + 2);
+    loss.profit_rlt = -0.25;
+    store.add_history(loss).unwrap();
+
+    store
+        .add_history(make_entry("o4", "item-1", "Hashboard", "failed", 0, at + 3))
+        .unwrap();
+
+    let report = store.report_view();
+    assert_eq!(report.totals.fills, 3);
+    assert_eq!(report.totals.wins, 2);
+    assert_eq!(report.totals.failed, 1);
+    // Two wins out of four completed attempts.
+    assert_eq!(report.totals.success_pct, Some(50));
+    assert_eq!(report.items[0].wins, 2);
+    assert_eq!(report.items[0].success_pct, Some(50));
+
+    // The session HUD uses the same definition and keeps its own counter.
+    assert_eq!(store.state.stats.wins, 2);
+    let stored: i64 = store
+        .db
+        .query_row("SELECT wins FROM stats WHERE id = 1", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(stored, 2);
+}
+
+#[test]
 fn missed_quantity_tracks_the_attempted_units_of_failed_orders() {
     let mut store = store("missed-qty");
     let at = now_ms();

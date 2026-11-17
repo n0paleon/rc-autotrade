@@ -473,7 +473,7 @@ function Hud({ snapshot, epm, marketEvents }) {
   const armed = configs.filter((config) => config.active).length;
   const session = sessionSummary(snapshot.session, snapshot.settings, snapshot.worker, now);
   const profit = Number(stats.profitRlt) || 0;
-  const winrate = winRatePct(stats.filled, stats.ordersSent);
+  const winrate = winRatePct(stats.wins, stats.ordersSent);
 
   // A confirmed fill is the headline event on this surface: pulse the profit
   // figure when it rises, and stay still for every other telemetry tick.
@@ -518,7 +518,7 @@ function Hud({ snapshot, epm, marketEvents }) {
       <article
         data-accent="pink"
         className="stat-tile"
-        title="Filled orders divided by every order sent upstream. Orders still waiting for a result stay in the denominator."
+        title="Fills that broke even or made profit divided by every order sent upstream. Losses and orders still waiting for a result stay in the denominator."
       >
         <div className="flex items-center justify-between gap-2">
           <span className="label">Winrate</span>
@@ -531,7 +531,7 @@ function Hud({ snapshot, epm, marketEvents }) {
           {winrate == null ? "—" : `${winrate}%`}
         </div>
         <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
-          <span id="stat-winrate-filled">{formatInt(stats.filled)}</span> filled / <span id="stat-orders-sent">{formatInt(stats.ordersSent)}</span> sent
+          <span id="stat-winrate-wins">{formatInt(stats.wins)}</span> won / <span id="stat-orders-sent">{formatInt(stats.ordersSent)}</span> sent
         </div>
       </article>
       <article data-accent="cyan" className="stat-tile">

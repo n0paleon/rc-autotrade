@@ -71,13 +71,14 @@ impl Store {
         let stats = self.state.stats;
         tx.execute(
             "UPDATE stats SET since = ?1, profit_rlt = ?2, spent_rlt = ?3, bought = ?4,
-                    filled = ?5, failed = ?6, orders_sent = ?7 WHERE id = 1",
+                    filled = ?5, wins = ?6, failed = ?7, orders_sent = ?8 WHERE id = 1",
             params![
                 stats.since,
                 stats.profit_rlt,
                 stats.spent_rlt,
                 stats.bought,
                 stats.filled,
+                stats.wins,
                 stats.failed,
                 stats.orders_sent
             ],
@@ -316,6 +317,7 @@ impl Store {
                 item_id: entry.item_id.clone(),
                 label: entry.label.chars().take(48).collect(),
                 fills: 0,
+                wins: 0,
                 failed: 0,
                 qty: 0,
                 failed_qty: 0,
@@ -342,6 +344,15 @@ impl Store {
             product.failed_qty += attempted_qty(entry);
         } else {
             product.fills += 1;
+            // A fill only counts as a win when it broke even or made profit.
+            // Zero (and `-0.0`) is a win; a losing fill is still a completed
+            // attempt, so it stays in the denominator of the winrate.
+            if entry.profit_rlt >= 0.0 {
+                product.wins += 1;
+                // The session HUD uses the same definition of a win as the
+                // report, so both counters move together here.
+                self.state.stats.wins += 1;
+            }
             product.qty += entry.qty.max(0);
             product.spent_rlt = round_price(product.spent_rlt + entry.total_price.max(0.0));
             product.profit_rlt = round_price(product.profit_rlt + entry.profit_rlt);
@@ -379,13 +390,14 @@ impl Store {
     fn write_product(&self, key: &str, product: &Product) -> rusqlite::Result<()> {
         self.db.execute(
             "INSERT INTO report_products
-             (product_key, item_id, label, fills, failed, qty, failed_qty, spent_rlt, profit_rlt,
+             (product_key, item_id, label, fills, wins, failed, qty, failed_qty, spent_rlt, profit_rlt,
               first_at, last_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(product_key) DO UPDATE SET
                item_id = excluded.item_id,
                label = excluded.label,
                fills = excluded.fills,
+               wins = excluded.wins,
                failed = excluded.failed,
                qty = excluded.qty,
                failed_qty = excluded.failed_qty,
@@ -398,6 +410,7 @@ impl Store {
                 product.item_id,
                 product.label,
                 product.fills,
+                product.wins,
                 product.failed,
                 product.qty,
                 product.failed_qty,
@@ -422,6 +435,7 @@ impl Store {
                     item_id: product.item_id.clone(),
                     label: product.label.clone(),
                     fills: product.fills,
+                    wins: product.wins,
                     failed: product.failed,
                     qty: product.qty,
                     failed_qty: product.failed_qty,
@@ -440,7 +454,7 @@ impl Store {
                         None
                     },
                     success_pct: if completed > 0 {
-                        Some((product.fills as f64 / completed as f64 * 100.0).round() as i64)
+                        Some((product.wins as f64 / completed as f64 * 100.0).round() as i64)
                     } else {
                         None
                     },
@@ -463,6 +477,7 @@ impl Store {
         let mut totals = ReportTotals {
             products: items.len(),
             fills: 0,
+            wins: 0,
             failed: 0,
             qty: 0,
             failed_qty: 0,
@@ -473,6 +488,7 @@ impl Store {
         };
         for item in &items {
             totals.fills += item.fills;
+            totals.wins += item.wins;
             totals.failed += item.failed;
             totals.qty += item.qty;
             totals.failed_qty += item.failed_qty;
@@ -488,7 +504,7 @@ impl Store {
         };
         let completed = totals.fills + totals.failed;
         totals.success_pct = if completed > 0 {
-            Some((totals.fills as f64 / completed as f64 * 100.0).round() as i64)
+            Some((totals.wins as f64 / completed as f64 * 100.0).round() as i64)
         } else {
             None
         };

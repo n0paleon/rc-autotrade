@@ -90,6 +90,10 @@ pub struct Product {
     pub item_id: String,
     pub label: String,
     pub fills: i64,
+    /// Filled orders whose profit was non-negative. Zero profit counts as a
+    /// win; a loss does not. This is the numerator of the report winrate.
+    #[serde(default)]
+    pub wins: i64,
     pub failed: i64,
     /// Units actually obtained by the filled orders.
     pub qty: i64,
@@ -111,6 +115,7 @@ pub struct ProductView {
     pub item_id: String,
     pub label: String,
     pub fills: i64,
+    pub wins: i64,
     pub failed: i64,
     pub qty: i64,
     pub failed_qty: i64,
@@ -128,13 +133,14 @@ pub struct ProductView {
 pub struct ReportTotals {
     pub products: usize,
     pub fills: i64,
+    pub wins: i64,
     pub failed: i64,
     pub qty: i64,
     pub failed_qty: i64,
     pub spent_rlt: f64,
     pub profit_rlt: f64,
     pub margin_pct: Option<f64>,
-    /// Filled orders as a share of completed attempts (fills + failures).
+    /// Non-negative-profit fills as a share of completed attempts.
     pub success_pct: Option<i64>,
 }
 
