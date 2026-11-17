@@ -17,6 +17,7 @@ import {
   runtimeHot,
   runtimeReconciling,
   thresholdClass,
+  trimPrice,
   utilizationClass,
   winRatePct
 } from "../src/lib/format.js";
@@ -191,6 +192,19 @@ test("winRatePct uses every sent order as the denominator", () => {
   assert.equal(winRatePct(null, 10), null);
   assert.equal(winRatePct(5, null), null);
   assert.equal(winRatePct(5, "not a number"), null);
+});
+
+test("trimPrice keeps micro precision but drops trailing zeros", () => {
+  // The live quote cells must not spend six decimals on a whole-RLT ceiling:
+  // "1,000,000.000000" is the same price as "1,000,000" and overflows the cell.
+  assert.equal(trimPrice(1_000_000), "1,000,000");
+  assert.equal(trimPrice(999_999.999999), "999,999.999999");
+  assert.equal(trimPrice(0.0149), "0.0149");
+  assert.equal(trimPrice(0.007455), "0.007455");
+  assert.equal(trimPrice(0.5), "0.5");
+  assert.equal(trimPrice(null), "—");
+  assert.equal(trimPrice(undefined), "—");
+  assert.equal(trimPrice("not a number"), "—");
 });
 
 test("formatPreciseMs keeps sub-millisecond SQLite timings visible", () => {

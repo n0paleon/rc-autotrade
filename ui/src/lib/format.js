@@ -10,10 +10,14 @@ export function fixedPrice(value) {
 
 const trimFmt = new Intl.NumberFormat("en-US", { maximumFractionDigits: 6 });
 
-/** Same precision as fixedPrice, but trailing zeros are dropped. */
+/**
+ * Same precision as fixedPrice, but trailing zeros are dropped. Nullish and
+ * non-numeric values render as an em dash like the other display formatters.
+ */
 export function trimPrice(value) {
   const number = Number(value);
-  return Number.isFinite(number) ? trimFmt.format(number) : "—";
+  if (value === null || value === undefined || !Number.isFinite(number)) return "—";
+  return trimFmt.format(number);
 }
 
 export function formatRlt(value) {

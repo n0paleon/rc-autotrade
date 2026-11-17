@@ -5,7 +5,8 @@ import {
   fixedPrice,
   normalizeItemId,
   relTime,
-  shortId
+  shortId,
+  trimPrice
 } from "../lib/format.js";
 import { tabKeyDown, useNow } from "../lib/hooks.js";
 import { isQuoteFresh, quoteFor } from "../lib/quote.js";
@@ -370,7 +371,7 @@ export function TargetModal({ config, onClose, worker, notify, markupPct = 0, pr
           </div>
 
           <div
-            className={`sm:col-span-2 border-2 bg-night-950/50 px-3 py-2.5 ${
+            className={`@container sm:col-span-2 border-2 bg-night-950/50 px-3 py-2.5 ${
               quoteState === "live"
                 ? "border-signal/50"
                 : quoteState === "stale"
@@ -406,35 +407,38 @@ export function TargetModal({ config, onClose, worker, notify, markupPct = 0, pr
                 {quoteStateText}
               </span>
             </div>
-            <dl className="mt-2 grid grid-cols-3 gap-[2px] border-2 border-line bg-line">
-              <div className="min-w-0 bg-night-900/70 px-2 py-1.5">
+            {/* Three columns only when the panel is wide enough for a band
+                ceiling like "1,000,000"; narrower panels turn each stat into
+                its own label/value row so the figure never spills the border. */}
+            <dl className="mt-2 grid grid-cols-1 gap-[2px] border-2 border-line bg-line @[24rem]:grid-cols-3">
+              <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 bg-night-900/70 px-2 py-1.5 @[24rem]:block">
                 <dt className="label" title="Live best ask from the item's newest market frame">
                   Market price
                 </dt>
                 <dd
-                  className={`mt-0.5 flex items-baseline gap-1 font-mono text-[15px] font-bold leading-none tabular-nums ${
+                  className={`flex min-w-0 flex-wrap items-baseline gap-x-1 font-mono text-[15px] font-bold leading-none tabular-nums @[24rem]:mt-0.5 ${
                     inRange ? "text-signal" : "text-info"
                   }`}
                 >
-                  {fixedPrice(marketPrice)}
+                  <span className="min-w-0 [overflow-wrap:anywhere]">{trimPrice(marketPrice)}</span>
                   <span className="text-[11px] font-normal text-faint">RLT</span>
                 </dd>
               </div>
-              <div className="min-w-0 bg-night-900/70 px-2 py-1.5">
+              <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 bg-night-900/70 px-2 py-1.5 @[24rem]:block">
                 <dt className="label" title="Lowest allowed listing price from the latest live frame">
                   Min price
                 </dt>
-                <dd className="mt-0.5 flex items-baseline gap-1 font-mono text-[15px] font-bold leading-none tabular-nums text-info">
-                  {fixedPrice(minPrice)}
+                <dd className="flex min-w-0 flex-wrap items-baseline gap-x-1 font-mono text-[15px] font-bold leading-none tabular-nums text-info @[24rem]:mt-0.5">
+                  <span className="min-w-0 [overflow-wrap:anywhere]">{trimPrice(minPrice)}</span>
                   <span className="text-[11px] font-normal text-faint">RLT</span>
                 </dd>
               </div>
-              <div className="min-w-0 bg-night-900/70 px-2 py-1.5">
+              <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 bg-night-900/70 px-2 py-1.5 @[24rem]:block">
                 <dt className="label" title="Highest allowed listing price from the latest live frame">
                   Max price
                 </dt>
-                <dd className="mt-0.5 flex items-baseline gap-1 font-mono text-[15px] font-bold leading-none tabular-nums text-pink">
-                  {fixedPrice(maxPrice)}
+                <dd className="flex min-w-0 flex-wrap items-baseline gap-x-1 font-mono text-[15px] font-bold leading-none tabular-nums text-pink @[24rem]:mt-0.5">
+                  <span className="min-w-0 [overflow-wrap:anywhere]">{trimPrice(maxPrice)}</span>
                   <span className="text-[11px] font-normal text-faint">RLT</span>
                 </dd>
               </div>
