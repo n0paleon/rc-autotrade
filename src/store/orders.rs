@@ -458,11 +458,6 @@ impl Store {
                     } else {
                         None
                     },
-                    fill_pct: if completed > 0 {
-                        Some((product.fills as f64 / completed as f64 * 100.0).round() as i64)
-                    } else {
-                        None
-                    },
                 }
             })
             .collect();
@@ -490,7 +485,6 @@ impl Store {
             profit_rlt: 0.0,
             margin_pct: None,
             success_pct: None,
-            fill_pct: None,
         };
         for item in &items {
             totals.fills += item.fills;
@@ -511,11 +505,6 @@ impl Store {
         let completed = totals.fills + totals.failed;
         totals.success_pct = if completed > 0 {
             Some((totals.wins as f64 / completed as f64 * 100.0).round() as i64)
-        } else {
-            None
-        };
-        totals.fill_pct = if completed > 0 {
-            Some((totals.fills as f64 / completed as f64 * 100.0).round() as i64)
         } else {
             None
         };
