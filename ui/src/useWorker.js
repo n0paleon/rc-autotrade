@@ -262,7 +262,8 @@ function deriveBackupReport(data, since) {
       wins,
       avgBuy: qty > 0 ? spentRlt / qty : 0,
       marginPct: spentRlt > 0 ? Math.round((profitRlt / spentRlt) * 1000) / 10 : null,
-      successPct: completed > 0 ? Math.round((wins / completed) * 100) : null
+      successPct: completed > 0 ? Math.round((wins / completed) * 100) : null,
+      fillPct: completed > 0 ? Math.round((fills / completed) * 100) : null
     };
   }).sort((a, b) => b.profitRlt - a.profitRlt || b.spentRlt - a.spentRlt);
   const totals = items.reduce((sum, item) => {
@@ -280,6 +281,7 @@ function deriveBackupReport(data, since) {
     ? Math.round((totals.profitRlt / totals.spentRlt) * 1000) / 10
     : null;
   totals.successPct = winRatePct(totals.wins, totals.fills + totals.failed);
+  totals.fillPct = winRatePct(totals.fills, totals.fills + totals.failed);
   return { since, totals, items };
 }
 

@@ -47,6 +47,9 @@ pub(super) struct Runtime {
     pub(super) reconcile: Option<Reconcile>,
     pub(super) orders: i64,
     pub(super) fills: i64,
+    /// Fills with non-negative profit. Zero profit is a win. This is the
+    /// per-target winrate numerator; `fills` stays the fill-rate numerator.
+    pub(super) wins: i64,
     pub(super) failures: i64,
     pub(super) last_result: Option<Value>,
     pub(super) failure_streak: i64,
@@ -87,6 +90,7 @@ impl Runtime {
             reconcile: None,
             orders: 0,
             fills: 0,
+            wins: 0,
             failures: 0,
             last_result: None,
             failure_streak: 0,
