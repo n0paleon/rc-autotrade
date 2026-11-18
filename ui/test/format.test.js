@@ -16,6 +16,7 @@ import {
   runtimeEffectiveStock,
   runtimeHot,
   runtimeReconciling,
+  successStats,
   thresholdClass,
   trimPrice,
   utilizationClass,
@@ -180,7 +181,34 @@ test("formats percentages and colors utilization brackets", () => {
   assert.equal(thresholdClass(undefined, 80, 92), "text-muted");
 });
 
-test("winRatePct uses every sent order as the denominator", () => {
+test("successStats separates profit-based winrate from fill-rate", () => {
+  // The persistent report row wins over the process-local runtime counters.
+  const config = { runtime: { fills: 9, wins: 1, failures: 1 } };
+  const product = { fills: 3, wins: 2, failed: 1 };
+  const stats = successStats(config, product);
+  assert.equal(stats.completed, 4);
+  // Two non-negative-profit fills out of four completed attempts.
+  assert.equal(stats.winRate, 50);
+  // Three fills out of the same four completed attempts.
+  assert.equal(stats.fillRate, 75);
+
+  // Without a report row the runtime counters are used as a fallback.
+  const runtime = successStats(config);
+  assert.equal(runtime.winRate, 10);
+  assert.equal(runtime.fillRate, 90);
+
+  // With no completions neither rate is defined.
+  const empty = successStats({ runtime: { fills: 0, wins: 0, failures: 0 } });
+  assert.equal(empty.winRate, null);
+  assert.equal(empty.fillRate, null);
+
+  // A worker without the new counter falls back to treating fills as wins.
+  const legacy = successStats({ runtime: { fills: 2, failures: 2 } });
+  assert.equal(legacy.winRate, 50);
+  assert.equal(legacy.fillRate, 50);
+});
+
+test("winRatePct clamps a ratio of wins or fills over completed orders", () => {
   assert.equal(winRatePct(0, 0), null);
   assert.equal(winRatePct(0, 10), 0);
   assert.equal(winRatePct(5, 10), 50);

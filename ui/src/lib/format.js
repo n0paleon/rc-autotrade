@@ -236,24 +236,41 @@ export function lastText(config) {
   return "WAITING FOR MARKET FRAME";
 }
 
-export function successStats(config) {
+/**
+ * Win/fill rates for one target. The profit report row is the primary source:
+ * it lives in SQLite and survives a worker restart. The runtime counters are
+ * process-local, so they are only a fallback for a target that has no report
+ * row yet (for example one whose row was trimmed from a very old database).
+ */
+export function successStats(config, product) {
   const runtime = config?.runtime || {};
-  const fills = Math.max(0, Number(runtime.fills) || 0);
-  const failures = Math.max(0, Number(runtime.failures) || 0);
+  const source = product
+    ? { fills: product.fills, wins: product.wins, failures: product.failed }
+    : runtime;
+  const fills = Math.max(0, Number(source.fills) || 0);
+  const failures = Math.max(0, Number(source.failures) || 0);
+  // An older worker or backup may have a report row without the win counter.
+  // Treat its fills as wins so the winrate cell still has a value.
+  const wins = source.wins == null
+    ? fills
+    : Math.max(0, Math.min(fills, Number(source.wins) || 0));
   const completed = fills + failures;
   return {
     fills,
+    wins,
     failures,
     completed,
-    rate: completed > 0 ? Math.round((fills / completed) * 100) : null
+    // Non-negative-profit fills (zero profit included) over completed attempts.
+    winRate: completed > 0 ? Math.round((wins / completed) * 100) : null,
+    // Fills over completed attempts, regardless of profit.
+    fillRate: completed > 0 ? Math.round((fills / completed) * 100) : null
   };
 }
 
 /**
- * Filled orders as a share of every order sent upstream. The worker counts an
- * order the moment it is dispatched, so a result that is still in flight
- * stays in the denominator and the rate can dip until it lands. The ratio is
- * clamped because a late duplicate result must never print above 100%.
+ * A ratio as a whole percentage of its denominator, clamped to 0–100 so a late
+ * duplicate result can never print above 100%. Callers pass the numerator and
+ * denominator they care about (wins or fills over completed orders).
  */
 export function winRatePct(filled, sent) {
   if (filled == null || sent == null) return null;

@@ -36,9 +36,12 @@ fn records_orders_in_history_and_report() {
     assert_eq!(report.items.len(), 1);
     assert_eq!(report.items[0].qty, 2);
     assert!((report.items[0].spent_rlt - 0.2).abs() < 1e-9);
-    // One filled and one failed order: half of the completed attempts won.
+    // One filled and one failed order: half of the completed attempts won,
+    // and half of them filled.
     assert_eq!(report.totals.success_pct, Some(50));
     assert_eq!(report.items[0].success_pct, Some(50));
+    assert_eq!(report.totals.fill_pct, Some(50));
+    assert_eq!(report.items[0].fill_pct, Some(50));
 }
 
 #[test]
@@ -68,10 +71,12 @@ fn report_winrate_counts_only_non_negative_profit_fills() {
     assert_eq!(report.totals.fills, 3);
     assert_eq!(report.totals.wins, 2);
     assert_eq!(report.totals.failed, 1);
-    // Two wins out of four completed attempts.
+    // Two wins out of four completed attempts, three of which filled.
     assert_eq!(report.totals.success_pct, Some(50));
     assert_eq!(report.items[0].wins, 2);
     assert_eq!(report.items[0].success_pct, Some(50));
+    assert_eq!(report.totals.fill_pct, Some(75));
+    assert_eq!(report.items[0].fill_pct, Some(75));
 
     // The session HUD uses the same definition and keeps its own counter.
     assert_eq!(store.state.stats.wins, 2);
@@ -80,6 +85,34 @@ fn report_winrate_counts_only_non_negative_profit_fills() {
         .query_row("SELECT wins FROM stats WHERE id = 1", [], |row| row.get(0))
         .unwrap();
     assert_eq!(stored, 2);
+}
+
+#[test]
+fn report_rates_survive_a_worker_restart() {
+    let dir = temp_dir("winrate-persist");
+    let logger = Arc::new(Logger::new("error"));
+    {
+        let mut store = Store::open(dir.clone(), logger.clone()).unwrap();
+        let at = now_ms();
+        let mut win = make_entry("o1", "item-1", "Hashboard", "filled", 1, at);
+        win.profit_rlt = 0.05;
+        store.add_history(win).unwrap();
+        let mut loss = make_entry("o2", "item-1", "Hashboard", "filled", 1, at + 1);
+        loss.profit_rlt = -0.25;
+        store.add_history(loss).unwrap();
+        store
+            .add_history(make_entry("o3", "item-1", "Hashboard", "failed", 0, at + 2))
+            .unwrap();
+    }
+
+    // Nothing is replayed here: the rates come straight from the SQLite report
+    // row, so the target card keeps its numbers after a restart.
+    let reopened = Store::open(dir.clone(), logger).unwrap();
+    let report = reopened.report_view();
+    assert_eq!(report.items[0].wins, 1);
+    assert_eq!(report.totals.success_pct, Some(33));
+    assert_eq!(report.totals.fill_pct, Some(67));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

@@ -17,6 +17,7 @@ impl Engine {
         for runtime in self.runtime.values_mut() {
             runtime.orders = 0;
             runtime.fills = 0;
+            runtime.wins = 0;
             runtime.failures = 0;
             runtime.last_result = None;
         }
@@ -100,6 +101,7 @@ pub(super) fn runtime_json(runtime: &Runtime, label: String) -> Value {
     value.insert("inflight".into(), json!(runtime.inflight));
     value.insert("orders".into(), json!(runtime.orders));
     value.insert("fills".into(), json!(runtime.fills));
+    value.insert("wins".into(), json!(runtime.wins));
     value.insert("failures".into(), json!(runtime.failures));
     value.insert("lastResult".into(), json!(runtime.last_result));
     value.insert("failureStreak".into(), json!(runtime.failure_streak));

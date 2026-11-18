@@ -144,6 +144,11 @@ impl Engine {
             let stock_after = {
                 let runtime = self.runtime_for(&item_id, pending_meta.qty.max(1));
                 runtime.fills += 1;
+                // Zero profit breaks even and counts as a win, matching the
+                // session and report winrate counters.
+                if profit >= 0.0 {
+                    runtime.wins += 1;
+                }
                 runtime.last_result = Some(json!({
                     "status": "filled", "at": now, "qty": fill.count,
                     "price": unit_price, "profit": profit

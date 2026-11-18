@@ -477,3 +477,41 @@ fn a_fill_that_beats_the_http_response_still_rearms() {
     let snapshot = h.engine.runtime_snapshot(&h.store);
     assert_eq!(snapshot["6319f7baa8ce530569ed16b9"]["inflight"], true);
 }
+
+#[test]
+fn per_target_winrate_counts_non_negative_profit_fills() {
+    let mut h = harness();
+    let key = "6319f7baa8ce530569ed16b9";
+
+    // Every order is triggered at 0.09 RLT, under the 0.10 target. The result
+    // price decides the profit: positive, zero, then negative.
+    for (index, (id, fill_price_raw)) in [
+        ("order-1", 90_000),
+        ("order-2", 100_000),
+        ("order-3", 110_000),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let at = 1_000_001 + index as i64 * 2_000;
+        h.now.store(at, Ordering::SeqCst);
+        let events = h
+            .engine
+            .handle_frame(&mut h.store, &market_frame(90_000, 3), at, true);
+        let intent = submissions(&events)[0].clone();
+        accept(&mut h, &intent, id, at + 100);
+        h.now.store(at + 400, Ordering::SeqCst);
+        let done = h.engine.handle_frame(
+            &mut h.store,
+            &fill_frame(id, 3, fill_price_raw * 3, ORDER_STATUS_FILLED),
+            at + 400,
+            true,
+        );
+        assert!(submissions(&done).is_empty(), "a full fill must not rearm");
+    }
+
+    let snapshot = h.engine.runtime_snapshot(&h.store);
+    assert_eq!(snapshot[key]["fills"], 3);
+    // Breaking even counts as a win; only the loss at 0.11 stays a non-win.
+    assert_eq!(snapshot[key]["wins"], 2);
+}

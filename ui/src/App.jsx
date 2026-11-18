@@ -473,7 +473,11 @@ function Hud({ snapshot, epm, marketEvents }) {
   const armed = configs.filter((config) => config.active).length;
   const session = sessionSummary(snapshot.session, snapshot.settings, snapshot.worker, now);
   const profit = Number(stats.profitRlt) || 0;
-  const winrate = winRatePct(stats.wins, stats.ordersSent);
+  // Both rates use completed orders as the denominator: winrate counts wins
+  // (non-negative profit, zero included), fill-rate counts every fill.
+  const completed = (Number(stats.filled) || 0) + (Number(stats.failed) || 0);
+  const winrate = winRatePct(stats.wins, completed);
+  const fillRate = winRatePct(stats.filled, completed);
 
   // A confirmed fill is the headline event on this surface: pulse the profit
   // figure when it rises, and stay still for every other telemetry tick.
@@ -488,7 +492,7 @@ function Hud({ snapshot, epm, marketEvents }) {
 
   return (
     <section
-      className="grid grid-cols-2 gap-[3px] overflow-hidden border-2 border-line bg-line p-[3px] sm:grid-cols-4 xl:grid-cols-8"
+      className="grid grid-cols-2 gap-[3px] overflow-hidden border-2 border-line bg-line p-[3px] sm:grid-cols-4 xl:grid-cols-9"
       aria-label="Session stats"
     >
       <article data-accent="gold" className="stat-tile col-span-2 sm:col-span-1 xl:col-span-2">
@@ -518,7 +522,7 @@ function Hud({ snapshot, epm, marketEvents }) {
       <article
         data-accent="pink"
         className="stat-tile"
-        title="Fills that broke even or made profit divided by every order sent upstream. Losses and orders still waiting for a result stay in the denominator."
+        title="Fills that broke even or made profit divided by completed orders (filled + failed). Zero profit is a win; losses and failed orders stay in the denominator."
       >
         <div className="flex items-center justify-between gap-2">
           <span className="label">Winrate</span>
@@ -531,7 +535,26 @@ function Hud({ snapshot, epm, marketEvents }) {
           {winrate == null ? "—" : `${winrate}%`}
         </div>
         <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
-          <span id="stat-winrate-wins">{formatInt(stats.wins)}</span> won / <span id="stat-orders-sent">{formatInt(stats.ordersSent)}</span> sent
+          <span id="stat-winrate-wins">{formatInt(stats.wins)}</span> won / <span id="stat-winrate-completed">{formatInt(completed)}</span> completed
+        </div>
+      </article>
+      <article
+        data-accent="cyan"
+        className="stat-tile"
+        title="Filled orders divided by completed orders (filled + failed), regardless of profit."
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="label">Fill rate</span>
+          <Icon name="i-target" className="stat-icon h-4 w-4 max-sm:hidden" />
+        </div>
+        <div
+          id="stat-fill-rate"
+          className={`mt-1.5 font-mono text-[20px] font-bold leading-none tabular-nums ${winrateClass(fillRate)}`}
+        >
+          {fillRate == null ? "—" : `${fillRate}%`}
+        </div>
+        <div className="mt-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+          <span id="stat-fill-rate-filled">{formatInt(stats.filled)}</span> filled / <span id="stat-fill-rate-completed">{formatInt(completed)}</span> completed
         </div>
       </article>
       <article data-accent="cyan" className="stat-tile">
@@ -610,7 +633,9 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
     previousState.current = state;
     setStatePulse((value) => value + 1);
   }, [state]);
-  const stats = successStats(config);
+  // Read from the persistent report row when present; runtime counters are a
+  // process-local fallback for a target that has no report row yet.
+  const stats = successStats(config, product);
   const productProfit = Number(product?.profitRlt) || 0;
   const productFills = Number(product?.fills) || 0;
   const productQty = Number(product?.qty) || 0;
@@ -620,7 +645,8 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
   const hot = runtimeHot(config);
   const reconciling = runtimeReconciling(config);
   const effectiveStock = runtimeEffectiveStock(config);
-  const rate = stats.rate;
+  const winRate = stats.winRate;
+  const fillRate = stats.fillRate;
   const rangeMin = Number.isFinite(runtime.allowedPriceMin) ? trimPrice(runtime.allowedPriceMin) : null;
   const rangeMax = Number.isFinite(runtime.allowedPriceMax) ? trimPrice(runtime.allowedPriceMax) : null;
   const hasRange = rangeMin !== null || rangeMax !== null;
@@ -644,8 +670,8 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
     drawPixelAvatar(canvasRef.current, config.itemId, config.rarityColor);
   }, [config.itemId, config.rarityColor]);
 
-  const rateColor = rate == null ? "" : rate >= 80 ? "text-signal" : rate >= 50 ? "text-gold" : "text-danger";
-  const rateBar = rate == null ? "" : rate >= 80 ? "bg-signal" : rate >= 50 ? "bg-gold" : "bg-danger";
+  const rateColor = winRate == null ? "" : winRate >= 80 ? "text-signal" : winRate >= 50 ? "text-gold" : "text-danger";
+  const rateBar = winRate == null ? "" : winRate >= 80 ? "bg-signal" : winRate >= 50 ? "bg-gold" : "bg-danger";
   const lastWin = runtime.lastResult?.status === "filled" && isRecent(runtime.lastResult.at, 10_000);
   const lastError = runtime.lastResult?.status === "rejected" && isRecent(runtime.lastResult.at, 12_000);
 
@@ -866,20 +892,26 @@ const TargetCard = memo(function TargetCard({ config, product, onEdit, onDelete,
 
       <div
         className="space-y-1.5"
-        title="Successful fills divided by completed purchase attempts (fills + failures) for this target in this worker session."
+        title="Winrate: fills with non-negative profit (zero included) divided by completed attempts. Fill rate: every fill divided by completed attempts. Both come from the persistent profit report for this target."
       >
         <div className="flex items-center justify-between gap-2">
           <span className="label">Winrate</span>
           <span className={`font-mono text-[13px] font-bold tabular-nums ${rateColor}`}>
-            {rate == null ? "—" : `${rate}%`}
+            {winRate == null ? "—" : `${winRate}%`}
           </span>
         </div>
         <div className="meter">
-          <i className={rateBar} style={{ "--meter-value": `${rate ?? 0}%` }} />
+          <i className={rateBar} style={{ "--meter-value": `${winRate ?? 0}%` }} />
         </div>
         <div className="flex items-center justify-between gap-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
-          <span>{stats.completed ? `${formatInt(stats.fills)} filled · ${formatInt(stats.failures)} failed` : "No completed orders"}</span>
-          <span className="tabular-nums">{stats.fills}/{stats.completed}</span>
+          <span>{stats.completed ? `${formatInt(stats.wins)} won · ${formatInt(stats.failures)} failed` : "No completed orders"}</span>
+          <span className="tabular-nums">{stats.wins}/{stats.completed}</span>
+        </div>
+        <div className="flex items-center justify-between gap-2 font-mono text-[12px] uppercase tracking-[0.08em] text-faint">
+          <span>Fill rate</span>
+          <span className={`tabular-nums ${winrateClass(fillRate)}`}>
+            {fillRate == null ? "—" : `${fillRate}%`} · {formatInt(stats.fills)}/{formatInt(stats.completed)} filled
+          </span>
         </div>
       </div>
 
@@ -1158,13 +1190,29 @@ function percentText(value, digits = 1) {
 }
 
 /**
- * Winrate for a report row. The worker derives `successPct`; an older worker
- * that predates the field still gets the same number from its counters.
+ * Winrate for a report row: non-negative-profit fills (zero included) over
+ * completed attempts. The worker derives `successPct`; an older worker still
+ * gets the same number from its raw counters.
  */
 function reportWinRate(row) {
   if (!row) return null;
   if (row.successPct != null) {
     const value = Number(row.successPct);
+    return Number.isFinite(value) ? value : null;
+  }
+  const completed = (Number(row.fills) || 0) + (Number(row.failed) || 0);
+  return winRatePct(row.wins, completed);
+}
+
+function rateText(value) {
+  return value == null ? "—" : `${formatInt(value)}%`;
+}
+
+/** Fill rate for a report row: every fill over completed attempts. */
+function reportFillRate(row) {
+  if (!row) return null;
+  if (row.fillPct != null) {
+    const value = Number(row.fillPct);
     return Number.isFinite(value) ? value : null;
   }
   const fills = Number(row.fills) || 0;
@@ -1177,6 +1225,7 @@ function ReportPanel({ report, notify }) {
   const totals = report?.totals || null;
   const since = Number(report?.since);
   const winrate = reportWinRate(totals);
+  const fillRate = reportFillRate(totals);
 
   const exportCsv = () => {
     if (items.length === 0) return;
@@ -1193,6 +1242,7 @@ function ReportPanel({ report, notify }) {
         "profit_rlt",
         "margin_pct",
         "winrate_pct",
+        "fillrate_pct",
         "first_seen",
         "last_seen"
       ],
@@ -1208,6 +1258,7 @@ function ReportPanel({ report, notify }) {
         item.profitRlt,
         item.marginPct ?? "",
         reportWinRate(item) ?? "",
+        reportFillRate(item) ?? "",
         item.firstAt ? new Date(item.firstAt).toISOString() : "",
         item.lastAt ? new Date(item.lastAt).toISOString() : ""
       ])
@@ -1289,13 +1340,22 @@ function ReportPanel({ report, notify }) {
                 {formatInt(totals?.failedQty ?? 0)} items
               </p>
             </div>
-            <div className="stat-tile" title="Filled orders divided by completed attempts (filled + failed)">
+            <div className="stat-tile" title="Fills that broke even or made profit (zero included) divided by completed orders (filled + failed)">
               <span className="label">Winrate</span>
               <p className={`mt-1 font-mono text-[20px] font-semibold leading-none tabular-nums ${winrateClass(winrate)}`}>
                 {winrate == null ? "—" : `${formatInt(winrate)}%`}
               </p>
               <p className="mt-1.5 whitespace-nowrap font-mono text-[12px] uppercase tracking-[0.06em] text-faint">
-                {formatInt(totals?.fills ?? 0)} / {formatInt((totals?.fills ?? 0) + (totals?.failed ?? 0))} orders
+                {formatInt(totals?.wins ?? 0)} / {formatInt((totals?.fills ?? 0) + (totals?.failed ?? 0))} won
+              </p>
+            </div>
+            <div className="stat-tile" title="Filled orders divided by completed orders (filled + failed), regardless of profit">
+              <span className="label">Fill rate</span>
+              <p className={`mt-1 font-mono text-[20px] font-semibold leading-none tabular-nums ${winrateClass(fillRate)}`}>
+                {fillRate == null ? "—" : `${formatInt(fillRate)}%`}
+              </p>
+              <p className="mt-1.5 whitespace-nowrap font-mono text-[12px] uppercase tracking-[0.06em] text-faint">
+                {formatInt(totals?.fills ?? 0)} / {formatInt((totals?.fills ?? 0) + (totals?.failed ?? 0))} filled
               </p>
             </div>
           </div>
@@ -1332,8 +1392,9 @@ function ReportPanel({ report, notify }) {
                   <span>
                     Spend {formatRlt(item.spentRlt)} · Avg {fixedPrice(item.avgBuy)}
                   </span>
-                  <span className={`shrink-0 ${winrateClass(item.successPct)}`}>
-                    {item.successPct == null ? "—" : `${formatInt(item.successPct)}%`} winrate
+                  <span className="flex shrink-0 gap-x-2">
+                    <span className={winrateClass(reportWinRate(item))}>{rateText(reportWinRate(item))} win</span>
+                    <span className={winrateClass(reportFillRate(item))}>{rateText(reportFillRate(item))} fill</span>
                   </span>
                 </div>
               </li>
@@ -1346,7 +1407,7 @@ function ReportPanel({ report, notify }) {
             role="region"
             aria-label="Profit by product, scrollable"
           >
-            <table className="w-full min-w-[820px] border-collapse text-left font-mono text-[13px] tabular-nums">
+            <table className="w-full min-w-[920px] border-collapse text-left font-mono text-[13px] tabular-nums">
               <thead className="sticky top-0 z-10 bg-night-900">
                 <tr className="border-b-2 border-line text-[12px] uppercase tracking-[0.08em] text-faint">
                   <th scope="col" className="px-4 py-2 font-medium">Product</th>
@@ -1356,7 +1417,8 @@ function ReportPanel({ report, notify }) {
                   <th scope="col" className="px-3 py-2 font-medium">Avg buy</th>
                   <th scope="col" className="px-3 py-2 font-medium">Profit</th>
                   <th scope="col" className="px-3 py-2 font-medium">Margin</th>
-                  <th scope="col" className="px-3 py-2 font-medium" title="Filled orders divided by completed attempts (filled + failed)">Winrate</th>
+                  <th scope="col" className="px-3 py-2 font-medium" title="Fills that broke even or made profit (zero included) divided by completed orders (filled + failed)">Winrate</th>
+                  <th scope="col" className="px-3 py-2 font-medium" title="Filled orders divided by completed orders (filled + failed), regardless of profit">Fill rate</th>
                   <th scope="col" className="px-4 py-2 font-medium max-[1439px]:hidden">Last</th>
                 </tr>
               </thead>
@@ -1380,8 +1442,11 @@ function ReportPanel({ report, notify }) {
                     <td className="px-3 py-2 text-ink-dim">{fixedPrice(item.avgBuy)}</td>
                     <td className={`px-3 py-2 ${profitClass(item.profitRlt)}`}>{formatSignedRlt(item.profitRlt)}</td>
                     <td className={`px-3 py-2 ${profitClass(item.marginPct)}`}>{percentText(item.marginPct)}</td>
-                    <td className={`px-3 py-2 ${winrateClass(item.successPct)}`}>
-                      {item.successPct == null ? "—" : `${formatInt(item.successPct)}%`}
+                    <td className={`px-3 py-2 ${winrateClass(reportWinRate(item))}`}>
+                      {rateText(reportWinRate(item))}
+                    </td>
+                    <td className={`px-3 py-2 ${winrateClass(reportFillRate(item))}`}>
+                      {rateText(reportFillRate(item))}
                     </td>
                     <td className="whitespace-nowrap px-4 py-2 text-faint max-[1439px]:hidden">
                       <span title={item.lastAt ? new Date(item.lastAt).toLocaleString() : undefined}>
@@ -1409,7 +1474,10 @@ function ReportPanel({ report, notify }) {
                   </td>
                   <td className={`px-3 py-2.5 ${profitClass(totals?.marginPct)}`}>{percentText(totals?.marginPct)}</td>
                   <td className={`px-3 py-2.5 ${winrateClass(winrate)}`}>
-                    {winrate == null ? "—" : `${formatInt(winrate)}%`}
+                    {rateText(winrate)}
+                  </td>
+                  <td className={`px-3 py-2.5 ${winrateClass(fillRate)}`}>
+                    {rateText(fillRate)}
                   </td>
                   <td className="px-4 py-2.5 text-faint max-[1439px]:hidden">—</td>
                 </tr>
