@@ -1,5 +1,6 @@
 use super::*;
 
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use axum::Router;
@@ -65,6 +66,44 @@ fn marketplace_counter_ignores_other_channels() {
     assert_eq!(stats.event_count, 6);
     assert_eq!(stats.market_event_count, 3);
     assert_eq!(stats.cmd_counts["marketplace_orders_update"], 1);
+}
+
+#[test]
+fn connection_events_carry_a_session_duration_on_disconnect() {
+    let connect = ConnectionEvent::connect(1_000, 42.0);
+    let reconnect = ConnectionEvent::reconnect(2_000, 55.0);
+    let disconnect = ConnectionEvent::disconnect(3_000, 1_234, Some("socket closed".into()));
+
+    assert_eq!(connect.kind, "connect");
+    assert_eq!(connect.session_ms, None);
+    assert_eq!(reconnect.kind, "reconnect");
+    assert_eq!(reconnect.session_ms, None);
+
+    let row = disconnect.to_json();
+    assert_eq!(row["at"], 3_000);
+    assert_eq!(row["kind"], "disconnect");
+    assert_eq!(row["sessionMs"], 1_234);
+    assert_eq!(row["reason"], "socket closed");
+
+    // A negative duration can never reach the deck as a negative session.
+    assert_eq!(ConnectionEvent::disconnect(0, -5, None).session_ms, Some(0));
+}
+
+#[test]
+fn connection_log_is_capped_and_newest_first() {
+    let mut log = VecDeque::new();
+    for index in 0..(CONNECTION_LOG_CAPACITY + 5) {
+        push_connection_event(
+            &mut log,
+            ConnectionEvent::disconnect(index as i64, index as i64, None),
+        );
+    }
+
+    assert_eq!(log.len(), CONNECTION_LOG_CAPACITY);
+    let rows = connection_log_json(&log);
+    assert_eq!(rows.len(), CONNECTION_LOG_CAPACITY);
+    assert_eq!(rows[0]["at"], (CONNECTION_LOG_CAPACITY + 4) as i64);
+    assert_eq!(rows[rows.len() - 1]["at"], 5);
 }
 
 #[tokio::test]
@@ -156,5 +195,31 @@ async fn reconnects_after_the_socket_closes() {
     let stats = handle.stats_json();
     assert!(stats["reconnects"].as_i64().unwrap_or(0) >= 2);
     assert!(stats["disconnects"].as_i64().unwrap_or(0) >= 1);
+
+    let log = stats["connectionLog"].as_array().expect("connection log");
+    assert!(
+        log.len() >= 3,
+        "expected connect, disconnect and reconnect rows"
+    );
+    let kinds: Vec<&str> = log
+        .iter()
+        .map(|row| row["kind"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(kinds[0], "reconnect", "the newest transition comes first");
+    assert!(kinds.contains(&"connect"));
+    let disconnect = log
+        .iter()
+        .find(|row| row["kind"] == "disconnect")
+        .expect("disconnect row");
+    assert!(
+        disconnect["sessionMs"].as_i64().is_some_and(|ms| ms >= 0),
+        "a disconnect must always report its session duration"
+    );
+    assert!(
+        disconnect["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty()),
+        "a disconnect should explain why the link ended"
+    );
     handle.stop().await;
 }

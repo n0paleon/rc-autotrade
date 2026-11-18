@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::api::PurchaseResult;
 use crate::clock::now_ms;
-use crate::gateway::GatewayEvent;
+use crate::gateway::{ConnectionEvent, GatewayEvent, push_connection_event};
 use crate::latency::Channel;
 use crate::lock::lock;
 
@@ -32,11 +32,17 @@ pub(super) async fn run(
         latency.record(Channel::WsHandshake, CONNECT_DELAY_MS as f64, true, None);
         latency.record(Channel::WsPing, 24.0, true, None);
     }
+    let mut session_started = Instant::now();
     {
         let mut stats = lock(&stats);
-        stats.connected_at = Some(now_ms());
+        let connected_at = now_ms();
+        stats.connected_at = Some(connected_at);
         stats.reconnects += 1;
         stats.last_ping_ms = Some(24.0);
+        push_connection_event(
+            &mut stats.connection_log,
+            ConnectionEvent::connect(connected_at, CONNECT_DELAY_MS as f64),
+        );
     }
     set_status(&stats, &events, "online");
     config.logger.info("mock", "simulated market feed online");
@@ -168,11 +174,26 @@ pub(super) async fn run(
                     Some(MockCommand::Reconnect) => {
                         set_status(&stats, &events, "connecting");
                         tokio::time::sleep(Duration::from_millis(200)).await;
+                        let ended_at = now_ms();
+                        let session_ms = session_started.elapsed().as_millis() as i64;
+                        session_started = Instant::now();
                         {
                             let mut guard = lock(&stats);
                             guard.disconnects += 1;
                             guard.reconnects += 1;
-                            guard.connected_at = Some(now_ms());
+                            guard.connected_at = Some(ended_at);
+                            push_connection_event(
+                                &mut guard.connection_log,
+                                ConnectionEvent::disconnect(
+                                    ended_at,
+                                    session_ms,
+                                    Some("reconnect requested: manual".into()),
+                                ),
+                            );
+                            push_connection_event(
+                                &mut guard.connection_log,
+                                ConnectionEvent::reconnect(ended_at, 200.0),
+                            );
                         }
                         set_status(&stats, &events, "online");
                     }
@@ -185,6 +206,14 @@ pub(super) async fn run(
     {
         let mut guard = lock(&stats);
         guard.connected_at = None;
+        push_connection_event(
+            &mut guard.connection_log,
+            ConnectionEvent::disconnect(
+                now_ms(),
+                session_started.elapsed().as_millis() as i64,
+                Some("feed stopped".into()),
+            ),
+        );
     }
     set_status(&stats, &events, "stopped");
     config.logger.info("mock", "simulated market feed stopped");

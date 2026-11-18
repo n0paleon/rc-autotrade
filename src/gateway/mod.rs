@@ -10,7 +10,7 @@ mod transport;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
@@ -32,6 +32,69 @@ pub const RECONNECT_JITTER_MS: u64 = 500;
 /// A socket that stayed up this long is healthy: losing it is a network blip,
 /// so the next attempt skips the exponential backoff.
 pub const HEALTHY_UPTIME_MS: u64 = 30_000;
+/// Connection lifecycle rows kept for the monitor window. The log is in
+/// memory only: a worker restart starts a fresh history.
+pub const CONNECTION_LOG_CAPACITY: usize = 100;
+
+/// One row in the feed connection history. `session_ms` is mandatory for a
+/// disconnect so the monitor can always show how long the socket was up
+/// before it ended.
+#[derive(Debug, Clone)]
+pub struct ConnectionEvent {
+    pub at: i64,
+    pub kind: &'static str,
+    pub session_ms: Option<i64>,
+    pub reason: Option<String>,
+}
+
+impl ConnectionEvent {
+    fn connected(kind: &'static str, at: i64, handshake_ms: f64) -> Self {
+        Self {
+            at,
+            kind,
+            session_ms: None,
+            reason: Some(format!("handshake {handshake_ms:.0}ms")),
+        }
+    }
+
+    pub(crate) fn connect(at: i64, handshake_ms: f64) -> Self {
+        Self::connected("connect", at, handshake_ms)
+    }
+
+    pub(crate) fn reconnect(at: i64, handshake_ms: f64) -> Self {
+        Self::connected("reconnect", at, handshake_ms)
+    }
+
+    pub(crate) fn disconnect(at: i64, session_ms: i64, reason: Option<String>) -> Self {
+        Self {
+            at,
+            kind: "disconnect",
+            session_ms: Some(session_ms.max(0)),
+            reason: reason.map(|value| value.chars().take(240).collect()),
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "at": self.at,
+            "kind": self.kind,
+            "sessionMs": self.session_ms,
+            "reason": self.reason,
+        })
+    }
+}
+
+pub(crate) fn push_connection_event(log: &mut VecDeque<ConnectionEvent>, event: ConnectionEvent) {
+    if log.len() >= CONNECTION_LOG_CAPACITY {
+        log.pop_front();
+    }
+    log.push_back(event);
+}
+
+pub(crate) fn connection_log_json(log: &VecDeque<ConnectionEvent>) -> Vec<Value> {
+    // Newest first keeps the most recent transition at the top of the table.
+    log.iter().rev().map(ConnectionEvent::to_json).collect()
+}
 
 /// Supplies the current `(access_token, cookie)` pair. The feed is reconnected
 /// by the wiring after a token change.
@@ -61,6 +124,8 @@ pub struct GatewayStats {
     pub dropped: i64,
     pub cmd_counts: BTreeMap<String, i64>,
     pub last_ping_ms: Option<f64>,
+    /// Connect/reconnect/disconnect rows for the monitor window.
+    pub connection_log: VecDeque<ConnectionEvent>,
 }
 
 impl GatewayStats {
@@ -105,6 +170,7 @@ impl GatewayHandle {
                 .map(|(cmd, count)| json!({ "cmd": cmd, "count": count }))
                 .collect()
         };
+        let connection_log = connection_log_json(&stats.connection_log);
         json!({
             "status": stats.status,
             "connectedAt": stats.connected_at,
@@ -121,6 +187,7 @@ impl GatewayHandle {
             "upstream": self.upstream,
             "uptimeMs": stats.connected_at.map(|at| now_ms() - at).unwrap_or(0),
             "lastPingMs": stats.last_ping_ms,
+            "connectionLog": connection_log,
         })
     }
 
@@ -185,6 +252,7 @@ pub fn spawn(config: GatewayConfig) -> (GatewayHandle, mpsc::Receiver<GatewayEve
 
 fn status_payload(stats: &Arc<Mutex<GatewayStats>>, upstream: &str) -> Value {
     let stats = lock(stats);
+    let connection_log = connection_log_json(&stats.connection_log);
     json!({
         "status": stats.status,
         "connectedAt": stats.connected_at,
@@ -201,6 +269,7 @@ fn status_payload(stats: &Arc<Mutex<GatewayStats>>, upstream: &str) -> Value {
         "uptimeMs": stats.connected_at.map(|at| now_ms() - at).unwrap_or(0),
         "lastPingMs": stats.last_ping_ms,
         "commands": [],
+        "connectionLog": connection_log,
     })
 }
 

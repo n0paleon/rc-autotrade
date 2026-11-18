@@ -11,8 +11,9 @@ use tokio_tungstenite::tungstenite::Message;
 
 use super::transport::{build_request, connector};
 use super::{
-    GatewayCommand, GatewayConfig, GatewayEvent, GatewayStats, HANDSHAKE_TIMEOUT_MS,
-    HEALTHY_UPTIME_MS, HEARTBEAT_MS, MAX_BACKOFF_MS, RECONNECT_JITTER_MS, record_error, set_status,
+    ConnectionEvent, GatewayCommand, GatewayConfig, GatewayEvent, GatewayStats,
+    HANDSHAKE_TIMEOUT_MS, HEALTHY_UPTIME_MS, HEARTBEAT_MS, MAX_BACKOFF_MS, RECONNECT_JITTER_MS,
+    push_connection_event, record_error, set_status,
 };
 use crate::clock::now_ms;
 use crate::latency::Channel;
@@ -92,10 +93,18 @@ pub(super) async fn run(
                 }
                 {
                     let mut stats = lock(&stats);
+                    let connected_at = now_ms();
+                    let first_link = stats.reconnects == 0;
                     stats.attempts = 0;
                     stats.reconnects += 1;
-                    stats.connected_at = Some(now_ms());
+                    stats.connected_at = Some(connected_at);
                     stats.last_error = None;
+                    let event = if first_link {
+                        ConnectionEvent::connect(connected_at, handshake_ms)
+                    } else {
+                        ConnectionEvent::reconnect(connected_at, handshake_ms)
+                    };
+                    push_connection_event(&mut stats.connection_log, event);
                 }
                 set_status(&stats, &events, &upstream, "online");
                 config.logger.info("gateway", "market feed connected");
@@ -161,6 +170,9 @@ pub(super) async fn run(
             );
             let mut ping_sent_at: Option<Instant> = None;
             let mut reconnect_reason: Option<String> = None;
+            // Every exit path from the read loop below assigns this before it
+            // breaks, so the disconnect row always carries a real reason.
+            let disconnect_reason: Option<String>;
 
             loop {
                 tokio::select! {
@@ -197,6 +209,8 @@ pub(super) async fn run(
                                         };
                                         if is_fill {
                                             if events.send(event).await.is_err() {
+                                                disconnect_reason =
+                                                    Some("engine event channel closed".into());
                                                 break;
                                             }
                                         } else if events.try_send(event).is_err() {
@@ -233,7 +247,11 @@ pub(super) async fn run(
                                 config.logger.debug_lazy("gateway", || {
                                     format!("upstream ping ({} bytes) -> pong", payload.len())
                                 });
-                                if write.send(Message::Pong(payload)).await.is_err() {
+                                if let Err(error) = write.send(Message::Pong(payload)).await {
+                                    disconnect_reason = Some(format!(
+                                        "pong write failed: {}",
+                                        redact_secrets(&error.to_string())
+                                    ));
                                     break;
                                 }
                             }
@@ -261,7 +279,9 @@ pub(super) async fn run(
                                     format!("socket closed ({code}: {reason})")
                                 };
                                 config.logger.debug("gateway", &message);
-                                record_error(&stats, &redact_secrets(&message));
+                                let message = redact_secrets(&message);
+                                record_error(&stats, &message);
+                                disconnect_reason = Some(message);
                                 break;
                             }
                             Some(Ok(other)) => {
@@ -278,28 +298,45 @@ pub(super) async fn run(
                                 });
                             }
                             Some(Err(error)) => {
-                                record_error(&stats, &redact_secrets(&error.to_string()));
+                                let message = redact_secrets(&error.to_string());
+                                record_error(&stats, &message);
                                 config
                                     .logger
-                                    .warn("gateway", format!("socket error: {}", redact_secrets(&error.to_string())));
+                                    .warn("gateway", format!("socket error: {message}"));
+                                disconnect_reason = Some(format!("socket error: {message}"));
                                 break;
                             }
-                            None => break,
+                            None => {
+                                disconnect_reason = Some("socket stream ended".into());
+                                break;
+                            }
                         }
                     }
                     _ = heartbeat.tick() => {
                         ping_sent_at = Some(Instant::now());
-                        if write.send(Message::Ping(Vec::new().into())).await.is_err() {
+                        if let Err(error) = write.send(Message::Ping(Vec::new().into())).await {
+                            disconnect_reason = Some(format!(
+                                "heartbeat ping failed: {}",
+                                redact_secrets(&error.to_string())
+                            ));
                             break;
                         }
                     }
                     command = commands.recv() => {
                         match command {
-                            Some(GatewayCommand::Stop) | None => {
+                            Some(GatewayCommand::Stop) => {
+                                disconnect_reason = Some("feed stopped".into());
+                                stopped = true;
+                                break;
+                            }
+                            None => {
+                                disconnect_reason = Some("feed command channel closed".into());
                                 stopped = true;
                                 break;
                             }
                             Some(GatewayCommand::Reconnect(reason)) => {
+                                disconnect_reason =
+                                    Some(format!("reconnect requested: {reason}"));
                                 reconnect_reason = Some(reason);
                                 break;
                             }
@@ -308,7 +345,9 @@ pub(super) async fn run(
                 }
             }
 
-            connected_for = Some(connected_at.elapsed());
+            let session = connected_at.elapsed();
+            connected_for = Some(session);
+            let ended_at = now_ms();
             let _ = write.close().await;
             config
                 .logger
@@ -321,6 +360,14 @@ pub(super) async fn run(
                 // write failed, or the deck asked for a reconnect. Count it once
                 // per established socket so the monitor can show feed churn.
                 stats.disconnects += 1;
+                push_connection_event(
+                    &mut stats.connection_log,
+                    ConnectionEvent::disconnect(
+                        ended_at,
+                        session.as_millis() as i64,
+                        disconnect_reason,
+                    ),
+                );
             }
             if stopped {
                 set_status(&stats, &events, &upstream, "stopped");
