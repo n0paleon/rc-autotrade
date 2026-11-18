@@ -59,6 +59,9 @@ import { ModeMenu } from "./components/ModeMenu.jsx";
 const MODE_CHIP = { off: "PAUSED", shadow: "SHADOW", live: "ARMED" };
 const MODE_CHIP_CLASS = { off: "chip-paused", shadow: "chip-dry", live: "chip-armed" };
 
+/** Stable id for the manual-reconnect toast so it can be cleared on recovery. */
+const RECONNECT_TOAST_ID = "reconnect-pending";
+
 // Recharts is the single largest dependency and every target card mounts a
 // price chart. Loading the chart bundle on demand keeps the first paint (and
 // the login screen) free of it; the placeholders reserve the same space so
@@ -321,7 +324,7 @@ function BootScreen({ onLogin, busy, error }) {
   );
 }
 
-function Header({ snapshot, status, latency, soundOn, onSound, onLogout, onSetMode, modeBusy, onMonitor }) {
+function Header({ snapshot, status, latency, soundOn, onSound, onLogout, onSetMode, modeBusy, onReconnect, reconnecting, onMonitor }) {
   const now = useNow(1000);
   const gateway = snapshot.gateway?.status;
   let connLabel = "LINK LOST";
@@ -373,6 +376,19 @@ function Header({ snapshot, status, latency, soundOn, onSound, onLogout, onSetMo
         </div>
         <div className="ml-auto flex items-center gap-1 sm:gap-1.5">
           <ModeMenu mode={mode} busy={modeBusy} onChange={onSetMode} />
+          <button
+            className="btn btn-ghost btn-sm max-sm:w-11 max-sm:justify-center max-sm:px-0"
+            type="button"
+            onClick={onReconnect}
+            disabled={reconnecting}
+            data-busy={reconnecting ? "true" : undefined}
+            aria-busy={reconnecting}
+            aria-label="Reconnect market feed"
+            title="Reconnect the market feed"
+          >
+            <Icon name="i-refresh" className="h-3 w-3" />
+            <span className="hidden sm:inline">{reconnecting ? "Reconnecting…" : "Reconnect"}</span>
+          </button>
           <span id="trading-state" className={`${tradingClass} hidden sm:inline-flex`}>
             <span className="led led-pulse" />{trading}
           </span>
@@ -2290,7 +2306,7 @@ function LinkPanel({ snapshot, worker, notify, onEditSession, onBridge, onClearS
   );
 }
 
-function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, onBackup, baseUrl, onSetMode }) {
+function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onBackup, baseUrl, onSetMode }) {
   const settings = snapshot.settings || {};
   const mode = modeOf(settings);
   const [delay, setDelay] = useState(String(settings.delayPerOrder ?? 200));
@@ -2298,7 +2314,6 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
   const [markup, setMarkup] = useState(String(settings.totalPriceMarkupPct ?? 0));
   const [saving, setSaving] = useState(false);
   const [modesBusy, setModesBusy] = useState(false);
-  const [reconnecting, setReconnecting] = useState(false);
 
   useEffect(() => {
     setDelay(String(settings.delayPerOrder ?? 200));
@@ -2339,15 +2354,6 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
       notify("error", "CONFIG FAILED", details || error.message);
     } finally {
       setSaving(false);
-    }
-  };
-
-  const reconnect = async () => {
-    setReconnecting(true);
-    try {
-      await onReconnect();
-    } finally {
-      setReconnecting(false);
     }
   };
 
@@ -2406,9 +2412,6 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
             <code className="font-mono text-[12px] text-ink-dim">v{snapshot.version || "1.0.0"}</code>
           </div>
         </div>
-        <button className="btn btn-ghost btn-sm btn-block" type="button" onClick={reconnect} disabled={reconnecting} data-busy={reconnecting ? "true" : undefined} aria-busy={reconnecting}>
-          <Icon name="i-refresh" className="h-3 w-3" /> {reconnecting ? "Reconnecting…" : "Reconnect feed"}
-        </button>
 
         <div className="space-y-2 border-2 border-line bg-night-950/60 p-3">
           <h3 className="flex items-center gap-1.5 font-mono text-[12px] font-semibold uppercase tracking-[0.14em] text-gold">
@@ -2437,7 +2440,7 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onReconnect, on
   );
 }
 
-function SidePanel({ tab, setTab, snapshot, logs, feedEpm, worker, notify, onEditSession, onBridge, onClearSession, onRotate, onReset, onReconnect, onBackup, baseUrl, onSetMode }) {
+function SidePanel({ tab, setTab, snapshot, logs, feedEpm, worker, notify, onEditSession, onBridge, onClearSession, onRotate, onReset, onBackup, baseUrl, onSetMode }) {
   const tabs = [
     { id: "feed", label: "FEED" },
     { id: "link", label: "LINK" },
@@ -2488,7 +2491,6 @@ function SidePanel({ tab, setTab, snapshot, logs, feedEpm, worker, notify, onEdi
             worker={worker}
             notify={notify}
             onReset={onReset}
-            onReconnect={onReconnect}
             onBackup={onBackup}
             baseUrl={baseUrl}
             onSetMode={onSetMode}
@@ -2633,6 +2635,10 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
   const [monitorOpen, setMonitorOpen] = useState(false);
   const [soundOn, setSoundOn] = useState(sound.enabled);
   const [modeBusy, setModeBusy] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  // The manual reconnect is a *pending* status: its toast lives until the feed
+  // actually comes back, not until a blind timeout expires.
+  const reconnectPending = useRef(false);
   // Handlers stay referentially stable so memoised cards are not invalidated by
   // a new snapshot. The ref always points at the newest worker instance.
   const workerRef = useRef(worker);
@@ -2823,12 +2829,31 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
     }
   };
 
+  // Clear the pending "Reconnecting…" toast once the upstream reports a
+  // terminal state. `control("reconnect")` only queues the command, so the
+  // gateway's online/auth status push is the real completion signal. The toast
+  // also has a bounded TTL in useToasts as a fallback if no push ever arrives.
+  useEffect(() => {
+    if (!reconnectPending.current) return;
+    const status = snapshot.gateway?.status;
+    if (status === "online" || status === "auth-error" || status === "auth-missing") {
+      reconnectPending.current = false;
+      dismissToast(RECONNECT_TOAST_ID);
+    }
+  }, [snapshot.gateway?.status, dismissToast]);
+
   const reconnect = async () => {
+    setReconnecting(true);
+    reconnectPending.current = true;
+    notify("info", "SIGNAL SENT", "Reconnecting the market feed…", 12000, RECONNECT_TOAST_ID);
     try {
       await worker.control("reconnect");
-      notify("info", "SIGNAL SENT", "Reconnecting the market feed…");
     } catch (error) {
+      reconnectPending.current = false;
+      dismissToast(RECONNECT_TOAST_ID);
       notify("error", "RECONNECT FAILED", error.message);
+    } finally {
+      setReconnecting(false);
     }
   };
 
@@ -2850,6 +2875,8 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
         onLogout={worker.logout}
         onSetMode={setMode}
         modeBusy={modeBusy}
+        onReconnect={reconnect}
+        reconnecting={reconnecting}
         onMonitor={openMonitor}
       />
       <Ticker configs={snapshot.configs || []} mock={snapshot.worker?.mock} />
@@ -2906,7 +2933,6 @@ function Dashboard({ worker, notify, toasts, dismissToast }) {
           onClearSession={clearSession}
           onRotate={rotateKey}
           onReset={resetStats}
-          onReconnect={reconnect}
           onBackup={() => setModal({ type: "backup" })}
           baseUrl={baseUrl}
           onSetMode={setMode}
