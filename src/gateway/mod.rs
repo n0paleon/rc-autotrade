@@ -39,7 +39,11 @@ pub struct GatewayStats {
     pub last_message_at: Option<i64>,
     pub last_error: Option<String>,
     pub attempts: i64,
+    /// Successful handshakes since the worker started, including the first.
     pub reconnects: i64,
+    /// Established sockets that ended since the worker started: upstream
+    /// close frames, read/write errors, heartbeat failures and manual reconnects.
+    pub disconnects: i64,
     pub event_count: i64,
     /// Marketplace commands only (listing/price updates and fulfillment
     /// results). `event_count` stays the total wire traffic so a feed that is
@@ -103,6 +107,7 @@ impl GatewayHandle {
             "lastError": stats.last_error,
             "attempts": stats.attempts,
             "reconnects": stats.reconnects,
+            "disconnects": stats.disconnects,
             "eventCount": stats.event_count,
             "marketEventCount": stats.market_event_count,
             "parseErrors": stats.parse_errors,
@@ -182,6 +187,7 @@ fn status_payload(stats: &Arc<Mutex<GatewayStats>>, upstream: &str) -> Value {
         "lastError": stats.last_error,
         "attempts": stats.attempts,
         "reconnects": stats.reconnects,
+        "disconnects": stats.disconnects,
         "eventCount": stats.event_count,
         "marketEventCount": stats.market_event_count,
         "parseErrors": stats.parse_errors,

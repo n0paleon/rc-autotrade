@@ -19,6 +19,17 @@ import {
 
 const LATENCY_CHANNELS = ["http", "keepalive", "wsHandshake", "wsPing"];
 
+/** Deck labels and chip colours for the feed socket status. */
+const GATEWAY_STATUS = {
+  online: { label: "Online", chip: "chip-online" },
+  connecting: { label: "Connecting", chip: "chip-warn" },
+  "auth-missing": { label: "No token", chip: "chip-warn" },
+  "auth-error": { label: "Auth error", chip: "chip-offline" },
+  offline: { label: "Offline", chip: "chip-offline" },
+  idle: { label: "Idle", chip: "chip-paused" },
+  stopped: { label: "Stopped", chip: "chip-offline" }
+};
+
 // Recharts is the heaviest dependency; the chart only loads when the monitor
 // window opens (or the user expands it), exactly like the price chart.
 const OrderBenchmarkChart = lazy(() => import("./OrderBenchmarkChart.jsx"));
@@ -94,7 +105,57 @@ function LatencyChannel({ label, stats }) {
   );
 }
 
-function LatencyPanel({ latency, fetchLatency, refreshLatency, notify }) {
+function FeedLink({ gateway }) {
+  const status = gateway?.status || "idle";
+  const meta = GATEWAY_STATUS[status] || { label: status, chip: "chip-paused" };
+  const links = Number(gateway?.reconnects) || 0;
+  const disconnects = Number(gateway?.disconnects) || 0;
+  const connected = Boolean(gateway?.connectedAt);
+
+  return (
+    <div className="border-2 border-line bg-night-950/60 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="label flex items-center gap-1.5">
+          <Icon name="i-link" className="h-3 w-3" /> Feed socket
+        </span>
+        <span className={`chip ${meta.chip}`} title={gateway?.lastError || `Upstream ${gateway?.upstream || "unknown"}`}>
+          <span className="led" />{meta.label}
+        </span>
+      </div>
+      <dl className="mt-2 grid grid-cols-3 gap-1.5">
+        <div
+          className="lat-metric"
+          title="Successful upstream WebSocket handshakes since this worker started, including the first link."
+        >
+          <dt>Links</dt>
+          <dd>{formatInt(links)}</dd>
+        </div>
+        <div
+          className="lat-metric"
+          title="Established upstream WebSocket links that ended: upstream close, socket error, heartbeat failure or a manual reconnect. Counted since this worker started."
+        >
+          <dt>Disconnects</dt>
+          <dd className={disconnects > 0 ? "text-warn" : ""}>{formatInt(disconnects)}</dd>
+        </div>
+        <div
+          className="lat-metric"
+          title="How long the current upstream socket has stayed connected."
+        >
+          <dt>Link uptime</dt>
+          <dd>{connected ? formatUptime(gateway.uptimeMs) : "—"}</dd>
+        </div>
+      </dl>
+      {gateway?.lastError ? (
+        <p className="mt-2 flex items-start gap-1.5 font-mono text-meta leading-snug text-danger">
+          <Icon name="i-alert" className="mt-px h-3 w-3 shrink-0" />
+          <span className="break-words">{gateway.lastError}</span>
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function LatencyPanel({ gateway, latency, fetchLatency, refreshLatency, notify }) {
   const channels = latency?.channels || {};
   const fresh = latency?.freshest || null;
   const [probing, setProbing] = useState(false);
@@ -141,6 +202,7 @@ function LatencyPanel({ latency, fetchLatency, refreshLatency, notify }) {
         </span>
       </div>
       <div className="panel-body">
+        <FeedLink gateway={gateway} />
         <div className="flex flex-wrap items-end justify-between gap-3 border-2 border-line bg-night-950/70 p-3">
           <div className="min-w-0">
             <span className="label flex items-center gap-1.5"><Icon name="i-wifi" className="h-3 w-3" /> Worker → upstream</span>
@@ -701,6 +763,7 @@ export function MonitorWindow({ open, snapshot, worker, notify, onClose }) {
                 onExpandChart={setChartExpanded}
               />
               <MemoLatencyPanel
+                gateway={snapshot.gateway}
                 latency={snapshot.latency}
                 fetchLatency={worker.fetchLatency}
                 refreshLatency={worker.refreshLatency}

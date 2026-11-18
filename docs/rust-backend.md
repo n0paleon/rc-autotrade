@@ -233,7 +233,8 @@ Bun worker.
   samples.
 - **Market feed** is exercised end to end against an axum WS server: connect,
   receive a `marketplace_orders_update` frame, parse/count it, record the
-  handshake latency, and reconnect on demand (`reconnects` reaches 2).
+  handshake latency, and reconnect on demand (`reconnects` reaches 2,
+  `disconnects` reaches 1).
 - **Upstream HTTP client** is tested against a local axum mock: bearer/cookie
   headers, `Origin`/`Referer`/UA, purchase payload (`totalCount`, `totalPrice`),
   `data.usersPurchaseOrder` parsing, refresh without the expired bearer,
@@ -261,7 +262,8 @@ Bun worker.
   (`TELEMETRY_INTERVAL_SECS`); pushing `gateway` per frame re-rendered the HUD
   continuously, so it was deliberately coalesced, and `MissedTickBehavior::Delay`
   stops a stalled socket from firing a catch-up burst. A manual session change
-  bumps `gateway.reconnects`, so the feed re-handshakes with the new token.
+  bumps `gateway.reconnects` and `gateway.disconnects`, so the feed re-handshakes
+  with the new token.
 - Failed no-item orders keep the attempted `qty`/`unitPrice`/`targetPrice` and
   the full dispatch→result `latencyMs` in the loot row, matching the Bun
   `failureMeta = pendingMeta` path (covered by an engine test).

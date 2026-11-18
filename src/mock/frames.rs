@@ -20,6 +20,7 @@ pub(super) fn status_payload(stats: &Arc<Mutex<MockStats>>) -> Value {
         "lastError": stats.last_error,
         "attempts": stats.attempts,
         "reconnects": stats.reconnects,
+        "disconnects": stats.disconnects,
         "eventCount": stats.event_count,
         "marketEventCount": stats.market_event_count,
         "parseErrors": stats.parse_errors,

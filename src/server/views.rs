@@ -63,6 +63,7 @@ impl AppState {
                 "lastError": null,
                 "attempts": 0,
                 "reconnects": 0,
+                "disconnects": 0,
                 "eventCount": 0,
                 "marketEventCount": 0,
                 "parseErrors": 0,
