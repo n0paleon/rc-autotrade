@@ -71,6 +71,7 @@ impl AppState {
                 "upstream": super::router::upstream_host(&self.config.ws_url),
                 "uptimeMs": 0,
                 "lastPingMs": null,
+                "connectionLog": [],
             }),
         };
         let latency = lock(&self.latency).snapshot();

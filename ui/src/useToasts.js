@@ -29,12 +29,14 @@ export function useToasts() {
   }, []);
 
   const push = useCallback(
-    (kind, title, message, ttl) => {
+    (kind, title, message, ttl, idOverride) => {
       const signature = `${kind}|${title}|${message}`;
-      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      // A caller can supply a stable id for a toast it may need to dismiss
+      // later (e.g. a pending status that resolves on an external event).
+      const id = idOverride || `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       const lifetime = ttl == null ? TOAST_TTL_MS : Number(ttl) || 0;
       setToasts((previous) => {
-        if (previous.some((toast) => toast.signature === signature)) return previous;
+        if (previous.some((toast) => toast.signature === signature || toast.id === id)) return previous;
         const max = window.matchMedia("(max-width: 760px)").matches ? 1 : 3;
         const next = [...previous, { id, kind, title, message, signature }];
         return next.length > max ? next.slice(-max) : next;

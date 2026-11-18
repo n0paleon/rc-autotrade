@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 
 use crate::clock::now_ms;
 use crate::events::is_marketplace_cmd;
-use crate::gateway::GatewayEvent;
+use crate::gateway::{GatewayEvent, connection_log_json};
 use crate::lock::lock;
 
 use super::{MockItem, MockStats};
@@ -29,6 +29,7 @@ pub(super) fn status_payload(stats: &Arc<Mutex<MockStats>>) -> Value {
         "upstream": "mock",
         "uptimeMs": stats.connected_at.map(|at| now_ms() - at).unwrap_or(0),
         "lastPingMs": stats.last_ping_ms,
+        "connectionLog": connection_log_json(&stats.connection_log),
     })
 }
 

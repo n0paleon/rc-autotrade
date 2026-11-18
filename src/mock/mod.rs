@@ -11,7 +11,7 @@ mod run;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
@@ -19,7 +19,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::api::{PurchaseRequest, PurchaseResult};
 use crate::clock::now_ms;
-use crate::gateway::GatewayEvent;
+use crate::gateway::{ConnectionEvent, GatewayEvent, connection_log_json};
 use crate::latency::LatencyTracker;
 use crate::lock::lock;
 use crate::logger::Logger;
@@ -99,6 +99,8 @@ pub struct MockStats {
     pub dropped: i64,
     pub cmd_counts: BTreeMap<String, i64>,
     pub last_ping_ms: Option<f64>,
+    /// Mirrors the real gateway's connection history.
+    pub connection_log: VecDeque<ConnectionEvent>,
 }
 
 enum MockCommand {
@@ -126,6 +128,7 @@ impl MockHandle {
             .take(15)
             .map(|(cmd, count)| json!({ "cmd": cmd, "count": count }))
             .collect();
+        let connection_log = connection_log_json(&stats.connection_log);
         json!({
             "status": stats.status,
             "connectedAt": stats.connected_at,
@@ -142,6 +145,7 @@ impl MockHandle {
             "upstream": "mock",
             "uptimeMs": stats.connected_at.map(|at| now_ms() - at).unwrap_or(0),
             "lastPingMs": stats.last_ping_ms,
+            "connectionLog": connection_log,
         })
     }
 

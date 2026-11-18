@@ -1,6 +1,12 @@
 import { lazy, memo, Suspense, useEffect, useMemo, useState } from "react";
 
 import { Icon, ModalShell } from "./ModalShell.jsx";
+import {
+  CONNECTION_LOG_PAGE_SIZE,
+  connectionLogPage,
+  connectionLogRows,
+  formatClock
+} from "../lib/connection-log.js";
 import { TELEMETRY_PUSH_MS } from "../lib/constants.js";
 import {
   formatBytes,
@@ -105,24 +111,17 @@ function LatencyChannel({ label, stats }) {
   );
 }
 
-function FeedLink({ gateway }) {
-  const status = gateway?.status || "idle";
-  const meta = GATEWAY_STATUS[status] || { label: status, chip: "chip-paused" };
+/* ── feed connection history ─────────────────────────────────────── */
+
+/** Feed socket counters, now hosted by the connection panel beside its log. */
+function FeedSummary({ gateway }) {
   const links = Number(gateway?.reconnects) || 0;
   const disconnects = Number(gateway?.disconnects) || 0;
   const connected = Boolean(gateway?.connectedAt);
 
   return (
-    <div className="border-2 border-line bg-night-950/60 p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="label flex items-center gap-1.5">
-          <Icon name="i-link" className="h-3 w-3" /> Feed socket
-        </span>
-        <span className={`chip ${meta.chip}`} title={gateway?.lastError || `Upstream ${gateway?.upstream || "unknown"}`}>
-          <span className="led" />{meta.label}
-        </span>
-      </div>
-      <dl className="mt-2 grid grid-cols-3 gap-1.5">
+    <>
+      <dl className="grid grid-cols-1 gap-1.5 @xs:grid-cols-3">
         <div
           className="lat-metric"
           title="Successful upstream WebSocket handshakes since this worker started, including the first link."
@@ -146,16 +145,129 @@ function FeedLink({ gateway }) {
         </div>
       </dl>
       {gateway?.lastError ? (
-        <p className="mt-2 flex items-start gap-1.5 font-mono text-meta leading-snug text-danger">
+        <p className="flex items-start gap-1.5 font-mono text-meta leading-snug text-danger">
           <Icon name="i-alert" className="mt-px h-3 w-3 shrink-0" />
           <span className="break-words">{gateway.lastError}</span>
         </p>
       ) : null}
-    </div>
+    </>
   );
 }
 
-function LatencyPanel({ gateway, latency, fetchLatency, refreshLatency, notify }) {
+/**
+ * Feed socket counters plus a paginated chronological table of connect /
+ * disconnect / reconnect transitions. Every disconnect row carries the session
+ * duration before the link ended; paging keeps the table at a fixed height.
+ */
+function ConnectionLogPanel({ gateway, log }) {
+  const rows = useMemo(() => connectionLogRows(log), [log]);
+  const [page, setPage] = useState(0);
+  const paged = useMemo(() => connectionLogPage(rows, page), [rows, page]);
+  const status = gateway?.status || "idle";
+  const meta = GATEWAY_STATUS[status] || { label: status, chip: "chip-paused" };
+
+  return (
+    <section className="panel @container" data-accent="cyan">
+      <div className="panel-head">
+        <h2 className="panel-title"><Icon name="i-link" className="h-4 w-4 text-info" /> Feed connection log</h2>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <span className={`chip ${meta.chip}`} title={gateway?.lastError || `Upstream ${gateway?.upstream || "unknown"}`}>
+            <span className="led" />{meta.label}
+          </span>
+          <span className="tag hidden shrink-0 gap-1.5 text-info @[19rem]:inline-flex" title="Kept in memory since this worker started">
+            <span className="led" aria-hidden="true" /> {formatInt(rows.length)} {rows.length === 1 ? "event" : "events"} · newest first
+          </span>
+        </div>
+      </div>
+      <div className="panel-body">
+        <FeedSummary gateway={gateway} />
+        {rows.length === 0 ? (
+          <p className="max-w-[65ch] text-copy text-faint">
+            No connection events yet. Links, drops and reconnects appear here as they happen; the history starts fresh when the worker restarts.
+          </p>
+        ) : (
+          <>
+            <div className="overflow-auto border-2 border-line">
+              <table className="w-full min-w-[32rem] border-collapse font-mono text-meta tabular-nums">
+                <caption className="sr-only">
+                  WebSocket connection events, newest first, with the session duration of every disconnect
+                </caption>
+                <thead>
+                  <tr className="border-b-2 border-line bg-night-900/80 text-label uppercase tracking-[0.08em] text-faint">
+                    <th scope="col" className="px-2.5 py-1.5 text-left font-medium">Time</th>
+                    <th scope="col" className="px-2 py-1.5 text-left font-medium">Event</th>
+                    <th
+                      scope="col"
+                      className="px-2 py-1.5 text-right font-medium"
+                      title="How long the socket was connected before a disconnect"
+                    >
+                      Session
+                    </th>
+                    <th scope="col" className="px-2 py-1.5 text-left font-medium">Detail</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {paged.rows.map((row) => (
+                    <tr
+                      key={row.id}
+                      className="border-b border-line/60 last:border-b-0 text-ink-dim"
+                    >
+                      <td className="whitespace-nowrap px-2.5 py-1.5 text-faint">{formatClock(row.at)}</td>
+                      <td className="px-2 py-1.5">
+                        <span className={`chip ${row.chip}`}><span className="led" />{row.label}</span>
+                      </td>
+                      <td
+                        className={`whitespace-nowrap px-2 py-1.5 text-right ${
+                          row.kind === "disconnect" ? `font-semibold ${row.tone}` : "text-muted"
+                        }`}
+                        title={row.kind === "disconnect" ? `Session lasted ${row.sessionLabel} before disconnect` : "No session ended here"}
+                      >
+                        {row.sessionLabel}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <span className="block max-w-full truncate text-ink-dim" title={row.detail}>{row.detail}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2 font-mono text-label uppercase tracking-[0.08em] text-faint">
+              <span>
+                {formatInt(paged.from)}–{formatInt(paged.to)} of {formatInt(paged.total)} · page {paged.page + 1}/{paged.pageCount}
+              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  className="btn btn-sm"
+                  type="button"
+                  onClick={() => setPage((current) => Math.max(0, current - 1))}
+                  disabled={paged.page === 0}
+                  aria-label="Previous connection events"
+                >
+                  <Icon name="i-chevron" className="h-3 w-3 rotate-180" /> Prev
+                </button>
+                <button
+                  className="btn btn-sm"
+                  type="button"
+                  onClick={() => setPage((current) => current + 1)}
+                  disabled={paged.page >= paged.pageCount - 1}
+                  aria-label="Next connection events"
+                >
+                  Next <Icon name="i-chevron" className="h-3 w-3" />
+                </button>
+              </div>
+            </div>
+            <p className="max-w-[65ch] text-copy text-faint">
+              Newest transition first, {formatInt(CONNECTION_LOG_PAGE_SIZE)} rows per page. A <b className="text-danger">disconnect</b> always shows the session length before the link ended, whether it was an upstream close, a socket error, a heartbeat failure or a manual reconnect.
+            </p>
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function LatencyPanel({ latency, fetchLatency, refreshLatency, notify }) {
   const channels = latency?.channels || {};
   const fresh = latency?.freshest || null;
   const [probing, setProbing] = useState(false);
@@ -202,7 +314,6 @@ function LatencyPanel({ gateway, latency, fetchLatency, refreshLatency, notify }
         </span>
       </div>
       <div className="panel-body">
-        <FeedLink gateway={gateway} />
         <div className="flex flex-wrap items-end justify-between gap-3 border-2 border-line bg-night-950/70 p-3">
           <div className="min-w-0">
             <span className="label flex items-center gap-1.5"><Icon name="i-wifi" className="h-3 w-3" /> Worker → upstream</span>
@@ -691,6 +802,7 @@ function SystemPanel({ system, fetchSystem }) {
 // from repainting the whole window.
 const MemoBenchmarkPanel = memo(BenchmarkPanel);
 const MemoLatencyPanel = memo(LatencyPanel);
+const MemoConnectionLogPanel = memo(ConnectionLogPanel);
 const MemoSystemPanel = memo(SystemPanel);
 
 /**
@@ -763,7 +875,6 @@ export function MonitorWindow({ open, snapshot, worker, notify, onClose }) {
                 onExpandChart={setChartExpanded}
               />
               <MemoLatencyPanel
-                gateway={snapshot.gateway}
                 latency={snapshot.latency}
                 fetchLatency={worker.fetchLatency}
                 refreshLatency={worker.refreshLatency}
@@ -772,6 +883,7 @@ export function MonitorWindow({ open, snapshot, worker, notify, onClose }) {
             </div>
             <MemoSystemPanel system={snapshot.system} fetchSystem={worker.fetchSystem} />
           </div>
+          <MemoConnectionLogPanel gateway={snapshot.gateway} log={snapshot.gateway?.connectionLog} />
         </div>
       )}
     </ModalShell>
