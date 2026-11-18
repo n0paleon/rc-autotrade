@@ -89,6 +89,8 @@ pub struct MockStats {
     pub last_error: Option<String>,
     pub attempts: i64,
     pub reconnects: i64,
+    /// Simulated established links that ended, mirroring the real gateway.
+    pub disconnects: i64,
     pub event_count: i64,
     /// Marketplace commands only, mirroring the real gateway.
     pub market_event_count: i64,
@@ -131,6 +133,7 @@ impl MockHandle {
             "lastError": stats.last_error,
             "attempts": stats.attempts,
             "reconnects": stats.reconnects,
+            "disconnects": stats.disconnects,
             "eventCount": stats.event_count,
             "marketEventCount": stats.market_event_count,
             "parseErrors": stats.parse_errors,

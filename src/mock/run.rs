@@ -170,6 +170,7 @@ pub(super) async fn run(
                         tokio::time::sleep(Duration::from_millis(200)).await;
                         {
                             let mut guard = lock(&stats);
+                            guard.disconnects += 1;
                             guard.reconnects += 1;
                             guard.connected_at = Some(now_ms());
                         }

@@ -310,6 +310,10 @@ pub(super) async fn run(
                 let mut stats = lock(&stats);
                 stats.connected_at = None;
                 stats.last_ping_ms = None;
+                // The link is gone whether the upstream closed it, a read or
+                // write failed, or the deck asked for a reconnect. Count it once
+                // per established socket so the monitor can show feed churn.
+                stats.disconnects += 1;
             }
             if stopped {
                 set_status(&stats, &events, &upstream, "stopped");

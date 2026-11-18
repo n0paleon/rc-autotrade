@@ -99,6 +99,7 @@ async fn connects_receives_frames_and_counts_them() {
 
     let stats = handle.stats_json();
     assert_eq!(stats["status"], "online");
+    assert_eq!(stats["disconnects"], 0);
     assert_eq!(stats["eventCount"], 1);
     assert_eq!(stats["marketEventCount"], 1);
     assert_eq!(stats["commands"][0]["cmd"], "marketplace_orders_update");
@@ -152,5 +153,8 @@ async fn reconnects_after_the_socket_closes() {
     })
     .await;
     assert!(reconnected.is_ok(), "did not reconnect");
+    let stats = handle.stats_json();
+    assert!(stats["reconnects"].as_i64().unwrap_or(0) >= 2);
+    assert!(stats["disconnects"].as_i64().unwrap_or(0) >= 1);
     handle.stop().await;
 }

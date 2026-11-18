@@ -109,5 +109,6 @@ async fn reconnect_bumps_the_counter() {
     tokio::time::sleep(Duration::from_millis(400)).await;
     let stats = handle.stats_json();
     assert!(stats["reconnects"].as_i64().unwrap() >= 2);
+    assert!(stats["disconnects"].as_i64().unwrap() >= 1);
     handle.stop().await;
 }
