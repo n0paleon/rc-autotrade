@@ -27,6 +27,11 @@ pub use crate::constants::USER_AGENT;
 pub const MAX_BACKOFF_MS: u64 = 30_000;
 pub const HEARTBEAT_MS: u64 = 25_000;
 pub const HANDSHAKE_TIMEOUT_MS: u64 = 15_000;
+/// Spread applied to every retry so clients do not reconnect in lockstep.
+pub const RECONNECT_JITTER_MS: u64 = 500;
+/// A socket that stayed up this long is healthy: losing it is a network blip,
+/// so the next attempt skips the exponential backoff.
+pub const HEALTHY_UPTIME_MS: u64 = 30_000;
 
 /// Supplies the current `(access_token, cookie)` pair. The feed is reconnected
 /// by the wiring after a token change.
