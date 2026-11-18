@@ -11,8 +11,8 @@ use tokio_tungstenite::tungstenite::Message;
 
 use super::transport::{build_request, connector};
 use super::{
-    GatewayCommand, GatewayConfig, GatewayEvent, GatewayStats, HANDSHAKE_TIMEOUT_MS, HEARTBEAT_MS,
-    MAX_BACKOFF_MS, record_error, set_status,
+    GatewayCommand, GatewayConfig, GatewayEvent, GatewayStats, HANDSHAKE_TIMEOUT_MS,
+    HEALTHY_UPTIME_MS, HEARTBEAT_MS, MAX_BACKOFF_MS, RECONNECT_JITTER_MS, record_error, set_status,
 };
 use crate::clock::now_ms;
 use crate::latency::Channel;
@@ -147,7 +147,13 @@ pub(super) async fn run(
             }
         };
 
+        // Per-attempt retry inputs: how long the socket actually stayed up and
+        // whether the deck asked for this reconnect.
+        let mut connected_for: Option<Duration> = None;
+        let mut manual_reconnect = false;
+
         if let Some(socket) = socket {
+            let connected_at = Instant::now();
             let (mut write, mut read) = socket.split();
             let mut heartbeat = tokio::time::interval_at(
                 Instant::now() + Duration::from_millis(HEARTBEAT_MS),
@@ -302,6 +308,7 @@ pub(super) async fn run(
                 }
             }
 
+            connected_for = Some(connected_at.elapsed());
             let _ = write.close().await;
             config
                 .logger
@@ -320,6 +327,7 @@ pub(super) async fn run(
                 break;
             }
             if let Some(reason) = reconnect_reason {
+                manual_reconnect = true;
                 config
                     .logger
                     .info("gateway", format!("reconnecting: {reason}"));
@@ -327,22 +335,43 @@ pub(super) async fn run(
             set_status(&stats, &events, &upstream, "offline");
         }
 
-        // Jittered exponential backoff.
-        attempts += 1;
-        let exponent = attempts.clamp(0, 5) as u32;
-        let base = (1_000_u64 * 2_u64.pow(exponent)).min(MAX_BACKOFF_MS);
-        let jitter = (rand::random::<f64>() * 500.0) as u64;
-        let delay = base.saturating_add(jitter);
-        config
-            .logger
-            .info("gateway", format!("retrying in {delay}ms"));
-        config.logger.debug_lazy("gateway", || {
-            format!(
-                "attempt {} failed; backoff base {base}ms + {}ms jitter",
-                attempts,
-                delay - base
-            )
-        });
+        // A healthy socket that drops is a network blip, and an explicit
+        // reconnect is user intent: both retry after the jitter only. A failed
+        // handshake, or a socket that keeps dying young, still backs off so an
+        // upstream outage cannot be hammered.
+        let was_healthy =
+            connected_for.is_some_and(|uptime| uptime >= Duration::from_millis(HEALTHY_UPTIME_MS));
+        let retry_now = was_healthy || manual_reconnect;
+        if retry_now {
+            attempts = 0;
+        } else {
+            attempts += 1;
+        }
+        let jitter = (rand::random::<f64>() * RECONNECT_JITTER_MS as f64) as u64;
+        let (base, delay) = if retry_now {
+            (0, jitter)
+        } else {
+            let exponent = attempts.clamp(0, 5) as u32;
+            let base = (1_000_u64 * 2_u64.pow(exponent)).min(MAX_BACKOFF_MS);
+            (base, base.saturating_add(jitter))
+        };
+        if retry_now {
+            config.logger.info(
+                "gateway",
+                format!("retrying immediately (jitter {jitter}ms)"),
+            );
+        } else {
+            config
+                .logger
+                .info("gateway", format!("retrying in {delay}ms"));
+            config.logger.debug_lazy("gateway", || {
+                format!(
+                    "attempt {} failed; backoff base {base}ms + {}ms jitter",
+                    attempts,
+                    delay - base
+                )
+            });
+        }
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(delay)) => {}
             command = commands.recv() => {
