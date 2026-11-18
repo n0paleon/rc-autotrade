@@ -108,7 +108,7 @@ pub(super) async fn delete_history(_auth: Auth, State(state): State<Arc<AppState
 
     state.logger.info(
         "stats",
-        "lifetime stats, per-target fill rates and loot log reset",
+        "lifetime stats, per-target winrates and loot log reset",
     );
     state.broadcast("stats", serde_json::to_value(stats).unwrap_or(Value::Null));
     state.broadcast(

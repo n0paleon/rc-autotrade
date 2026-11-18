@@ -48,7 +48,7 @@ pub(super) struct Runtime {
     pub(super) orders: i64,
     pub(super) fills: i64,
     /// Fills with non-negative profit. Zero profit is a win. This is the
-    /// per-target winrate numerator; `fills` stays the fill-rate numerator.
+    /// per-target winrate numerator.
     pub(super) wins: i64,
     pub(super) failures: i64,
     pub(super) last_result: Option<Value>,

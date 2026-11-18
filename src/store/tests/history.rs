@@ -36,12 +36,9 @@ fn records_orders_in_history_and_report() {
     assert_eq!(report.items.len(), 1);
     assert_eq!(report.items[0].qty, 2);
     assert!((report.items[0].spent_rlt - 0.2).abs() < 1e-9);
-    // One filled and one failed order: half of the completed attempts won,
-    // and half of them filled.
+    // One filled and one failed order: half of the completed attempts won.
     assert_eq!(report.totals.success_pct, Some(50));
     assert_eq!(report.items[0].success_pct, Some(50));
-    assert_eq!(report.totals.fill_pct, Some(50));
-    assert_eq!(report.items[0].fill_pct, Some(50));
 }
 
 #[test]
@@ -71,12 +68,10 @@ fn report_winrate_counts_only_non_negative_profit_fills() {
     assert_eq!(report.totals.fills, 3);
     assert_eq!(report.totals.wins, 2);
     assert_eq!(report.totals.failed, 1);
-    // Two wins out of four completed attempts, three of which filled.
+    // Two wins out of four completed attempts.
     assert_eq!(report.totals.success_pct, Some(50));
     assert_eq!(report.items[0].wins, 2);
     assert_eq!(report.items[0].success_pct, Some(50));
-    assert_eq!(report.totals.fill_pct, Some(75));
-    assert_eq!(report.items[0].fill_pct, Some(75));
 
     // The session HUD uses the same definition and keeps its own counter.
     assert_eq!(store.state.stats.wins, 2);
@@ -88,7 +83,7 @@ fn report_winrate_counts_only_non_negative_profit_fills() {
 }
 
 #[test]
-fn report_rates_survive_a_worker_restart() {
+fn report_winrate_survives_a_worker_restart() {
     let dir = temp_dir("winrate-persist");
     let logger = Arc::new(Logger::new("error"));
     {
@@ -105,13 +100,12 @@ fn report_rates_survive_a_worker_restart() {
             .unwrap();
     }
 
-    // Nothing is replayed here: the rates come straight from the SQLite report
-    // row, so the target card keeps its numbers after a restart.
+    // Nothing is replayed here: the winrate comes straight from the SQLite
+    // report row, so the target card keeps its number after a restart.
     let reopened = Store::open(dir.clone(), logger).unwrap();
     let report = reopened.report_view();
     assert_eq!(report.items[0].wins, 1);
     assert_eq!(report.totals.success_pct, Some(33));
-    assert_eq!(report.totals.fill_pct, Some(67));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

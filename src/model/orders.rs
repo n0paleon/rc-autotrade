@@ -127,8 +127,6 @@ pub struct ProductView {
     pub margin_pct: Option<f64>,
     /// Non-negative-profit fills as a share of completed attempts.
     pub success_pct: Option<i64>,
-    /// Fills as a share of completed attempts, regardless of profit.
-    pub fill_pct: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -145,8 +143,6 @@ pub struct ReportTotals {
     pub margin_pct: Option<f64>,
     /// Non-negative-profit fills as a share of completed attempts.
     pub success_pct: Option<i64>,
-    /// Fills as a share of completed attempts, regardless of profit.
-    pub fill_pct: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
