@@ -8,6 +8,8 @@ use axum::extract::ws::{Message as AxumMessage, WebSocket, WebSocketUpgrade};
 use axum::routing::get;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio_tungstenite::tungstenite::Error as WsError;
+use tokio_tungstenite::tungstenite::error::ProtocolError;
 
 use crate::clock::now_ms;
 
@@ -51,6 +53,84 @@ async fn spawn_ws_server(connections: Arc<AtomicUsize>) -> String {
 
 fn tracker() -> Arc<Mutex<LatencyTracker>> {
     Arc::new(Mutex::new(LatencyTracker::new(120, Arc::new(now_ms))))
+}
+
+#[test]
+fn socket_errors_are_classified_by_variant() {
+    use std::io::{Error as IoError, ErrorKind};
+
+    assert_eq!(
+        super::run::classify_socket_error(&WsError::ConnectionClosed),
+        "closed"
+    );
+    assert_eq!(
+        super::run::classify_socket_error(&WsError::Io(IoError::from(ErrorKind::ConnectionReset))),
+        "io-connection-reset"
+    );
+    assert_eq!(
+        super::run::classify_socket_error(&WsError::Io(IoError::from(ErrorKind::BrokenPipe))),
+        "io-broken-pipe"
+    );
+    assert_eq!(
+        super::run::classify_socket_error(&WsError::Io(IoError::from(ErrorKind::UnexpectedEof))),
+        "io-unexpected-eof"
+    );
+    assert_eq!(
+        super::run::classify_socket_error(&WsError::Protocol(
+            ProtocolError::ResetWithoutClosingHandshake
+        )),
+        "protocol-reset-without-close"
+    );
+    assert_eq!(
+        super::run::classify_socket_error(&WsError::Protocol(ProtocolError::MaskedFrameFromServer)),
+        "protocol"
+    );
+    assert_eq!(
+        super::run::classify_socket_error(&WsError::Utf8("bad".into())),
+        "utf8"
+    );
+    assert_eq!(
+        super::run::classify_socket_error(&WsError::AttackAttempt),
+        "attack-attempt"
+    );
+}
+
+#[test]
+fn socket_failure_message_carries_connection_context() {
+    let error = WsError::Io(std::io::Error::new(
+        std::io::ErrorKind::ConnectionReset,
+        "reset ?token=abc.def",
+    ));
+    let message = super::run::socket_failure_message(
+        "socket error",
+        &error,
+        "nws.rollercoin.com",
+        Duration::from_millis(12_300),
+        Some(Duration::from_millis(4_500)),
+        true,
+    );
+
+    assert!(message.starts_with("socket error (io-connection-reset):"));
+    assert!(message.contains("upstream nws.rollercoin.com"));
+    assert!(message.contains("session 12.3s"));
+    assert!(message.contains("last text frame 4.5s ago"));
+    assert!(message.contains("ping outstanding"));
+    assert!(!message.contains("abc.def"), "the token must be redacted");
+}
+
+#[test]
+fn socket_failure_message_reports_when_no_frame_arrived() {
+    let message = super::run::socket_failure_message(
+        "heartbeat ping failed",
+        &WsError::ConnectionClosed,
+        "nws.rollercoin.com",
+        Duration::from_millis(250),
+        None,
+        false,
+    );
+
+    assert!(message.contains("no text frames received"));
+    assert!(!message.contains("ping outstanding"));
 }
 
 #[test]

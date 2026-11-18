@@ -7,7 +7,8 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::error::ProtocolError;
+use tokio_tungstenite::tungstenite::{Error as WsError, Message};
 
 use super::transport::{build_request, connector};
 use super::{
@@ -19,6 +20,69 @@ use crate::clock::now_ms;
 use crate::latency::Channel;
 use crate::lock::lock;
 use crate::redact::redact_secrets;
+
+/// Category for a WebSocket read/write failure. The `Display` text mixes OS,
+/// TLS and protocol wording, so logs and the connection history key off the
+/// variant instead of guessing from a message.
+///
+/// IO failures are split because a reset, an EOF and a timeout point at
+/// different causes even though tungstenite wraps all three in `Io`.
+pub(super) fn classify_socket_error(error: &WsError) -> &'static str {
+    use std::io::ErrorKind;
+
+    match error {
+        WsError::ConnectionClosed | WsError::AlreadyClosed => "closed",
+        WsError::Io(error) => match error.kind() {
+            ErrorKind::ConnectionReset => "io-connection-reset",
+            ErrorKind::ConnectionAborted => "io-connection-aborted",
+            ErrorKind::BrokenPipe => "io-broken-pipe",
+            ErrorKind::UnexpectedEof => "io-unexpected-eof",
+            ErrorKind::TimedOut => "io-timed-out",
+            ErrorKind::NotConnected => "io-not-connected",
+            ErrorKind::WouldBlock => "io-would-block",
+            _ => "io",
+        },
+        WsError::Tls(_) => "tls",
+        WsError::Capacity(_) => "capacity",
+        WsError::Protocol(ProtocolError::ResetWithoutClosingHandshake) => {
+            "protocol-reset-without-close"
+        }
+        WsError::Protocol(_) => "protocol",
+        WsError::WriteBufferFull(_) => "write-buffer-full",
+        WsError::Utf8(_) => "utf8",
+        WsError::AttackAttempt => "attack-attempt",
+        WsError::Url(_) => "url",
+        WsError::Http(_) => "http",
+        WsError::HttpFormat(_) => "http-format",
+    }
+}
+
+/// One line that says what failed, why, and where. The session duration and
+/// text-frame age separate a dead upstream from a socket that has been silent
+/// because the network path, not the feed, went away.
+pub(super) fn socket_failure_message(
+    action: &str,
+    error: &WsError,
+    upstream: &str,
+    session: Duration,
+    last_text_age: Option<Duration>,
+    ping_pending: bool,
+) -> String {
+    let mut context = format!("upstream {upstream}, session {:.1}s", session.as_secs_f64());
+    match last_text_age {
+        Some(age) => context.push_str(&format!(", last text frame {:.1}s ago", age.as_secs_f64())),
+        None => context.push_str(", no text frames received"),
+    }
+    if ping_pending {
+        context.push_str(", ping outstanding");
+    }
+
+    format!(
+        "{action} ({}): {} [{context}]",
+        classify_socket_error(error),
+        redact_secrets(&error.to_string()),
+    )
+}
 
 pub(super) async fn run(
     config: GatewayConfig,
@@ -169,6 +233,7 @@ pub(super) async fn run(
                 Duration::from_millis(HEARTBEAT_MS),
             );
             let mut ping_sent_at: Option<Instant> = None;
+            let mut last_text_at: Option<Instant> = None;
             let mut reconnect_reason: Option<String> = None;
             // Every exit path from the read loop below assigns this before it
             // breaks, so the disconnect row always carries a real reason.
@@ -179,6 +244,7 @@ pub(super) async fn run(
                     incoming = read.next() => {
                         match incoming {
                             Some(Ok(Message::Text(text))) => {
+                                last_text_at = Some(Instant::now());
                                 {
                                     let mut stats = lock(&stats);
                                     stats.last_message_at = Some(now_ms());
@@ -248,10 +314,17 @@ pub(super) async fn run(
                                     format!("upstream ping ({} bytes) -> pong", payload.len())
                                 });
                                 if let Err(error) = write.send(Message::Pong(payload)).await {
-                                    disconnect_reason = Some(format!(
-                                        "pong write failed: {}",
-                                        redact_secrets(&error.to_string())
-                                    ));
+                                    let message = socket_failure_message(
+                                        "pong write failed",
+                                        &error,
+                                        &upstream,
+                                        connected_at.elapsed(),
+                                        last_text_at.map(|at| at.elapsed()),
+                                        ping_sent_at.is_some(),
+                                    );
+                                    config.logger.warn("gateway", &message);
+                                    record_error(&stats, &message);
+                                    disconnect_reason = Some(message);
                                     break;
                                 }
                             }
@@ -298,12 +371,17 @@ pub(super) async fn run(
                                 });
                             }
                             Some(Err(error)) => {
-                                let message = redact_secrets(&error.to_string());
+                                let message = socket_failure_message(
+                                    "socket error",
+                                    &error,
+                                    &upstream,
+                                    connected_at.elapsed(),
+                                    last_text_at.map(|at| at.elapsed()),
+                                    ping_sent_at.is_some(),
+                                );
                                 record_error(&stats, &message);
-                                config
-                                    .logger
-                                    .warn("gateway", format!("socket error: {message}"));
-                                disconnect_reason = Some(format!("socket error: {message}"));
+                                config.logger.warn("gateway", &message);
+                                disconnect_reason = Some(message);
                                 break;
                             }
                             None => {
@@ -315,10 +393,17 @@ pub(super) async fn run(
                     _ = heartbeat.tick() => {
                         ping_sent_at = Some(Instant::now());
                         if let Err(error) = write.send(Message::Ping(Vec::new().into())).await {
-                            disconnect_reason = Some(format!(
-                                "heartbeat ping failed: {}",
-                                redact_secrets(&error.to_string())
-                            ));
+                            let message = socket_failure_message(
+                                "heartbeat ping failed",
+                                &error,
+                                &upstream,
+                                connected_at.elapsed(),
+                                last_text_at.map(|at| at.elapsed()),
+                                ping_sent_at.is_some(),
+                            );
+                            config.logger.warn("gateway", &message);
+                            record_error(&stats, &message);
+                            disconnect_reason = Some(message);
                             break;
                         }
                     }
