@@ -36,7 +36,7 @@ export const ACTIVITY_HISTORY_DAYS = 30;
 export const DEFAULT_ACTIVITY_RANGE = "1h";
 
 /** Rows per page, mirrored from `ITEM_ACTIVITY_PAGE_SIZE` in `src/constants.rs`. */
-export const ACTIVITY_PAGE_SIZE = 25;
+export const ACTIVITY_PAGE_SIZE = 100;
 
 /** Max rows the API serves per request, mirrored from `ITEM_ACTIVITY_LIMIT`. */
 export const ACTIVITY_MAX_ROWS = 250;

@@ -694,7 +694,7 @@ describe the filtered table, and the deck renders a zero badge for known types
 the range did not count. The deck uses the cursor style of the loot log — rows
 accumulate and a **Load more** button asks for the next batch — so `offset` is
 simply how many rows are already held.
-`limit` defaults to `ITEM_ACTIVITY_PAGE_SIZE` (25) and caps at
+`limit` defaults to `ITEM_ACTIVITY_PAGE_SIZE` (100) and caps at
 `ITEM_ACTIVITY_LIMIT` (250); an `offset` past the end returns an empty page that
 still reports the real `totalRows`.
 

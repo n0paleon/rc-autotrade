@@ -105,7 +105,7 @@ pub const ITEM_ACTIVITY_LIMIT: usize = 250;
 
 /// Rows per page when the caller does not ask for a size. The deck pages the
 /// table, so a full range no longer has to fit in one response.
-pub const ITEM_ACTIVITY_PAGE_SIZE: usize = 25;
+pub const ITEM_ACTIVITY_PAGE_SIZE: usize = 100;
 
 /// Control-socket telemetry cadence. Every `TELEMETRY_INTERVAL_SECS` the
 /// socket pushes `gateway` (which carries `marketEventCount`), `system`,
