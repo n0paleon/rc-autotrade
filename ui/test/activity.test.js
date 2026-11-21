@@ -2,6 +2,7 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 
 import {
+  ACTIVITY_PAGE_SIZE,
   ACTIVITY_RANGES,
   ACTIVITY_SORT_COLUMNS,
   BOOTSTRAP_TARGET_DEFAULTS,
@@ -497,10 +498,11 @@ test("a refetch rebuilds every loaded page instead of snapping to page one", asy
     };
   };
 
-  // 60 loaded rows fit in one request (the API's cap is 250).
+  // 60 loaded rows are less than one page: a single full-page request rebuilds
+  // them all, and the short page ends the walk.
   const fresh = await fetchActivityRows(fetchPage, 60);
   assert.deepEqual(ids(fresh.rows), ids(all), "all 60 rows survive the refetch");
-  assert.deepEqual(calls, [[0, 60]]);
+  assert.deepEqual(calls, [[0, ACTIVITY_PAGE_SIZE]]);
   assert.equal(fresh.activity.totalRows, 60);
   assert.deepEqual(fresh.window, { since: 1, until: 2 });
 
