@@ -1,11 +1,27 @@
 use serde_json::{Value, json};
 
 use crate::constants::{APP_NAME, APP_VERSION};
-use crate::model::{OrderEntry, Target};
+use crate::model::{OrderEntry, Settings, Target};
 use crate::store::Store;
 use crate::timings;
 
 use super::{BACKUP_FORMAT_VERSION, BACKUP_KIND};
+
+/// The settings block a backup carries.
+///
+/// `mode` is intentionally absent: the trading mode belongs to the worker that
+/// owns the session, not to a file that gets copied between machines. The
+/// legacy `dryRun` / `paused` mirrors are omitted for the same reason — and
+/// because a reader that has to infer a mode from a missing pair would default
+/// to live.
+fn settings_json(settings: &Settings) -> Value {
+    json!({
+        "delayPerOrder": settings.delay_per_order,
+        "maxOrdersPerMinute": settings.max_orders_per_minute,
+        "autoRefresh": settings.auto_refresh,
+        "totalPriceMarkupPct": settings.total_price_markup_pct,
+    })
+}
 
 fn target_json(target: &Target) -> Value {
     let mut value = json!({
@@ -147,7 +163,7 @@ pub fn build_backup(store: &Store, include_credentials: bool, now: i64) -> Resul
         "data": {
             "createdAt": created_at,
             "reportSince": report_since,
-            "settings": store.state.settings,
+            "settings": settings_json(&store.state.settings),
             "targets": targets,
             "stats": stats,
             "reportProducts": report_products,

@@ -7,10 +7,10 @@ use serde_json::json;
 use super::paths::safe_prefix;
 use super::{
     BACKUP_FORMAT_VERSION, BACKUP_KIND, backup_filename, build_backup, create_database_snapshot,
-    database_filename, parse_backup, restore_backup, timestamp,
+    database_filename, parse_backup, restore_backup, sanitize_snapshot_mode, timestamp,
 };
 use crate::logger::Logger;
-use crate::model::Target;
+use crate::model::{Mode, Target};
 use crate::store::Store;
 
 const NOW: i64 = 1_777_982_400_000; // 2026-05-05T12:00:00Z
@@ -78,6 +78,8 @@ fn round_trips_a_backup_into_a_fresh_store() {
     source.state.stats.spent_rlt = 0.9;
     source.state.stats.profit_rlt = 0.1;
     source.state.stats.orders_sent = 1;
+    // The source worker is armed live: that is exactly what must not travel.
+    source.state.settings.mode = Mode::Live;
     source.flush().unwrap();
     source
         .apply_session_patch(crate::validation::SessionPatch {
@@ -92,6 +94,19 @@ fn round_trips_a_backup_into_a_fresh_store() {
     assert_eq!(payload["counts"]["targets"], 1);
     assert_eq!(payload["counts"]["orders"], 1);
     assert_eq!(payload["counts"]["reportProducts"], 1);
+    let exported_settings = payload["data"]["settings"]
+        .as_object()
+        .expect("settings block");
+    assert!(
+        !exported_settings.contains_key("mode"),
+        "a backup must not carry the trading mode: {exported_settings:?}"
+    );
+    assert!(!exported_settings.contains_key("dryRun"));
+    assert!(!exported_settings.contains_key("paused"));
+    assert_eq!(
+        exported_settings["delayPerOrder"],
+        source.state.settings.delay_per_order
+    );
     assert_eq!(
         payload["credentials"]["session"]["accessToken"],
         "access-token-123456"
@@ -125,9 +140,109 @@ fn round_trips_a_backup_into_a_fresh_store() {
             .report
             .contains_key("6319f7baa8ce530569ed16b9")
     );
+    assert_eq!(
+        destination.state.settings.mode,
+        Mode::Shadow,
+        "a restore never inherits the source worker's live mode"
+    );
 
     let _ = std::fs::remove_dir_all(source_dir);
     let _ = std::fs::remove_dir_all(destination_dir);
+}
+
+#[test]
+fn import_ignores_the_file_trading_mode_and_forces_shadow() {
+    let payload = json!({
+        "kind": BACKUP_KIND,
+        // A pre-bump (v1) backup from an armed worker: the old format still
+        // carried `settings.mode`, and migration is exactly where this matters.
+        "formatVersion": 1,
+        "schemaVersion": crate::db::SCHEMA_VERSION,
+        "exportedAt": NOW,
+        "data": {
+            "createdAt": NOW,
+            "reportSince": NOW,
+            // A source worker armed live: every mode-shaped key says so. None
+            // of it may survive the import.
+            "settings": {
+                "delayPerOrder": 250,
+                "maxOrdersPerMinute": 30,
+                "mode": "live",
+                "dryRun": false,
+                "paused": false,
+                "autoRefresh": false,
+                "totalPriceMarkupPct": 2.5
+            },
+            "stats": { "since": NOW },
+            "targets": [],
+            "orders": [],
+            "reportProducts": []
+        }
+    });
+
+    let parsed = parse_backup(&payload, NOW);
+    assert!(parsed.ok, "parse errors: {:?}", parsed.errors);
+    assert!(
+        parsed
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("shadow mode")),
+        "warnings: {:?}",
+        parsed.warnings
+    );
+    let mut value = parsed.value.expect("parsed value");
+    assert_eq!(value.settings.mode, Mode::Shadow);
+    // The non-trading settings still round-trip.
+    assert_eq!(value.settings.delay_per_order, 250);
+    assert_eq!(value.settings.max_orders_per_minute, 30);
+    assert!(!value.settings.auto_refresh);
+    assert_eq!(value.settings.total_price_markup_pct, 2.5);
+
+    // Defense in depth: even a hand-built document that still says live must be
+    // written back as shadow, with legacy mirrors that read as dry-run.
+    value.settings.mode = Mode::Live;
+    let (mut destination, destination_dir) = store("import-mode");
+    restore_backup(&mut destination, &value, false, false, NOW).unwrap();
+    assert_eq!(destination.state.settings.mode, Mode::Shadow);
+    let (mode, dry_run, paused): (String, i64, i64) = destination
+        .db
+        .query_row(
+            "SELECT mode, dry_run, paused FROM settings WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(mode, "shadow");
+    assert_eq!((dry_run, paused), (1, 0));
+
+    let _ = std::fs::remove_dir_all(destination_dir);
+}
+
+#[test]
+fn sqlite_export_snapshot_is_forced_to_shadow() {
+    let (mut source, dir) = store("snapshot-mode");
+    source.state.settings.mode = Mode::Live;
+    source.flush().unwrap();
+
+    let path = create_database_snapshot(&source, "export", NOW).unwrap();
+    sanitize_snapshot_mode(&path).unwrap();
+
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let (mode, dry_run, paused): (String, i64, i64) = conn
+        .query_row(
+            "SELECT mode, dry_run, paused FROM settings WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        mode, "shadow",
+        "a downloadable .db snapshot must not carry live mode"
+    );
+    assert_eq!((dry_run, paused), (1, 0));
+    drop(conn);
+
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

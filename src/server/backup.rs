@@ -53,9 +53,17 @@ pub(super) async fn get_backup(
         }
         "sqlite" | "db" => {
             // `VACUUM INTO` copies the whole database and can take a while.
+            // The download is a migration file, so its settings row is forced
+            // back to shadow before the bytes leave the worker: a manual
+            // restore must not inherit the source worker's armed mode.
             let snapshot = crate::blocking::run(|| {
                 let store = lock(&state.store);
-                crate::backup::create_database_snapshot(&store, "export", now)
+                let path = crate::backup::create_database_snapshot(&store, "export", now)?;
+                if let Err(message) = crate::backup::sanitize_snapshot_mode(&path) {
+                    let _ = std::fs::remove_file(&path);
+                    return Err(message);
+                }
+                Ok::<std::path::PathBuf, String>(path)
             });
             let path = match snapshot {
                 Ok(path) => path,
@@ -174,7 +182,7 @@ pub(super) async fn post_backup(
     state.logger.info(
         "backup",
         format!(
-            "restored {} targets and {} loot entries",
+            "restored {} targets and {} loot entries; trading mode forced to shadow",
             restored.targets, restored.orders
         ),
     );

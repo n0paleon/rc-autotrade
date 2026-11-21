@@ -1,16 +1,21 @@
 //! Portable backups.
 //!
 //! Two formats:
-//! * a versioned JSON document (`kind: "turu-rc-backup"`, format v1) holding
+//! * a versioned JSON document (`kind: "turu-rc-backup"`, format v2) holding
 //!   settings, targets, stats, the profit report, the loot log and — optionally
-//!   — the session credentials;
+//!   — the session credentials. The trading mode is deliberately absent: a
+//!   backup is data, not permission to trade;
 //! * a consistent SQLite copy written with `VACUUM INTO` (safe while the
-//!   worker is running, unlike copying the `.db` file).
+//!   worker is running, unlike copying the `.db` file), with its settings row
+//!   reset to [`RESTORE_MODE`] before download.
+//!
+//! Every import lands in [`RESTORE_MODE`]; no code path lets a file arm live
+//! trading on the receiving worker.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::model::{OrderEntry, Product, Settings, Stats, Target};
+use crate::model::{Mode, OrderEntry, Product, Settings, Stats, Target};
 
 mod derive;
 mod export;
@@ -25,13 +30,23 @@ mod tests;
 pub use export::build_backup;
 pub use parse::parse_backup;
 pub use paths::{backup_filename, database_filename, timestamp};
-pub use restore::{create_database_snapshot, restore_backup};
+pub use restore::{create_database_snapshot, restore_backup, sanitize_snapshot_mode};
 
 pub const BACKUP_KIND: &str = "turu-rc-backup";
-pub const BACKUP_FORMAT_VERSION: i64 = 1;
+/// v2 removed the trading mode from the settings block. The bump keeps a build
+/// that still defaults a missing `mode` to live from importing a new file.
+pub const BACKUP_FORMAT_VERSION: i64 = 2;
 pub const BACKUP_MAX_BYTES: usize = 64 * 1024 * 1024;
 pub const BACKUP_MAX_ORDERS: usize = 250_000;
 pub const BACKUP_DIRNAME: &str = "backups";
+
+/// The only trading mode a restore may produce.
+///
+/// A backup moves history, targets and settings between machines; it never
+/// carries permission to spend money. Both the JSON restore and the downloaded
+/// `.db` snapshot force this mode, so a migrated worker always starts in shadow
+/// and has to be armed deliberately.
+pub const RESTORE_MODE: Mode = Mode::Shadow;
 
 #[derive(Debug, Clone)]
 pub struct ReportProduct {

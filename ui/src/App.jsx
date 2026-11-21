@@ -2418,8 +2418,8 @@ function RuntimeConfigPanel({ snapshot, worker, notify, onReset, onBackup, baseU
             <Icon name="i-database" className="h-3.5 w-3.5" /> Backup &amp; migrate
           </h3>
           <p className="text-body leading-relaxed text-muted">
-            Export targets, settings, counters and the whole loot log to one portable file — or restore it
-            onto another worker.
+            Export targets, counters and the whole loot log to one portable file — or restore it onto
+            another worker. Trading mode is not included: a restored worker starts in shadow.
           </p>
           <button className="btn btn-ghost btn-sm btn-block" type="button" onClick={onBackup}>
             <Icon name="i-database" className="h-3.5 w-3.5" /> Open backup panel

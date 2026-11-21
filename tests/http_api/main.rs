@@ -2,6 +2,7 @@
 //! item-info auto-enrichment against a mock upstream.
 
 mod activity;
+mod backup;
 mod benchmark;
 mod configs;
 mod state;

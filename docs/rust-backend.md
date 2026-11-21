@@ -85,7 +85,7 @@ Rollercoin session — two of either will duplicate orders.
 | `src/worker/api.js` + `http.js` | `src/api.rs` | ported (rustls + HTTP/2) + tests |
 | `src/worker/session.js` | `src/session.rs` | helpers ported + tests (scheduler in wiring) |
 | `src/worker/keepalive.js` | `src/keepalive.rs` | ported + tests |
-| `src/worker/backup.js` | `src/backup.rs` | ported + tests (JSON v1 + `VACUUM INTO`) |
+| `src/worker/backup.js` | `src/backup.rs` | ported + tests (JSON v2 + `VACUUM INTO`; imports always shadow) |
 | `src/worker/system.js` | `src/system.rs` | ported (procfs) + tests |
 | `src/worker/db-metrics.js` | `src/db_metrics.rs` | ported (`trace_v2`) + tests |
 | `src/worker/item-info.js` | `src/item_info.rs` | ported + tests |
@@ -116,7 +116,7 @@ Rollercoin session — two of either will duplicate orders.
 | `POST /api/session` | ✅ | validated, `changed` flag |
 | `DELETE /api/session` | ✅ | clears all three credentials |
 | `POST /api/auth/rotate` | ✅ | 409 when `WORKER_TOKEN` pins the key |
-| `GET/POST /api/backup` | ✅ | JSON v1 + SQLite snapshot; 64 MB body limit; safety snapshot on import |
+| `GET/POST /api/backup` | ✅ | JSON v2 + SQLite snapshot; 64 MB body limit; safety snapshot on import; the trading mode is omitted from exports and every import is forced to `shadow` |
 | `GET /api/latency` | ✅ | four-channel snapshot |
 | `POST /api/latency/probe` | ✅ | on-demand warm probe; also broadcasts `latency` |
 | `GET /api/system` | ✅ | live sampler (CPU/RAM/load/loop lag/db files) |
@@ -217,6 +217,11 @@ Bun worker.
   target list and wrote `backups/pre-import-….db`. A 400 KB body was accepted
   (422 validation) proving the route's 64 MB limit overrides the global 256 KB
   one.
+- **Backup trading-mode safety** in unit tests: the JSON export carries no
+  `settings.mode` (nor the legacy `dryRun`/`paused` mirrors), a v1 or v2
+  document that still says `live` parses to `shadow`, `restore_backup` writes
+  `shadow` even for a hand-built `ParsedBackup`, and `sanitize_snapshot_mode`
+  rewrites a live `.db` copy to `shadow`.
 - **Live DB metrics** from the running binary after four API calls:
   `instrumented: true`, 14 statements (11 read / 3 write), window count 14,
   transaction counter active, history filling. A 200k-row recursive query in the

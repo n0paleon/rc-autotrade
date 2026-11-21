@@ -1,11 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rusqlite::params;
 
 use crate::store::Store;
 
 use super::paths::{safe_prefix, timestamp};
-use super::{BACKUP_DIRNAME, ParsedBackup, RestoreResult};
+use super::{BACKUP_DIRNAME, ParsedBackup, RESTORE_MODE, RestoreResult};
 
 /// Writes a consistent copy of the live database with `VACUUM INTO`.
 pub fn create_database_snapshot(store: &Store, prefix: &str, now: i64) -> Result<PathBuf, String> {
@@ -40,6 +40,33 @@ pub fn create_database_snapshot(store: &Store, prefix: &str, now: i64) -> Result
     Ok(file)
 }
 
+/// Forces the settings row in a downloaded `.db` snapshot back to shadow mode.
+///
+/// `VACUUM INTO` copies the whole database, including the trading mode that was
+/// armed on the source worker. A snapshot restored by hand would otherwise
+/// resume live trading on the new machine, so the export path rewrites that one
+/// row to [`RESTORE_MODE`] — the same mode a JSON import produces.
+///
+/// Only the downloadable copy is sanitized. The pre-import safety snapshot keeps
+/// the exact prior row so it can still revert the worker faithfully.
+pub fn sanitize_snapshot_mode(path: &Path) -> Result<(), String> {
+    let conn = rusqlite::Connection::open(path)
+        .map_err(|error| format!("could not open the database snapshot: {error}"))?;
+    // The copy inherits the source journal mode. Switching the copy back to a
+    // rollback journal folds the rewritten row into the main file, which is the
+    // only file the browser downloads.
+    let _: String = conn
+        .query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))
+        .map_err(|error| format!("could not prepare the database snapshot: {error}"))?;
+    let (dry_run, paused) = RESTORE_MODE.legacy_flags();
+    conn.execute(
+        "UPDATE settings SET mode = ?1, dry_run = ?2, paused = ?3 WHERE id = 1",
+        params![RESTORE_MODE.as_str(), dry_run as i64, paused as i64],
+    )
+    .map_err(|error| format!("could not reset the snapshot trading mode: {error}"))?;
+    Ok(())
+}
+
 /// Replaces the portable tables with a validated backup inside one transaction.
 pub fn restore_backup(
     store: &mut Store,
@@ -54,7 +81,13 @@ pub fn restore_backup(
         None
     };
 
-    let settings = backup.settings;
+    // `parse_backup` already strips the mode, but the enforcement lives here
+    // too: `restore_backup` is the only function that writes the settings row,
+    // and it must never write anything but shadow, even for a hand-built
+    // `ParsedBackup`. The legacy mirrors follow from the forced mode, so an
+    // older reader sees dry-run rather than an armed pair.
+    let mut settings = backup.settings;
+    settings.mode = RESTORE_MODE;
     let stats = backup.stats;
     let targets = backup.targets.clone();
     let orders = backup.orders.clone();

@@ -13,7 +13,7 @@ use super::json::{
 };
 use super::{
     BACKUP_FORMAT_VERSION, BACKUP_KIND, BACKUP_MAX_ORDERS, ParseOutcome, ParsedBackup,
-    ReportProduct,
+    RESTORE_MODE, ReportProduct,
 };
 
 fn normalize_order(entry: &Value, warnings: &mut Vec<String>, index: usize) -> Option<OrderEntry> {
@@ -215,11 +215,20 @@ pub fn parse_backup(raw: &Value, now: i64) -> ParseOutcome {
     let data = data.expect("checked above");
 
     // Settings: merge over defaults, warn when anything was invalid.
-    let settings_input = data
+    //
+    // The trading mode is stripped before validation, together with its legacy
+    // `dryRun` / `paused` aliases. A backup cannot arm or stop the receiving
+    // worker; the restore path pins the mode to shadow instead.
+    let mut settings_input = data
         .get("settings")
         .filter(|value| value.is_object())
         .cloned()
         .unwrap_or_else(|| json!({}));
+    if let Some(object) = settings_input.as_object_mut() {
+        object.remove("mode");
+        object.remove("dryRun");
+        object.remove("paused");
+    }
     if !data.get("settings").map(Value::is_object).unwrap_or(false) {
         warnings.push("The backup has no settings block; worker defaults were used.".into());
     }
@@ -231,9 +240,6 @@ pub fn parse_backup(raw: &Value, now: i64) -> ParseOutcome {
             }
             if let Some(value) = patch.max_orders_per_minute {
                 settings.max_orders_per_minute = value;
-            }
-            if let Some(value) = patch.mode {
-                settings.mode = value;
             }
             if let Some(value) = patch.auto_refresh {
                 settings.auto_refresh = value;
@@ -247,6 +253,14 @@ pub fn parse_backup(raw: &Value, now: i64) -> ParseOutcome {
                 .push("Some settings were invalid; valid values and defaults were used.".into());
         }
     }
+    // No file may decide whether this worker trades. Even when the document is
+    // hand-edited, malformed, or written by an older build, the restored row is
+    // shadow. Arming live is a deliberate action on the runtime panel.
+    settings.mode = RESTORE_MODE;
+    warnings.push(
+        "The trading mode is never restored from a backup; this worker starts in shadow mode."
+            .into(),
+    );
 
     let mut raw_targets = data
         .get("targets")

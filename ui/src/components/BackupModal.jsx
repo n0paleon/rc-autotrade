@@ -4,7 +4,7 @@ import { formatBytes, formatDate, formatInt, formatTime } from "../lib/format.js
 import { tabKeyDown } from "../lib/hooks.js";
 
 const BACKUP_KIND = "turu-rc-backup";
-const BACKUP_FORMAT_VERSION = 1;
+const BACKUP_FORMAT_VERSION = 2;
 const MAX_BACKUP_BYTES = 64 * 1024 * 1024;
 
 function fileStamp(now = Date.now()) {
@@ -304,7 +304,8 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
           <>
             <p className="text-copy text-muted">
               One portable file with every target, runtime setting, lifetime counter, profit row and
-              loot entry. Restore it on another worker to move machines without losing history.
+              loot entry. Restore it on another worker to move machines without losing history. The
+              trading mode is deliberately left out.
             </p>
             <div className="grid grid-cols-3 gap-2">
               <CountBox label="Targets" value={counts.targets} />
@@ -319,7 +320,8 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
                     Portable JSON backup
                   </h3>
                   <p className="mt-1 text-body leading-relaxed text-muted">
-                    The market cache is not included; the deck rebuilds it from live frames.
+                    The market cache is not included; the deck rebuilds it from live frames. Trading
+                    mode is never stored, so a restore always starts in shadow.
                   </p>
                 </div>
                 <Icon name="i-download" className="h-6 w-6 shrink-0 text-gold" />
@@ -362,8 +364,9 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
                 <Icon name="i-database" className="h-3.5 w-3.5" /> Raw SQLite snapshot
               </h3>
               <p className="text-copy text-muted">
-                A byte-complete, consistent copy of the whole database, including the stored session
-                and market cache. It must be restored with the worker stopped.
+                A consistent copy of the whole database, including the stored session and market
+                cache. Its settings row is reset to shadow mode, so a manual restore cannot re-arm
+                live trading. It must be restored with the worker stopped.
               </p>
               <button
                 className="btn btn-ghost btn-sm btn-block"
@@ -389,7 +392,7 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
             <ol className="steps">
               <li>Download a backup from the old worker.</li>
               <li>Open this deck on the new worker and log in with its access key.</li>
-              <li>Pick the file below and restore it. The access key stays unchanged.</li>
+              <li>Pick the file below and restore it. The access key stays unchanged and the worker starts in shadow mode.</li>
             </ol>
 
             <label
@@ -447,7 +450,7 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
                   checked={acknowledged}
                   onChange={setAcknowledged}
                   title="Replace this worker's data"
-                  hint="Targets, settings, counters and the entire loot log are overwritten. A .db safety snapshot is written first."
+                  hint="Targets, settings, counters and the entire loot log are overwritten. Trading mode is not restored — the worker lands in shadow mode. A .db safety snapshot is written first."
                   disabled={busyNow}
                 />
 
@@ -482,6 +485,10 @@ export function BackupModal({ snapshot, worker, notify, onClose }) {
                 <p className="text-meta leading-relaxed text-muted">
                   Rollercoin session:{" "}
                   {restored.restored?.credentialsRestored ? "restored from the file" : "kept as it was"}.
+                </p>
+                <p className="text-meta leading-relaxed text-muted">
+                  Trading mode: <strong className="text-gold">shadow</strong> — a backup never
+                  restores the mode. Arm live again from the runtime panel when you are ready.
                 </p>
                 {restored.restored?.safetyBackup ? (
                   <p className="text-meta leading-relaxed text-faint">

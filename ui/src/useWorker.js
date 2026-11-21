@@ -300,7 +300,11 @@ function optimisticBackupSnapshot(previous, backup, restoreCredentials) {
     ...DEFAULT_SETTINGS,
     ...(data.settings && typeof data.settings === "object" && !Array.isArray(data.settings)
       ? data.settings
-      : {})
+      : {}),
+    // A backup never carries the trading mode, and the worker ignores one that
+    // an older file still has: every restore lands in shadow. The optimistic
+    // rows must not flash LIVE while the request is in flight.
+    mode: "shadow"
   };
   const reportSince = Number(data.reportSince) || Number(stats.since) || now;
   return {
@@ -1321,5 +1325,6 @@ export {
   REMEMBER_KEY,
   readStoredToken,
   isRemembered,
-  clearStoredToken
+  clearStoredToken,
+  optimisticBackupSnapshot
 };
