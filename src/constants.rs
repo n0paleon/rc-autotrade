@@ -29,6 +29,13 @@ pub const MAX_REPORT_PRODUCTS: usize = 500;
 /// How many log lines are buffered for clients that connect late.
 pub const LOG_BUFFER_SIZE: usize = 250;
 
+/// Price points included per target in the initial `/api/state` response.
+///
+/// A full 24 h window is ~1440 points per target; with many targets that alone
+/// dominates the snapshot body. The chart backfills older points on demand
+/// from `/api/price-history`, so the boot snapshot only needs a short tail.
+pub const STATE_HISTORY_LIMIT: usize = 180;
+
 /// How many 1-minute price points the chart needs (24h).
 pub const PRICE_HISTORY_LIMIT: usize = 1440;
 

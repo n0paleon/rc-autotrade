@@ -97,7 +97,7 @@ Rollercoin session — two of either will duplicate orders.
 | Route | Rust | Notes |
 | --- | --- | --- |
 | `GET /api/health` | ✅ | unauthenticated, same shape |
-| `GET /api/state` | ✅ | full snapshot: gateway, session, latency, keepalive, system, configs, pending |
+| `GET /api/state` | ✅ | full snapshot: gateway, session, latency, keepalive, system, configs, pending. `?compact=1` trims each target's price history to the newest 180 points; the UI uses this for boot/resync and backfills older points from `/api/price-history`. |
 | `GET /api/configs` | ✅ | `runtime` is filled by the engine once a target has seen a frame or a cached snapshot |
 | `PUT /api/configs` | ✅ | same 422 `fields` map, bulk enrichment runs after the reply |
 | `POST /api/configs` | ✅ | 201 + label auto-enriched before the reply (1.5 s budget) |

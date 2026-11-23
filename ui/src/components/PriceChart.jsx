@@ -624,13 +624,17 @@ export default function PriceChart({ history, targetPrice, itemId, request, labe
     return () => clearTimeout(timer);
   }, [open, status]);
 
-  // The card needs no request of its own: the snapshot already hydrates its
-  // one-day window from SQLite, and the worker pushes a sampled close every
-  // minute an item is quiet. Only a card that starts with an empty window
-  // (target re-added while the worker was down) asks the API to repair it.
+  // The boot snapshot ships only a short price tail (`compact=1`), so backfill
+  // the full day from SQLite unless the live window already spans ~24h. The
+  // merge keeps live points authoritative, and the guard makes this a one-shot
+  // per card rather than one request per market tick.
   useEffect(() => {
     if (backfilled.current || !request || !itemId) return undefined;
-    if (Array.isArray(history) && history.length > 0) {
+    const first = Array.isArray(history) ? history[0]?.t : null;
+    const last = Array.isArray(history) ? history[history.length - 1]?.t : null;
+    const spansDay =
+      Number.isFinite(first) && Number.isFinite(last) && last - first >= 23 * 60 * 60_000;
+    if (spansDay) {
       backfilled.current = true;
       return undefined;
     }

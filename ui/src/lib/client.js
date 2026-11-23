@@ -33,14 +33,37 @@ function wsUrlFor(baseUrl) {
   return url.toString();
 }
 
+// Two independent deadlines: `timeout` covers time-to-first-byte, `bodyTimeout`
+// covers reading and parsing the body once headers have arrived. A large JSON
+// response can therefore spend [timeout + bodyTimeout] overall without being
+// mistaken for a worker that never answered.
+const DEFAULT_TIMEOUT_MS = 15_000;
+const DEFAULT_BODY_TIMEOUT_MS = 30_000;
+
 async function rawRequest(
   base,
   token,
   path,
-  { method = "GET", body, timeout = 12_000, responseType = "json" } = {}
+  {
+    method = "GET",
+    body,
+    timeout = DEFAULT_TIMEOUT_MS,
+    bodyTimeout,
+    responseType = "json"
+  } = {}
 ) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
+  let phase = "headers";
+  let headersArrived = false;
+  const headersTimer = setTimeout(() => {
+    if (headersArrived) return;
+    phase = "headers";
+    controller.abort();
+  }, timeout);
+  // Transfers that opt into a long `timeout` (backups, restores) get at least
+  // as much time to stream their body as they were given to start responding.
+  const bodyBudget = bodyTimeout ?? Math.max(DEFAULT_BODY_TIMEOUT_MS, timeout);
+  let bodyTimer = null;
   try {
     const headers = { authorization: `Bearer ${token}`, accept: "application/json" };
     if (body !== undefined) headers["content-type"] = "application/json";
@@ -51,6 +74,13 @@ async function rawRequest(
       signal: controller.signal,
       cache: "no-store"
     });
+    headersArrived = true;
+    phase = "body";
+    clearTimeout(headersTimer);
+    bodyTimer = setTimeout(() => {
+      phase = "body";
+      controller.abort();
+    }, bodyBudget);
     if (!response.ok) {
       const text = await response.text();
       let data = {};
@@ -81,14 +111,20 @@ async function rawRequest(
   } catch (error) {
     if (error instanceof ApiError) throw error;
     if (error?.name === "AbortError") {
-      throw new ApiError("The worker did not answer in time. Is it still running?", { status: 0 });
+      throw new ApiError(
+        phase === "body"
+          ? "The worker answered, but the response took too long to download."
+          : "The worker did not answer in time. Is it still running?",
+        { status: 0 }
+      );
     }
     throw new ApiError(
       "Cannot reach the worker. Check the URL, make sure it is running, and avoid HTTPS→HTTP mixed content.",
       { status: 0 }
     );
   } finally {
-    clearTimeout(timer);
+    clearTimeout(headersTimer);
+    if (bodyTimer) clearTimeout(bodyTimer);
   }
 }
 
@@ -132,7 +168,7 @@ export class WorkerClient {
         "This page is HTTPS but the worker is HTTP. Use a localhost URL or put the worker behind HTTPS."
       );
     }
-    const state = await rawRequest(base, token, "/api/state");
+    const state = await rawRequest(base, token, "/api/state?compact=1");
     this.baseUrl = base;
     this.token = token;
     this.manualClose = false;
@@ -173,7 +209,7 @@ export class WorkerClient {
   async resync() {
     if (!this.isAuthenticated) return null;
     try {
-      const state = await rawRequest(this.baseUrl, this.token, "/api/state");
+      const state = await rawRequest(this.baseUrl, this.token, "/api/state?compact=1");
       this.onSnapshot?.(state);
       return state;
     } catch (error) {
