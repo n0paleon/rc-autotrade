@@ -9,6 +9,33 @@ use crate::trend::{Point, TrendSignal};
 use super::minute::MinuteAgg;
 use super::reconcile::{RECONCILE_WINDOW_MS, Reconcile, price_key};
 
+/// The price and best-level stock the `scan` log last reported for a target.
+///
+/// The log is change-driven, so the engine has to remember what it said rather
+/// than only when: a qty-only frame would otherwise land inside the heartbeat
+/// window and never be reported at all.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ScanState {
+    pub(super) price: f64,
+    pub(super) stock: i64,
+}
+
+impl ScanState {
+    pub(super) fn new(price: f64, stock: i64) -> Self {
+        Self { price, stock }
+    }
+}
+
+/// Compared on the micro-RLT key, so a float that only differs below the
+/// precision the log prints is not a change.
+impl PartialEq for ScanState {
+    fn eq(&self, other: &Self) -> bool {
+        price_key(self.price) == price_key(other.price) && self.stock == other.stock
+    }
+}
+
+impl Eq for ScanState {}
+
 #[derive(Debug, Clone)]
 pub(super) struct Runtime {
     pub(super) last_price: Option<f64>,
@@ -55,6 +82,8 @@ pub(super) struct Runtime {
     pub(super) failure_streak: i64,
     pub(super) blocked_until: i64,
     pub(super) last_log_at: i64,
+    pub(super) last_scan_at: i64,
+    pub(super) scan_state: Option<ScanState>,
     pub(super) last_order_at: i64,
     pub(super) last_in_range_at: i64,
 }
@@ -96,6 +125,8 @@ impl Runtime {
             failure_streak: 0,
             blocked_until: 0,
             last_log_at: 0,
+            last_scan_at: 0,
+            scan_state: None,
             last_order_at: 0,
             last_in_range_at: 0,
         }

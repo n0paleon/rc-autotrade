@@ -9,7 +9,11 @@ use crate::store::Store;
 use crate::trend::Point;
 
 use super::minute::MinuteAgg;
-use super::{Engine, EngineEvent, MarketTick, SCAN_LOG_INTERVAL_MS, label_for};
+use super::reconcile::price_key;
+use super::runtime::ScanState;
+use super::{
+    Engine, EngineEvent, MarketTick, SCAN_LOG_INTERVAL_MS, SCAN_LOG_MIN_INTERVAL_MS, label_for,
+};
 
 impl Engine {
     pub fn handle_frame(
@@ -416,6 +420,15 @@ impl Engine {
         events
     }
 
+    /// Writes the one-line market summary the deck reads.
+    ///
+    /// The line is change-driven: a frame that moves the best price or the
+    /// best-level stock earns one, even when the other half of the pair stayed
+    /// put. Tracking the reported pair matters because a qty-only frame that
+    /// landed inside the heartbeat window used to be dropped silently, so the
+    /// log could lag the (250 ms coalesced) market tick indefinitely. Bursts
+    /// are flattened to one line per [`SCAN_LOG_MIN_INTERVAL_MS`]; nothing is
+    /// emitted until the floor has passed, so the newest frame wins.
     pub(super) fn log_scan(
         &mut self,
         config: &Target,
@@ -424,30 +437,57 @@ impl Engine {
         plan: &Plan,
         now: i64,
     ) {
+        let current = ScanState::new(price, stock);
         let runtime = self.runtime_for(&config.item_id, config.desired_qty);
-        if now - runtime.last_log_at < SCAN_LOG_INTERVAL_MS {
+        let previous = runtime.scan_state;
+        let since = now.saturating_sub(runtime.last_scan_at);
+        let due = if previous != Some(current) {
+            since >= SCAN_LOG_MIN_INTERVAL_MS
+        } else {
+            since >= SCAN_LOG_INTERVAL_MS
+        };
+        if !due {
             return;
         }
-        runtime.last_log_at = now;
+        runtime.last_scan_at = now;
+        runtime.scan_state = Some(current);
+
         let label = label_for(Some(config), &config.item_id);
+        let delta = previous.map_or_else(String::new, |previous| scan_delta(previous, current));
         let message = if plan.action == Action::Buy {
             format!(
-                "{label} {price:.6} RLT ×{stock} — IN RANGE (target {:.6})",
+                "{label} {price:.6} RLT ×{stock}{delta} — IN RANGE (target {:.6})",
                 config.target_price
             )
         } else if price <= config.target_price {
             // `plan.reason` is the real reason: callers pass the observed plan
             // (evaluated even while off), never the gated one.
             format!(
-                "{label} {price:.6} RLT ×{stock} — IN RANGE, waiting ({})",
+                "{label} {price:.6} RLT ×{stock}{delta} — IN RANGE, waiting ({})",
                 plan.reason.unwrap_or("unknown")
             )
         } else {
             format!(
-                "{label} {price:.6} RLT ×{stock} — above target {:.6}",
+                "{label} {price:.6} RLT ×{stock}{delta} — above target {:.6}",
                 config.target_price
             )
         };
         self.logger.info("scan", message);
+    }
+}
+
+/// `[price +0.000010, stock -2]` for a line that moved; empty otherwise.
+fn scan_delta(previous: ScanState, current: ScanState) -> String {
+    let mut moved = Vec::new();
+    if price_key(previous.price) != price_key(current.price) {
+        moved.push(format!("price {:+.6}", current.price - previous.price));
+    }
+    if previous.stock != current.stock {
+        moved.push(format!("stock {:+}", current.stock - previous.stock));
+    }
+    if moved.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", moved.join(", "))
     }
 }

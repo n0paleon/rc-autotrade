@@ -134,3 +134,117 @@ fn market_broadcast_keeps_its_wire_shape() {
     assert!(market["trend"]["status"].is_string());
     assert!(market["fill"].is_object(), "fill: {:?}", market["fill"]);
 }
+
+/// A qty-only update is the case the old fixed heartbeat swallowed: the frame
+/// arrived, the market moved, and 12 s later the log still said nothing (or
+/// never, if no further frame came).
+#[test]
+fn a_stock_only_change_logs_immediately_with_its_delta() {
+    let mut h = harness();
+    h.engine
+        .handle_frame(&mut h.store, &market_frame(110_000, 10), 1_000_000, true);
+    assert_eq!(scan_lines(&h).len(), 1, "the first frame primes the state");
+
+    h.now.store(1_001_000, Ordering::SeqCst);
+    h.engine
+        .handle_frame(&mut h.store, &market_frame(110_000, 9), 1_001_000, true);
+    let lines = scan_lines(&h);
+    assert_eq!(lines.len(), 2, "qty-only change must log: {lines:?}");
+    assert!(lines[1].contains("×9"), "new stock missing: {:?}", lines[1]);
+    assert!(
+        lines[1].contains("stock -1"),
+        "delta missing: {:?}",
+        lines[1]
+    );
+    assert!(
+        !lines[1].contains("price "),
+        "price did not move, so it must not claim a delta: {:?}",
+        lines[1]
+    );
+}
+
+#[test]
+fn a_price_move_logs_immediately_with_its_delta() {
+    let mut h = harness();
+    h.engine
+        .handle_frame(&mut h.store, &market_frame(110_000, 10), 1_000_000, true);
+    assert_eq!(scan_lines(&h).len(), 1);
+
+    h.now.store(1_001_000, Ordering::SeqCst);
+    h.engine
+        .handle_frame(&mut h.store, &market_frame(109_990, 10), 1_001_000, true);
+    let lines = scan_lines(&h);
+    assert_eq!(lines.len(), 2, "a price move must log: {lines:?}");
+    assert!(
+        lines[1].contains("price -0.000010"),
+        "price delta missing: {:?}",
+        lines[1]
+    );
+    assert!(
+        !lines[1].contains("stock "),
+        "stock did not move, so it must not claim a delta: {:?}",
+        lines[1]
+    );
+}
+
+/// The change-driven path must not turn a fast book into a line per frame.
+#[test]
+fn a_burst_inside_the_floor_collapses_into_one_line() {
+    let mut h = harness();
+    h.engine
+        .handle_frame(&mut h.store, &market_frame(110_000, 10), 1_000_000, true);
+    assert_eq!(scan_lines(&h).len(), 1);
+
+    // Two more updates inside the 100 ms floor stay quiet.
+    h.now.store(1_000_030, Ordering::SeqCst);
+    h.engine
+        .handle_frame(&mut h.store, &market_frame(110_000, 8), 1_000_030, true);
+    h.now.store(1_000_070, Ordering::SeqCst);
+    h.engine
+        .handle_frame(&mut h.store, &market_frame(110_000, 6), 1_000_070, true);
+    assert_eq!(scan_lines(&h).len(), 1, "the floor absorbs the burst");
+
+    // The first frame past the floor reports the accumulated move.
+    h.now.store(1_000_150, Ordering::SeqCst);
+    h.engine
+        .handle_frame(&mut h.store, &market_frame(110_000, 5), 1_000_150, true);
+    let lines = scan_lines(&h);
+    assert_eq!(lines.len(), 2);
+    assert!(
+        lines[1].contains("×5"),
+        "newest stock missing: {:?}",
+        lines[1]
+    );
+    assert!(
+        lines[1].contains("stock -5"),
+        "the delta spans the whole burst: {:?}",
+        lines[1]
+    );
+}
+
+/// An unchanged target still proves it is alive, but only on the slow pulse.
+#[test]
+fn an_unchanged_market_keeps_the_slow_heartbeat() {
+    let mut h = harness();
+    h.engine
+        .handle_frame(&mut h.store, &market_frame(110_000, 10), 1_000_000, true);
+    assert_eq!(scan_lines(&h).len(), 1);
+
+    h.now.store(1_001_000, Ordering::SeqCst);
+    h.engine
+        .handle_frame(&mut h.store, &market_frame(110_000, 10), 1_001_000, true);
+    assert_eq!(
+        scan_lines(&h).len(),
+        1,
+        "an unchanged frame is not a scan event"
+    );
+
+    h.now.store(1_012_000, Ordering::SeqCst);
+    h.engine
+        .handle_frame(&mut h.store, &market_frame(110_000, 10), 1_012_000, true);
+    assert_eq!(
+        scan_lines(&h).len(),
+        2,
+        "the heartbeat keeps a quiet target visible"
+    );
+}
