@@ -91,6 +91,8 @@ Key environment variables:
 
 `LOG_LEVEL=debug` is intentionally noisy — it is the "why did my snipe not fire?" mode. At debug the worker adds a line for every upstream frame and WebSocket message, every target decision (price, stock, effective stock, fill estimate, planner result, mode), every order gate and purchase attempt, every HTTP request to Rollercoin, every control-socket connect/message, plus health, sampler, hydration and store-write detail. Lines go to stdout and to the deck's log panel (the ring buffer keeps the last 250). Expect a high line rate on a busy market; keep `info` for normal operation.
 
+At `info` the `scan` line is change-driven, so a qty-only update is not lost: it is written as soon as a target's best price or best-level stock moves (at most one line per 100 ms per target to flatten bursts), with the delta in brackets, e.g. `Hashboard 0.090000 RLT ×4 [stock -1] — above target 0.100000`. An unchanged target still gets a heartbeat line every 12 s.
+
 You can reset the access key while the worker is stopped:
 
 ```bash

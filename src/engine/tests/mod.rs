@@ -81,16 +81,20 @@ pub(super) fn harness() -> Harness {
     }
 }
 
-/// The most recent scan lines, joined, so a test can assert on the reason.
-pub(super) fn scan_summary(harness: &Harness) -> String {
+/// Every scan line in order, so a test can assert on the whole pulse.
+pub(super) fn scan_lines(harness: &Harness) -> Vec<String> {
     harness
         .logger
         .recent(LOG_BUFFER_SIZE)
         .iter()
         .filter(|entry| entry["scope"] == "scan")
-        .filter_map(|entry| entry["message"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n")
+        .filter_map(|entry| entry["message"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// The most recent scan lines, joined, so a test can assert on the reason.
+pub(super) fn scan_summary(harness: &Harness) -> String {
+    scan_lines(harness).join("\n")
 }
 
 pub(super) fn market_frame(price_raw: i64, quantity: i64) -> Value {

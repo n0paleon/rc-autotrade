@@ -39,7 +39,12 @@ use runtime::{BufferedResult, Runtime};
 
 const PENDING_TIMEOUT_MS: i64 = 120_000;
 const MAX_UNMATCHED_RESULTS: usize = 128;
+/// Slow pulse for a target whose price and best-level stock have not moved.
 const SCAN_LOG_INTERVAL_MS: i64 = 12_000;
+/// Floor between two change-driven `scan` lines for one target. The feed can
+/// move the book several times per second; the deck needs the change, not
+/// every frame that produced it.
+const SCAN_LOG_MIN_INTERVAL_MS: i64 = 100;
 const TREND_REFRESH_MS: i64 = 10_000;
 
 /// Logs at most once a minute for one slot, so a persistent write failure on
