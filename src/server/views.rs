@@ -1,7 +1,9 @@
 //! Read-only views derived from the store, engine and sidecar services.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::extract::Query;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, extract::State};
 use serde_json::{Value, json};
@@ -10,10 +12,31 @@ use super::AppState;
 use super::auth::Auth;
 use crate::benchmark;
 use crate::clock::now_ms;
-use crate::constants::{APP_NAME, APP_VERSION, LOOT_LOG_PAGE_SIZE, Limits};
+use crate::constants::{APP_NAME, APP_VERSION, LOOT_LOG_PAGE_SIZE, Limits, STATE_HISTORY_LIMIT};
 use crate::engine::Engine;
 use crate::lock::lock;
 use crate::store::Store;
+
+/// Keeps only the newest price points in each target's runtime history.
+///
+/// A full 24 h window is ~1440 points per target, which dominates the boot
+/// snapshot once several targets are configured. The chart re-fetches older
+/// points from `/api/price-history` on demand.
+pub(super) fn trim_runtime_history(configs: &mut [Value], limit: usize) {
+    for config in configs {
+        let Some(history) = config
+            .get_mut("runtime")
+            .and_then(|runtime| runtime.get_mut("history"))
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        if history.len() > limit {
+            let excess = history.len() - limit;
+            history.drain(0..excess);
+        }
+    }
+}
 
 impl AppState {
     pub fn configs_view(&self, store: &Store, engine: &Engine) -> Vec<Value> {
@@ -53,6 +76,16 @@ impl AppState {
     }
 
     pub fn snapshot(&self, store: &Store, engine: &Engine) -> Value {
+        self.snapshot_with(store, engine, false)
+    }
+
+    /// Lighter variant for the boot/resync HTTP response. WebSocket snapshots
+    /// and backups keep the full series: they have no HTTP deadline to beat.
+    pub fn compact_snapshot(&self, store: &Store, engine: &Engine) -> Value {
+        self.snapshot_with(store, engine, true)
+    }
+
+    fn snapshot_with(&self, store: &Store, engine: &Engine, compact: bool) -> Value {
         let now = now_ms();
         let gateway = match lock(&self.gateway).as_ref() {
             Some(handle) => handle.stats_json(),
@@ -99,7 +132,13 @@ impl AppState {
                 .unwrap_or(Value::Null),
             "system": lock(&self.system).snapshot(),
             "settings": store.state.settings,
-            "configs": self.configs_view(store, engine),
+            "configs": ({
+                let mut configs = self.configs_view(store, engine);
+                if compact {
+                    trim_runtime_history(&mut configs, STATE_HISTORY_LIMIT);
+                }
+                configs
+            }),
             "stats": store.state.stats,
             "report": store.report_view(),
             "history": store
@@ -124,10 +163,24 @@ impl AppState {
     }
 }
 
-pub(super) async fn state_view(_auth: Auth, State(state): State<Arc<AppState>>) -> Response {
+pub(super) async fn state_view(
+    _auth: Auth,
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    // `compact=1` trims the per-target price series. Omitting the parameter (or
+    // sending `compact=0`) keeps the full snapshot for API consumers that need
+    // the complete history in one call.
+    let compact = params
+        .get("compact")
+        .is_some_and(|value| !matches!(value.as_str(), "0" | "false" | "no"));
     let store = lock(&state.store);
     let engine = lock(&state.engine);
-    let mut body = state.snapshot(&store, &engine);
+    let mut body = if compact {
+        state.compact_snapshot(&store, &engine)
+    } else {
+        state.snapshot(&store, &engine)
+    };
     body["ok"] = Value::Bool(true);
     Json(body).into_response()
 }

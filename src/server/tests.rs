@@ -6,6 +6,7 @@ use serde_json::json;
 use super::Envelope;
 use super::auth::protocol_auth;
 use super::router::upstream_host;
+use super::views::trim_runtime_history;
 
 #[test]
 fn the_control_envelope_keeps_its_wire_shape() {
@@ -40,6 +41,39 @@ fn protocol_auth_accepts_the_token_as_second_protocol() {
     let (offered, token) = protocol_auth(&headers, &HashMap::new());
     assert!(offered);
     assert_eq!(token, "super-secret-key");
+}
+
+#[test]
+fn compact_snapshot_keeps_only_the_newest_price_points() {
+    let mut configs = vec![json!({
+        "itemId": "abc",
+        "runtime": {
+            "history": [
+                { "t": 1, "p": 1.0 },
+                { "t": 2, "p": 2.0 },
+                { "t": 3, "p": 3.0 }
+            ]
+        }
+    })];
+
+    trim_runtime_history(&mut configs, 2);
+
+    let history = configs[0]["runtime"]["history"].as_array().unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0]["t"], 2);
+    assert_eq!(history[1]["t"], 3);
+}
+
+#[test]
+fn compact_snapshot_leaves_short_histories_untouched() {
+    let mut configs = vec![json!({ "itemId": "abc", "runtime": { "history": [{ "t": 1 }] } })];
+
+    trim_runtime_history(&mut configs, 2);
+
+    assert_eq!(
+        configs[0]["runtime"]["history"].as_array().unwrap().len(),
+        1
+    );
 }
 
 #[test]
