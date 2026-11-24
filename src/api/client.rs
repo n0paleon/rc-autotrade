@@ -259,12 +259,9 @@ impl ApiClient {
             Err(error) => {
                 let (socket, dns) = self.classify_connection(&dns_window.snapshot(), false);
                 let message = if error.is_timeout() {
-                    format!(
-                        "Upstream request timed out after {}ms.",
-                        self.timeout.as_millis()
-                    )
+                    crate::net_error::describe_with_timeout(&error, self.timeout)
                 } else {
-                    crate::redact::redact_secrets(&error.to_string())
+                    crate::net_error::describe(&error)
                 };
                 self.record_http(started, false, Some(&message));
                 self.log_debug(|| {

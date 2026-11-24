@@ -26,6 +26,7 @@ pub mod lock;
 pub mod logger;
 pub mod mock;
 pub mod model;
+pub mod net_error;
 pub mod num;
 pub mod raw_events;
 pub mod redact;

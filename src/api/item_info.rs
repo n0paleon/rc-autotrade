@@ -85,9 +85,12 @@ impl ApiClient {
             }
             Err(error) => {
                 let message = if error.is_timeout() {
-                    "item-info request timed out.".to_string()
+                    crate::net_error::describe_with_timeout(
+                        &error,
+                        Duration::from_millis(ITEM_INFO_TIMEOUT_MS),
+                    )
                 } else {
-                    crate::redact::redact_secrets(&error.to_string())
+                    crate::net_error::describe(&error)
                 };
                 self.record_http(started, false, Some(&message));
                 ItemInfoResult {
