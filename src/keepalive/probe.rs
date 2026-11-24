@@ -116,9 +116,13 @@ impl KeepaliveService {
             }
             Err(error) => {
                 let message = if error.is_timeout() {
-                    format!("timed out after {}ms", self.timeout_ms)
+                    format!(
+                        "{} after {}ms",
+                        crate::net_error::describe(&error),
+                        self.timeout_ms
+                    )
                 } else {
-                    crate::redact::redact_secrets(&error.to_string())
+                    crate::net_error::describe(&error)
                 };
                 {
                     let mut latency = lock(&self.latency);
